@@ -164,6 +164,7 @@ struct Attributes {
     data: HashMap<AttrKey, AttrVal>,
 }
 
+#[derive(Debug)]
 pub enum Node {
     Statement(Statement),
     Expr(Expression),

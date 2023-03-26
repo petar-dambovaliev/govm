@@ -1,7 +1,9 @@
 mod nodes;
 
+use crate::nodes::Node;
 use broom::prelude::{Trace, Tracer};
 use broom::{Handle, Heap};
+use parser::ast::{DeclStmt, Statement};
 use parser::Parser;
 
 pub struct VM {
@@ -16,14 +18,41 @@ impl VM {
         Self {
             opts,
             parser,
-            ..Default::default()
+            stats: Stats::default(),
+            heap: Heap::default(),
         }
     }
 
     pub fn run(&mut self) {
-        loop {
-            // evaluate code
-            self.run_gc();
+        let ast = self.parser.parse_file().unwrap();
+        for decl in ast.decl {
+            self.eval(Node::Decl(decl));
+        }
+    }
+
+    fn eval(&mut self, node: Node) {
+        self.run_gc();
+        match node {
+            Node::Statement(stmt) => self.eval_stmt(stmt),
+            _ => {
+                println!("unimplemented: {:#?}", node);
+            }
+        }
+    }
+
+    fn eval_stmt(&mut self, stmt: Statement) {
+        match stmt {
+            Statement::Declaration(declr) => match declr {
+                DeclStmt::Const(cnst) => {
+                    println!("const declaration: {:#?}", cnst);
+                }
+                _ => {
+                    println!("unimplemented: {:#?}", declr);
+                }
+            },
+            _ => {
+                println!("unimplemented: {:#?}", stmt);
+            }
         }
     }
 
@@ -43,6 +72,11 @@ impl VM {
         let target = percent as usize + self.prev_mem();
 
         if self.opts.min_gc < target && self.cur_mem() >= target {
+            dbg!(
+                "running GC: current memory: {} target memory: {}",
+                self.cur_mem(),
+                target
+            );
             self.heap.clean();
         }
     }
@@ -68,26 +102,14 @@ impl Trace<Self> for Object {
 pub struct Opts {
     // percantage of the heap increasing
     // to trigger a garbage collection cycle
-    gogc: f64,
+    pub gogc: f64,
     // min heap size in bytes to trigger a
     // garbage collection cycle
-    min_gc: usize,
+    pub min_gc: usize,
 }
 
 #[derive(Default, Debug)]
 struct Stats {
     allocs: usize,
     prev_allocs: usize,
-}
-
-impl Default for VM {
-    fn default() -> Self {
-        Self {
-            opts: Opts {
-                gogc: 100.0,
-                min_gc: 1024 * 1024,
-            },
-            ..Default::default()
-        }
-    }
 }

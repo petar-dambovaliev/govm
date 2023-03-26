@@ -11,3 +11,4 @@ members = [
 
 [dependencies]
 vm = { path = "./vm" }
+parser = { path = "./parser" }

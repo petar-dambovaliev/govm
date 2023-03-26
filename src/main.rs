@@ -1,13 +1,8 @@
-mod gc;
-
-use broom::prelude::*;
-use parser::ast::Declaration;
 use parser::Parser;
-use std::time::{Duration, Instant};
+use vm::{Opts, VM};
 
 fn main() {
-    let start = Instant::now();
-    let mut parser = Parser::from(
+    let parser = Parser::from(
         r#"
         package main
         
@@ -17,9 +12,11 @@ fn main() {
     "#,
     );
 
-    let ast = parser.parse_file().unwrap();
+    let opts = Opts {
+        gogc: 100.0,
+        min_gc: 1024 * 1024,
+    };
 
-    let duration = start.elapsed();
-
-    println!("Time elapsed in expensive_function() is: {:?}", duration);
+    let mut vm = VM::new(opts, parser);
+    vm.run();
 }
