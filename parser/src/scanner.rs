@@ -11,35 +11,48 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use unic_ucd_category::GeneralCategory;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Scanner {
-    pos: usize,
-    index: usize,
+    pos: usize, // index as chars
     semicolon: bool,
+    lines: Vec<usize>,
 
     source: String,
-    lines: Vec<usize>,
     path: Option<PathBuf>,
+    chars: Vec<char>,
+    indices: Vec<usize>,
 }
 
 impl Scanner {
     pub(crate) fn from<S: AsRef<str>>(s: S) -> Self {
+        let source = s.as_ref().to_string();
+        let (indices, chars): (Vec<_>, Vec<_>) =
+            source.char_indices().map(|(pos, ch)| (pos, ch)).unzip();
+
         Self {
-            source: s.as_ref().to_string(),
+            source,
+            indices,
+            chars,
             ..Default::default()
         }
     }
 
     pub(crate) fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        const BOM: &str = "\u{feff}";
         let mut source = fs::read_to_string(&path)?;
+        const BOM: &str = "\u{feff}";
         if source.starts_with(BOM) {
-            source = source.split_off(3);
+            source = source.split_off(BOM.len());
         }
 
+        let path = Some(path.as_ref().into());
+        let (indices, chars): (Vec<_>, Vec<_>) =
+            source.char_indices().map(|(pos, ch)| (pos, ch)).unzip();
+
         Ok(Self {
+            path,
             source,
-            path: Some(path.as_ref().into()),
+            indices,
+            chars,
             ..Default::default()
         })
     }
@@ -52,24 +65,24 @@ impl Scanner {
         self.pos
     }
 
-    pub(crate) fn preback(&self) -> (usize, usize, bool) {
-        (self.pos, self.index, self.semicolon)
+    pub(crate) fn preback(&self) -> (usize, bool) {
+        (self.pos, self.semicolon)
     }
 
-    pub(crate) fn goback(&mut self, pre: (usize, usize, bool)) {
+    pub(crate) fn goback(&mut self, pre: (usize, bool)) {
         self.pos = pre.0;
-        self.index = pre.1;
-        self.semicolon = pre.2
+        self.semicolon = pre.1
     }
 
     pub(crate) fn line_info(&self, pos: usize) -> (usize, usize) {
-        self.lines
-            .iter()
-            .enumerate()
-            .take_while(|(_, &start)| pos >= start)
-            .last()
-            .map(|(index, &start)| (index + 1, pos - start))
-            .unwrap_or((1, pos))
+        match self.lines.binary_search(&pos) {
+            Ok(index) => (index + 1, 0),
+            Err(0) => (1, pos),
+            Err(index) => {
+                let start_at = self.lines[index - 1];
+                (index, pos - start_at)
+            }
+        }
     }
 
     fn add_line(&mut self, line_start: usize) {
@@ -89,13 +102,14 @@ impl Scanner {
     }
 
     fn next_char(&mut self, skp: usize) -> Option<char> {
-        let source = &self.source[self.index..];
-        source.chars().nth(skp).to_owned()
+        self.chars.get(self.pos + skp).copied()
     }
 
-    fn next_nchar(&mut self, n: usize) -> String {
-        let source = &self.source[self.index..];
-        source.chars().take(n).collect()
+    fn next_nstr(&mut self, n: usize) -> &str {
+        let start = self.indices[self.pos];
+        let end = (start + n).min(self.source.len());
+        let part = &self.source.as_bytes()[start..end];
+        unsafe { std::str::from_utf8_unchecked(part) }
     }
 
     #[rustfmt::skip]
@@ -116,7 +130,7 @@ impl Scanner {
     }
 
     fn line_ended(&mut self) -> bool {
-        let mut chars = self.source[self.index..].chars().peekable();
+        let mut chars = self.chars[self.pos..].iter().peekable();
 
         loop {
             match chars.next() {
@@ -127,7 +141,7 @@ impl Scanner {
                     Some('*') => loop {
                         match chars.next() {
                             None | Some('\n') => return true,
-                            Some('*') if chars.next_if_eq(&'/').is_some() => break,
+                            Some('*') if chars.next_if_eq(&&'/').is_some() => break,
                             _ => continue,
                         }
                     },
@@ -148,7 +162,6 @@ impl Scanner {
 
                 skipped += 1;
                 self.pos += 1;
-                self.index += 1;
                 continue;
             }
 
@@ -167,15 +180,14 @@ impl Scanner {
 
         self.semicolon = false;
         self.skip_whitespace();
-        if self.index >= self.source.len() {
+        if self.pos >= self.chars.len() {
             return Ok(None);
         }
 
         let current = self.pos;
-        let tok = self.scan_token()?;
+        let (tok, char_count) = self.scan_token()?;
         self.add_token_cross_line(&tok);
-        self.index += tok.str_len();
-        self.pos += tok.char_count();
+        self.pos += char_count;
         self.semicolon = self.try_insert_semicolon2(&tok);
         Ok(Some((current, tok)))
     }
@@ -194,17 +206,29 @@ impl Scanner {
     }
 
     /// return next Token
-    pub(crate) fn scan_token(&mut self) -> Result<Token> {
-        if let Ok(op) = Operator::from_str(&self.next_nchar(3)) {
-            return Ok(op.into());
+    pub(crate) fn scan_token(&mut self) -> Result<(Token, usize)> {
+        if let Ok(op) = Operator::from_str(self.next_nstr(3)) {
+            let char_count = op.to_str().len();
+            return Ok((op.into(), char_count));
         }
 
-        if let Some(tok) = match self.next_nchar(2).as_str() {
-            "//" => Some(Token::Comment(self.scan_line_comment())),
-            "/*" => Some(Token::Comment(self.scan_general_comment()?)),
-            two => Operator::from_str(two).ok().map(|op| op.into()),
+        if let Some(tok_cnt) = match self.next_nstr(2) {
+            "//" => {
+                let comment = self.scan_line_comment();
+                let char_count = comment.len();
+                Some((Token::Comment(comment.iter().collect()), char_count))
+            }
+            "/*" => {
+                let comment = self.scan_general_comment()?;
+                let char_count = comment.len();
+                Some((Token::Comment(comment.iter().collect()), char_count))
+            }
+            two => Operator::from_str(two).ok().map(|op| {
+                let char_count = op.to_str().len();
+                (op.into(), char_count)
+            }),
         } {
-            return Ok(tok);
+            return Ok(tok_cnt);
         }
 
         // caller make sure here is at least one character
@@ -215,64 +239,91 @@ impl Scanner {
         Ok(match next0_char {
             c if is_decimal_digit(c) => self.scan_lit_number()?,
             '.' if next1_is_digits => self.scan_lit_number()?,
-            '\'' => Token::Literal(LitKind::Char, self.scan_lit_rune()?),
-            '"' | '`' => Token::Literal(LitKind::String, self.scan_lit_string()?),
+            '\'' => {
+                let runes = self.scan_lit_rune()?;
+                let char_count = runes.len();
+                let runes = runes.iter().collect();
+
+                (Token::Literal(LitKind::Char, runes), char_count)
+            }
+            '"' | '`' => {
+                let litstr = self.scan_lit_string()?;
+                let char_count = litstr.len();
+                let litstr = litstr.iter().collect();
+                (Token::Literal(LitKind::String, litstr), char_count)
+            }
             ch if is_letter(ch) => {
                 let identifier = self.scan_identifier();
-                match Keyword::from_str(&identifier) {
+                let char_count = identifier.len();
+                let identifier = identifier.iter().collect::<String>();
+                let tok = match Keyword::from_str(identifier.as_str()) {
                     Ok(word) => Token::Keyword(word),
                     _ => Token::Literal(LitKind::Ident, identifier),
-                }
+                };
+
+                (tok, char_count)
             }
             other => match next0_char_op {
-                Some(op) => op.into(),
+                Some(op) => (op.into(), op.to_str().len()),
                 _ => return Err(self.error(format!("unresolved character {other:?}"))),
             },
         })
     }
 
     /// Scan line comment from `//` to `\n`
-    fn scan_line_comment(&mut self) -> String {
-        self.source[self.index..]
-            .chars()
-            .take_while(|&ch| ch != '\n')
-            .collect()
+    fn scan_line_comment(&mut self) -> &[char] {
+        let start = self.pos;
+        let mut end = start;
+        while let Some(ch) = self.chars.get(end) {
+            if ch == &'\n' {
+                break;
+            }
+            end += 1;
+        }
+
+        &self.chars[start..end]
     }
 
     /// Scan general comment from `/*` to `*/`
-    fn scan_general_comment(&mut self) -> Result<String> {
-        let source = &self.source[self.index..];
-        assert_eq!(&source[0..2], "/*");
+    fn scan_general_comment(&mut self) -> Result<&[char]> {
+        let chars = &self.chars;
+        assert_eq!(chars[self.pos], '/');
+        assert_eq!(chars[self.pos + 1], '*');
 
-        let mut result = String::from("/*");
-        let mut chars = source.chars().skip(2).peekable();
-        while let Some(ch) = chars.next() {
-            result.push(ch);
-            if ch == '*' && chars.peek() == Some(&'/') {
-                result.push('/');
-                break;
-            }
+        let start = self.pos;
+        let mut end = start + 2;
+        let mut happy_endding = false;
+        while end < chars.len() - 1 && !happy_endding {
+            happy_endding = chars[end] == '*' && chars[end + 1] == '/';
+            end += 1;
         }
 
-        match result.ends_with("*/") {
-            true => Ok(result),
-            false => Err(self.error("comment no termination '*/'")),
+        if happy_endding {
+            let end = (end + 1).min(chars.len());
+            return Ok(&self.chars[start..end]);
         }
+
+        Err(self.error("comment no termination '*/'"))
     }
 
     /// scan an identifier
     /// caller must ensure that the first character is a unicode letter
     /// caller should check if identify is a keyword
-    fn scan_identifier(&mut self) -> String {
-        self.source[self.index..]
-            .chars()
-            .take_while(|&ch| is_letter(ch) || is_unicode_digit(ch))
-            .collect()
+    fn scan_identifier(&mut self) -> &[char] {
+        let start = self.pos;
+        let mut end = start;
+        while let Some(&ch) = self.chars.get(end) {
+            if !is_letter(ch) && !is_unicode_digit(ch) {
+                break;
+            }
+            end += 1;
+        }
+
+        &self.chars[start..end]
     }
 
-    fn scan_rune(&mut self, index: usize) -> Result<String> {
-        let source = &self.source[index..];
-        let mut chars = source.chars();
+    fn scan_rune(&mut self, start_at: usize) -> Result<Vec<char>> {
+        let mut chars = self.chars[start_at..].iter().copied();
         let (next1, next2) = (chars.next(), chars.next());
 
         // must match a valid character
@@ -297,11 +348,11 @@ impl Scanner {
                 Some('u') => match_n(4, is_hex_digit)?,
                 Some('U') => match_n(8, is_hex_digit)?,
                 Some(ch) if is_octal_digit(ch) => match_n(2, is_octal_digit)?,
-                Some(ch) if is_escaped_char(ch) => return Ok(format!("\\{ch}")),
+                Some(ch) if is_escaped_char(ch) => return Ok(vec!['\\', ch]),
                 Some(_) => return Err(self.error("unknown escape sequence")),
                 None => return Err(self.error("literal not terminated")),
             },
-            Some(ch) if is_unicode_char(ch) => return Ok(String::from(ch)),
+            Some(ch) if is_unicode_char(ch) => return Ok(vec![ch]),
             None => return Err(self.error_at(self.pos, "literal not terminated")),
             Some(_) => return Err(self.error_at(self.pos, "unexpected character")),
         };
@@ -311,161 +362,169 @@ impl Scanner {
             'x' | 'u' | 'U' => Some((16, &es_sequence[2..])),
             _ => Some((8, &es_sequence[1..])), // here must be octal_digit
         }
-        .and_then(|(radix, sequence)| {
-            // a valid rust char must be a valid go rune
-            // hence we do not check char ranges
-            // see comment for `is_unicode_char`
-            char::from_u32(
-                u32::from_str_radix(&String::from_iter(sequence), radix)
-                    .expect("here must be a valid u32"),
-            )
-        })
-        .ok_or_else(|| self.error("invalid Unicode code point"))?;
+            .and_then(|(radix, sequence)| {
+                // a valid rust char must be a valid go rune
+                // hence we do not check char ranges
+                // see comment for `is_unicode_char`
+                char::from_u32(
+                    u32::from_str_radix(&String::from_iter(sequence), radix)
+                        .expect("here must be a valid u32"),
+                )
+            })
+            .ok_or_else(|| self.error("invalid Unicode code point"))?;
 
-        Ok(es_sequence.iter().collect())
+        Ok(es_sequence)
     }
 
-    fn scan_lit_rune(&mut self) -> Result<String> {
-        let source = &self.source[self.index..];
-        assert_eq!(&source[0..1], "'");
-        let rune = self.scan_rune(self.index + 1)?;
-        let index = self.index + 1 + rune.len();
-        match self.source.get(index..index + 1) {
-            Some("'") => Ok(format!("'{rune}'")),
+    fn scan_lit_rune(&mut self) -> Result<Vec<char>> {
+        let chars = &self.chars;
+        assert_eq!(&chars[self.pos], &'\'');
+
+        let mut rune = self.scan_rune(self.pos + 1)?;
+        match self.chars.get(self.pos + 1 + rune.len()) {
+            Some('\'') => {
+                let mut res = vec!['\''];
+                res.append(&mut rune);
+                res.push('\'');
+                Ok(res)
+            }
             Some(_) => Err(self.error_at(self.pos, "rune literal expect termination")),
             None => Err(self.error_at(self.pos, "rune literal not termination")),
         }
     }
 
-    fn scan_lit_string(&mut self) -> Result<String> {
-        let source = &self.source[self.index..];
-        let mut chars = source.chars();
-
-        let mut result = String::new();
-        let quote = chars.next().unwrap();
+    fn scan_lit_string(&mut self) -> Result<Vec<char>> {
+        let mut result = vec![];
+        let quote = self.chars[self.pos];
         result.push(quote);
 
         if quote == '`' {
-            for ch in chars.by_ref() {
+            let chars = self.chars[self.pos + 1..].iter();
+            for &ch in chars {
                 result.push(ch);
                 if ch == quote {
                     break;
                 }
             }
         } else {
-            let quote = quote.to_string();
-            let mut index = self.index + 1;
-            while chars.next().is_some() {
-                let rune = self.scan_rune(index)?;
-                index += rune.len();
-                result.push_str(&rune);
-                chars = self.source[index..].chars();
-                if rune == quote {
+            let end = self.chars.len();
+            let mut pos = self.pos + 1;
+            while pos < end {
+                let mut rune = self.scan_rune(pos)?;
+                pos += rune.len();
+                let quit = rune.len() == 1 && rune[0] == quote;
+                result.append(&mut rune);
+                if quit {
                     break;
                 }
             }
         }
 
-        let offset = self.pos + result.chars().count();
-        match result.ends_with(quote) {
-            true => Ok(result),
-            _ => Err(self.error_at(offset, "string literal not terminated")),
+        if result.len() >= 2 && result.last() == Some(&quote) {
+            return Ok(result);
+        }
+
+        let offset = self.pos + result.len();
+        Err(self.error_at(offset, "string literal not terminated"))
+    }
+
+    fn scan_digits(&mut self, skp: usize, mut result: String, valid: fn(char) -> bool) -> String {
+        let mut underline = true;
+        for &ch in &self.chars[self.pos + skp..] {
+            if (ch == '_' && !underline) || (ch != '_' && !valid(ch)) {
+                break;
+            }
+            result.push(ch);
+            underline = ch != '_';
+        }
+
+        result
+    }
+
+    fn scan_digits2(&mut self, skp: usize, result: &mut String, valid: fn(char) -> bool) {
+        let mut underline = true;
+        for &ch in &self.chars[self.pos + skp..] {
+            if (ch == '_' && !underline) || (ch != '_' && !valid(ch)) {
+                break;
+            }
+            result.push(ch);
+            underline = ch != '_';
         }
     }
 
-    fn scan_digits(&mut self, n: usize, valid: fn(char) -> bool) -> String {
-        self.source[self.index + n..]
-            .chars()
-            .scan(true, |state, item| {
-                (item != '_' || *state).then(|| {
-                    *state = item != '_';
-                    item
-                })
-            })
-            .take_while(|&ch| ch == '_' || valid(ch))
-            .collect()
-    }
-
-    fn scan_lit_number(&mut self) -> Result<Token> {
-        let chars = self.source[self.index..].chars();
-        let next2 = chars.take(2).collect::<String>();
-
+    fn scan_lit_number(&mut self) -> Result<(Token, usize)> {
         // integer part
-        let (radix, int_part) = self
-            .next_char(0)
-            .and_then(|ch| match ch {
-                '.' => None,
-                _ => Some(match next2.as_str() {
-                    "0b" | "oB" => (2, next2 + &self.scan_digits(2, is_binary_digit)),
-                    "0o" | "0O" => (8, next2 + &self.scan_digits(2, is_decimal_digit)),
-                    "0x" | "0X" => (16, next2 + &self.scan_digits(2, is_hex_digit)),
-                    _ => (10, self.scan_digits(0, is_decimal_digit)),
-                }),
-            })
-            .unwrap_or((10, String::new()));
+        let (radix, mut numlit) = match self.next_char(0) {
+            Some('.') | None => (10, String::new()),
+            Some(_) => {
+                let next2 = String::from(self.next_nstr(2));
+                match next2.as_str() {
+                    "0b" | "oB" => (2, self.scan_digits(2, next2, is_binary_digit)),
+                    "0o" | "0O" => (8, self.scan_digits(2, next2, is_decimal_digit)),
+                    "0x" | "0X" => (16, self.scan_digits(2, next2, is_hex_digit)),
+                    _ => (10, self.scan_digits(0, String::new(), is_decimal_digit)),
+                }
+            }
+        };
 
-        if int_part.ends_with('_') {
+        if numlit.ends_with('_') {
             return Err(self.error_at(
-                self.pos + int_part.len(),
+                self.pos + numlit.len(),
                 "'_' must separate successive digits",
             ));
         }
 
-        let skipped = int_part.len();
-        let fac_part = (self.next_char(skipped) == Some('.'))
-            .then(|| match radix {
-                2 | 8 => Err(self.error_at(self.pos + skipped, "invalid radix point")),
-                16 => Ok(".".to_owned() + &self.scan_digits(skipped + 1, is_hex_digit)),
-                _ => Ok(".".to_owned() + &self.scan_digits(skipped + 1, is_decimal_digit)),
-            })
-            .unwrap_or(Ok(String::new()))?;
-
-        if fac_part.starts_with("._") || fac_part.ends_with('_') {
-            return Err(self.error_at(self.pos + skipped, "'_' must separate successive digits"));
+        let fac_start = numlit.len();
+        if let Some('.') = self.next_char(fac_start) {
+            numlit.push('.');
+            match radix {
+                2 | 8 => return Err(self.error_at(self.pos + fac_start, "invalid radix point")),
+                16 => self.scan_digits2(fac_start + 1, &mut numlit, is_hex_digit),
+                _ => self.scan_digits2(fac_start + 1, &mut numlit, is_decimal_digit),
+            };
         }
 
-        let next1 = self.next_char(skipped);
-        let skipped = int_part.len() + fac_part.len();
-        if int_part.len() + fac_part.len() == 0 {
+        let fac_part = &numlit[fac_start..];
+        if fac_part.starts_with("._") || (fac_part.ends_with('_')) {
+            return Err(self.error_at(self.pos + fac_start, "'_' must separate successive digits"));
+        }
+
+        let skipped = numlit.len();
+        let int_part = &numlit[..fac_start];
+        let next1 = self.next_char(fac_start);
+        if numlit.is_empty() {
             return Err(self.error_at(self.pos + skipped, "invalid radix point"));
         } else if radix == 16 && (int_part.len() == 2) && (fac_part.len() == 1) {
             return Err(self.error_at(self.pos + skipped, "mantissa has no digits"));
-        } else if matches!(next1, Some('e' | 'E')) && radix != 10 {
+        } else if radix != 10 && matches!(next1, Some('e' | 'E')) {
             return Err(self.error_at(self.pos + skipped, "E exponent requires decimal mantissa"));
-        } else if matches!(next1, Some('p' | 'P')) && radix != 16 {
+        } else if radix != 16 && matches!(next1, Some('p' | 'P')) {
             return Err(self.error_at(
                 self.pos + skipped,
                 "P exponent requires hexadecimal mantissa",
             ));
         };
 
-        let mut skipped = int_part.len() + fac_part.len();
-        let exp_part = self
-            .next_char(skipped)
-            .and_then(|exp| {
-                matches!(exp, 'e' | 'E' | 'p' | 'P').then(|| {
-                    let mut skipped = skipped;
-                    (match self.next_char(skipped + 1) {
-                        Some(signed @ ('+' | '-')) => {
-                            skipped += 2;
-                            format!("{exp}{signed}")
-                        }
-                        _ => {
-                            skipped += 1;
-                            format!("{exp}")
-                        }
-                    }) + &self.scan_digits(
-                        skipped,
-                        if radix == 16 {
-                            is_hex_digit
-                        } else {
-                            is_decimal_digit
-                        },
-                    )
-                })
-            })
-            .unwrap_or_default();
+        let exp_start = numlit.len();
+        if let Some(exp @ ('e' | 'E' | 'p' | 'P')) = self.next_char(skipped) {
+            numlit.push(exp);
+            if let Some(signed @ ('+' | '-')) = self.next_char(skipped + 1) {
+                numlit.push(signed);
+            }
 
+            self.scan_digits2(
+                numlit.len(),
+                &mut numlit,
+                if radix == 16 {
+                    is_hex_digit
+                } else {
+                    is_decimal_digit
+                },
+            )
+        }
+
+        let exp_part = &numlit[exp_start..];
+        let fac_part = &numlit[fac_start..];
         if radix == 16 && !fac_part.is_empty() && exp_part.is_empty() {
             return Err(self.error_at(
                 self.pos + skipped + exp_part.len(),
@@ -474,10 +533,11 @@ impl Scanner {
         }
 
         if exp_part
-            .chars()
+            .as_bytes()
+            .iter()
             .skip(1) // skip e|E|p|P
-            .find(|&ch| ch != '+' && ch != '-')
-            == Some('_')
+            .find(|&&ch| ch != b'+' && ch != b'-')
+            == Some(&b'_')
             || exp_part.ends_with('_')
         {
             return Err(self.error_at(
@@ -486,14 +546,13 @@ impl Scanner {
             ));
         }
 
-        skipped += exp_part.len();
-        let num_part = [int_part, fac_part, exp_part].concat();
-        if self.next_char(skipped) == Some('i') {
-            Ok(Token::Literal(LitKind::Imag, num_part + "i"))
-        } else if num_part.find('.').is_some() {
-            Ok(Token::Literal(LitKind::Float, num_part))
+        let char_count = numlit.len();
+        if self.next_char(char_count) == Some('i') {
+            Ok((Token::Literal(LitKind::Imag, numlit + "i"), char_count + 1))
+        } else if numlit.find('.').is_some() {
+            Ok((Token::Literal(LitKind::Float, numlit), char_count))
         } else {
-            Ok(Token::Literal(LitKind::Integer, num_part))
+            Ok((Token::Literal(LitKind::Integer, numlit), char_count))
         }
     }
 }
@@ -599,8 +658,8 @@ mod tests {
     fn scan_lit_number() {
         let numeric = |s: &str| {
             let mut sc = Scanner::from(s);
-            let n = sc.scan_lit_number()?;
-            if n.str_len() != s.len() {
+            let (n, size) = sc.scan_lit_number()?;
+            if size != s.len() {
                 return Err(sc.error("scan not finished"));
             }
             Ok(n)
@@ -670,6 +729,7 @@ mod tests {
     #[test]
     fn scan_lit_rune() {
         let rune = |s| Scanner::from(s).scan_lit_rune();
+        assert!(rune(r#"''"#).is_err());
         assert!(rune(r#"'a'"#).is_ok());
         assert!(rune(r#"'ä'"#).is_ok());
         assert!(rune(r#"'本'"#).is_ok());
@@ -694,6 +754,8 @@ mod tests {
     fn scan_lit_string() {
         let lit_str = |s| Scanner::from(s).scan_lit_string();
 
+        assert!(lit_str("``").is_ok());
+        assert!(lit_str(r#""""#).is_ok());
         assert!(lit_str("`abc`").is_ok());
         assert!(lit_str(r#""\n""#).is_ok());
         assert!(lit_str(r#""\"""#).is_ok());
@@ -728,6 +790,10 @@ mod tests {
             Ok(Some((_, Token::Comment(comment)))) => comment == "/*注释*/",
             _ => false,
         });
+
+        assert!(Scanner::from("/* */").scan_general_comment().is_ok());
+        assert!(Scanner::from("/*").scan_general_comment().is_err());
+        assert!(Scanner::from("/*/").scan_general_comment().is_err());
     }
 
     #[test]

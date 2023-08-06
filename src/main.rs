@@ -1,22 +1,36 @@
+use std::time::Instant;
 use parser::Parser;
 use vm::{Opts, VM};
 
 fn main() {
-    let parser = Parser::from(
+    let mut parser = Parser::from(
         r#"
         package main
-        
-        func main() {
-            println("hello world")
-        }
+
+       var b = true;
     "#,
     );
+
+    /*
+    package main
+
+        func main() {
+            a := 0
+            for i:=0;i<1000;i++ {
+                a += i
+            }
+        }
+     */
 
     let opts = Opts {
         gogc: 100.0,
         min_gc: 1024 * 1024,
     };
 
-    let mut vm = VM::new(opts, parser);
-    vm.run();
+    println!("{:#?}", parser.parse_file().unwrap());
+    // let mut vm = VM::new(opts, parser);
+    //  let i = Instant::now();
+    // vm.run();
+    // println!("{:#?}", vm);
+    // println!("{:#?}", i.elapsed());
 }

@@ -12,3 +12,8 @@ members = [
 [dependencies]
 vm = { path = "./vm" }
 parser = { path = "./parser" }
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
