@@ -1,240 +1,590 @@
 mod nodes;
 mod symbols;
-mod compiler;
+pub mod compiler;
+mod vm1;
+mod builtin;
 
-use ahash::AHashMap;
+use std::cmp::Ordering;
 use std::default::Default;
-use std::fmt::{Debug, Formatter, write};
+use std::fmt::{Debug, Display};
 use std::ops::{Add, Sub};
-use crate::nodes::Node;
 use broom::prelude::{Trace, Tracer};
+use crate::compiler::{Bytecode, OpCode};
+
+#[cfg(feature = "debug")]
+use std::io::Write;
 use broom::{Handle, Heap, Rooted};
-use parser::ast::{Call, Declaration, DeclStmt, Expression, FuncDecl, Operation, Statement, Ident};
-use parser::Parser;
-use parser::token::{LitKind, Operator};
 
+#[cfg(feature = "debug")]
+use crate::compiler::bytecode_to_human;
 
-#[derive(Default)]
-pub struct VM {
-    opts: Opts,
-    stats: Stats,
-    parser: Parser,
-    heap: Heap<Object>,
-    stack: Vec<Object>,
-    last_gc_round_mem: usize,
-    fns: AHashMap<String, FuncDef>,
-    env: AHashMap<String, Object>
+#[derive(Copy, Clone, Debug)]
+struct Frame {
+    /// Index of the current instruction
+    ip: usize,
+
+    /// Pointer to the index of the stack before function call started
+    /// This is where the VM returns its stack to after the function returns
+    base_pointer: u16,
 }
 
-impl Debug for VM {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#?}", &self.fns)
-
+impl Frame {
+    #[inline(always)]
+    fn new(ip: usize, base_pointer: u16) -> Self {
+        Frame { ip, base_pointer }
     }
 }
 
-#[derive(Clone, Debug)]
-struct FuncDef {
-    f: FuncDecl,
-    env: AHashMap<String, Object>
+pub struct VM {
+    stack: Vec<Object>,
+    globals: Vec<Object>,
+    frames: Vec<Frame>,
+    instructions: Vec<u8>,
+    ip: usize,
+    bp: u16,
 }
 
 impl VM {
-    pub fn new(opts: Opts, parser: Parser) -> Self {
+    // #[inline]
+    // fn cur_mem(&self) -> usize {
+    //     self.heap.len()
+    // }
+    //
+    // #[inline]
+    // fn prev_mem(&self) -> usize {
+    //     self.last_gc_round_mem
+    // }
+    //
+    // #[inline]
+    // fn run_gc(&mut self) {
+    //     let percent = (self.opts.gogc * self.prev_mem() as f64) / 100.0;
+    //     let target = percent as usize + self.prev_mem();
+    //
+    //     if self.opts.min_gc < target && self.cur_mem() >= target {
+    //         dbg!(
+    //             "running GC: current memory: {} target memory: {}",
+    //             self.cur_mem(),
+    //             target
+    //         );
+    //         self.heap.clean();
+    //     }
+    // }
+
+    /// Creates a new VM with an empty stack and callframes vector
+    pub fn new() -> Self {
+        let mut frames = Vec::with_capacity(32);
+        frames.push(Frame::new(0, 0));
+
         Self {
-            opts,
-            parser,
-            ..Default::default()
+            stack: Vec::with_capacity(32),
+            globals: Vec::with_capacity(8),
+            frames,
+            instructions: Vec::new(),
+            ip: 0,
+            bp: 0,
         }
     }
 
-    pub fn run_func(&mut self, name: &str) {
-        //let f = self.fns.get(name).unwrap().clone();
-        self.eval_call_expr(Call{
-            pos: (0, 0),
-            args: vec![],
-            func: Box::new(Expression::Ident(Ident{ pos: 0, name: name.to_string() })),
-            dots: None,
-        });
+    /// Get a local variable (stored on the stack)
+    /// The passed index is the relative position to the base pointer of the current callframe
+    /// Performance: Skipping the bounds check here does not yield any significant performance improvement
+    #[inline(always)]
+    fn get_local(&self, rel_idx: u16) -> Object {
+        self.stack[self.bp as usize + rel_idx as usize].clone()
     }
 
-    pub fn run(&mut self) {
-        let ast = self.parser.parse_file().unwrap();
-        for decl in ast.decl {
-            //println!("{:#?}", decl);
-            self.eval(Node::Decl(decl));
-        }
+    /// Store a local variable (on the stack)
+    /// The passed index is the relative position to the base pointer of the current callframe
+    #[inline(always)]
+    fn set_local(&mut self, rel_idx: u16, value: Object) {
+        self.stack[self.bp as usize + rel_idx as usize] = value;
     }
 
-    fn eval(&mut self, node: Node) {
-        self.run_gc();
-        match node {
-            Node::Expr(expr) => {
-                self.eval_expr(expr);
-            },
-            Node::Statement(stmt) => {
-                //self.eval_stmt(&mut self.env, stmt);
-            },
-            Node::Decl(declr) => {
-                match declr {
-                    Declaration::Function(fndeclr) => {
-                        self.fns.insert(fndeclr.name.name.clone(), FuncDef{ f: fndeclr, env: AHashMap::with_capacity(10) });
-                    }
-                    _ => {
-                        //println!("unimplemented: {:#?}", node);
-                    }
-                }
-                //
-            }
-            _ => {}
-        }
+    /// Reads a u16 value from the current position in the instructions array
+    #[inline(always)]
+    fn read_u8(&mut self) -> u8 {
+        let v = *self.instructions.get(self.ip).expect("read_u8");
+        self.ip += 1;
+        v
     }
 
-    fn eval_expr(&mut self, expr: Expression) -> Option<Object> {
-        match expr {
-            Expression::Call(call) => {
-                self.eval_call_expr(call)
-            }
-            Expression::BasicLit(bl) => {
-                match bl.kind {
-                    LitKind::Integer => {
-                        let i: i64 = bl.value.parse().unwrap();
-                        return Some(Object::Int64(i))
-                    }
-                    _ => {
-                        unimplemented!()
-                    }
-                }
-                //
-            }
-            Expression::Operation(op) => {
-                self.eval_op(op);
-            }
-            _ => {}
-        }
-        None
+    /// Reads a u16 value from the current position in the instructions array
+    #[inline(always)]
+    fn read_u16(&mut self) -> u16 {
+        let start = self.ip;
+        self.ip += 2;
+        let bytes = self.instructions.get(start..self.ip).expect("read_u16");
+        bytes[0] as u16 | (bytes[1] as u16) << 8
     }
 
-    fn eval_op(&mut self, op: Operation) -> Option<Object> {
-        let left = self.eval_expr(*op.x).unwrap();
-        let right = op.y.map(|a|self.eval_expr(*a).unwrap());
-
-        match op.op {
-            Operator::Add => {
-                return Some(left + right.unwrap());
-            }
-            Operator::Sub => {
-                return Some(left - right.unwrap());
-            }
-            _ => {
-                unimplemented!()
-            }
-        }
-
-        None
+    /// Sets the instruction pointer to the given value
+    #[inline(always)]
+    fn jump(&mut self, ip: u16) {
+        self.ip = ip as usize;
     }
 
-    fn eval_call_expr(&mut self, call: Call) {
-        let Call{pos, args, func,
-            dots} = call;
-
-        match *func {
-            Expression::Ident(func_name) => {
-                let fn_declr = match self.fns.get(&func_name.name).cloned() {
-                    Some(s) => s,
-                    None => return,
-                };
-
-                let mut arg_vals = Vec::with_capacity(args.len() * 2);
-                for arg in args {
-                    let a = self.eval_expr(arg);
-                    arg_vals.extend(a);
-                }
-
-                let body = fn_declr.f.body.as_ref().unwrap();
-                //let mut env = AHashMap::with_capacity(body.list.len());
-                // for stmt in body.list {
-                //     self.eval_stmt(&mut env, stmt);
-                // }
-            }
-            _ => todo!(),
-        }
+    /// Reads the next OpCode from the instructions vector
+    /// This function still accounts for 25-35% of runtime right now...
+    #[inline(always)]
+    fn next(&mut self) -> OpCode {
+        let byte = *self.instructions.get(self.ip).expect("next");
+        self.ip += 1;
+        OpCode::from(byte)
     }
 
-    // fn eval_func_declr(&self, func: &FuncDecl) {
-    //     let body = func.body.as_ref().unwrap();
-    //     for stmt in &body.list {
-    //         self.eval_stmt(stmt);
-    //     }
-    // }
-
-    // fn eval_call_exp(call_exp: CallExpression, env: &mut Env) -> Box<dyn Object> {
-    //     let func = eval(call_exp.func.to_node(), env);
-    //     if func.is_error() {
-    //         return func;
-    //     }
-    //
-    //     let args = eval_exprs(call_exp.args, env);
-    //     if let Some(arg) = args.get(0) {
-    //         if arg.is_error() {
-    //             return arg.clone_obj();
-    //         }
-    //     }
-    //
-    //     let ins = func.inspect();
-    //     if let Type::Builtin(function) = func.get_type() {
-    //         return function(args, call_exp.token.line);
-    //     }
-    //     new_error(format!("not a function: {}", ins), call_exp.token.line)
-    // }
-
-    fn eval_stmt(&self, env: &mut AHashMap<String, Object>,  stmt: Statement) {
-        match stmt {
-            Statement::Declaration(declr) => match declr {
-                DeclStmt::Const(cnst) => {
-                    //println!("const declaration: {:#?}", cnst);
-                }
-                DeclStmt::Variable(var) => {
-                    for spec in &var.specs {
-                        //spec.typ
-                    }
-                    //println!("const declaration: {:#?}", cnst);
-                }
-                _ => {
-                    //println!("unimplemented: {:#?}", declr);
-                }
-            },
-            _ => {
-                //println!("unimplemented: {:#?}", stmt);
-            }
-        }
+    /// Pop an object off the stack
+    /// This is like `Vec::pop`, but without checking if it's empty first.
+    /// Performance: -25% over a regular call to `Vec::pop()`
+    #[inline(always)]
+    fn pop(&mut self) -> Object {
+        debug_assert!(!self.stack.is_empty());
+        self.stack.pop().expect("pop")
     }
 
-    #[inline]
-    fn cur_mem(&self) -> usize {
-        self.heap.len()
+    /// Push a new object on the stack
+    #[inline(always)]
+    fn push(&mut self, obj: Object) {
+        self.stack.push(obj)
     }
 
-    #[inline]
-    fn prev_mem(&self) -> usize {
-        self.last_gc_round_mem
+    /// Pop a callframe and return IP to the IP of the last callframe
+    /// This also truncates the stack back to SP from when this frame was pushed
+    #[inline(always)]
+    fn popframe(&mut self) {
+        // pop frame and return stack to frame's base pointer
+        let frame = self.frames.pop().unwrap();
+        self.stack.truncate(frame.base_pointer as usize);
+
+        // copy base pointer and instruction pointer out of new current frame
+        // this yields an enormous performance improvement
+        let frame = self.frames.last().unwrap();
+        self.ip = frame.ip;
+        self.bp = frame.base_pointer;
     }
 
-    #[inline]
-    fn run_gc(&mut self) {
-        let percent = (self.opts.gogc * self.prev_mem() as f64) / 100.0;
-        let target = percent as usize + self.prev_mem();
+    /// Push new callframe with the given IP and Base Pointer
+    #[inline(always)]
+    fn pushframe(&mut self, ip: u32, base_pointer: u16) {
+        // store current IP into the frame that we're leaving
+        // so we can return to it later
+        let frame = self.frames.last_mut().unwrap();
+        frame.ip = self.ip;
 
-        if self.opts.min_gc < target && self.cur_mem() >= target {
-            dbg!(
-                "running GC: current memory: {} target memory: {}",
-                self.cur_mem(),
-                target
+        // push new frame and copy over IP and BP
+        // this somehow yields an enormous performance improvent
+        self.frames.push(Frame::new(ip as usize, base_pointer));
+        self.ip = ip as usize;
+        self.bp = base_pointer;
+    }
+
+    /// Executes the given Bytecode inside the context of this VM
+    pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
+        #[cfg(feature = "debug")]
+        {
+            println!("Bytecode (raw)= \n{:?}", &code.instructions);
+            print!(
+                "Bytecode (human)= {}\n",
+                bytecode_to_human(&code.instructions, true)
             );
-            self.heap.clean();
+            println!("{:16}= {:?}", "Constants", code.constants);
+            println!("{:16}= {:?}", "Frames", self.frames);
+        }
+
+        // reset some state
+        self.instructions = code.instructions;
+        self.ip = 0;
+        self.bp = 0;
+        self.frames[0].ip = 0;
+        self.frames[0].base_pointer = 0;
+
+        // Keep your friends close
+        let constants = code.constants;
+        let mut final_result = Object::Nil;
+
+        // Construct a new garbage collector
+        // And allow to manage memory for constants
+        let mut gc = Heap::new();
+        // let gc = &mut GC::new();
+        // for c in &constants {
+        //     gc.maybe_trace(*c)
+        // }
+
+        macro_rules! impl_binary_op_method {
+            ($op:tt) => {{
+                let right = self.pop();
+                let left = self.pop();
+                let result = Object::$op(left.clone(), right.clone(), &mut gc)?;
+                self.push(result);
+            }};
+        }
+
+        macro_rules! impl_binary_const_local_op_method {
+            ($op:tt) => {{
+                let local_idx = self.read_u16();
+                let left = self.get_local(local_idx);
+                let constant_idx = self.read_u16();
+                let right = constants[constant_idx as usize].clone();
+                let result = Object::$op(left, right, &mut gc)?;
+                self.push(result);
+            }};
+        }
+
+        #[cfg(feature = "debug")]
+            let mut debug_pause = 0;
+
+        #[cfg(feature = "debug")]
+            // Buffer used to capture input from stdin during stepped debugging
+            let mut buffer = String::new();
+
+        loop {
+            #[cfg(feature = "debug")]
+            {
+                println!(
+                    "{:16}= {}/{}: {}",
+                    "Instruction",
+                    self.ip,
+                    self.instructions.len() - 1,
+                    // This prints the OpCode along with all of its operand values (in decimal form)
+                    bytecode_to_human(&self.instructions[self.ip..], false)
+                        .split(" ")
+                        .next()
+                        .unwrap()
+                );
+                print!("{:16}= [", "Globals");
+                for (i, v) in self.globals.iter().enumerate() {
+                    print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
+                }
+                println!("]");
+                print!("{:16}= [", "Stack");
+                for (i, v) in self.stack.iter().enumerate() {
+                    print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
+                }
+                println!("]");
+
+                if debug_pause == 0 {
+                    print!("{} ", ">".repeat(40));
+                    std::io::stdout().flush().unwrap();
+                    buffer.clear();
+                    std::io::stdin().read_line(&mut buffer).unwrap();
+                    debug_pause = buffer.trim().parse().unwrap_or(1) - 1;
+                } else {
+                    println!("{} ", ">".repeat(40));
+                    debug_pause -= 1;
+                }
+            }
+
+            match self.next() {
+                OpCode::Const => {
+                    let idx = self.read_u16();
+                    let value = constants[idx as usize].clone();
+                    self.push(value);
+                }
+                OpCode::SetGlobal => {
+                    let idx = self.read_u16() as usize;
+                    let value = self.pop();
+                    while self.globals.len() <= idx {
+                        self.globals.push(Object::Nil);
+                    }
+                    self.globals[idx] = value;
+                }
+                OpCode::GetGlobal => {
+                    let idx = self.read_u16();
+                    let value = self.globals[idx as usize].clone();
+                    self.push(value);
+                }
+                OpCode::SetLocal => {
+                    let idx = self.read_u16();
+                    let value = self.pop();
+                    self.set_local(idx, value);
+                }
+                OpCode::GetLocal => {
+                    let idx = self.read_u16();
+                    let value = self.get_local(idx);
+                    self.push(value);
+                }
+                // TODO: Make JUMP* opcodes relative?
+                OpCode::Jump => {
+                    let pos = self.read_u16();
+                    self.jump(pos);
+
+                    // collect garbage on every jump instruction
+                    // gc.run(&[&self.stack, &constants, &self.globals, &[final_result]]);
+                }
+                OpCode::JumpIfFalse => 'jumpIfFalse: {
+                    let condition = self.pop();
+                    if let Object::Bool(b) = condition {
+                        let pos = self.read_u16();
+                        if !b {
+                            self.jump(pos);
+                            break 'jumpIfFalse;
+                        }
+                    }
+                    return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition)));
+                }
+                OpCode::Pop => {
+                    final_result = self.pop();
+                }
+                OpCode::Null => {
+                    self.push(Object::Nil);
+                }
+                OpCode::True => {
+                    self.push(Object::Bool(true));
+                }
+                OpCode::False => {
+                    self.push(Object::Bool(false));
+                }
+                OpCode::Add => impl_binary_op_method!(add),
+                OpCode::Subtract => impl_binary_op_method!(sub),
+                //OpCode::Divide => impl_binary_op_method!(div),
+                //OpCode::Multiply => impl_binary_op_method!(mul),
+                OpCode::Gt => impl_binary_op_method!(gt),
+                OpCode::Gte => impl_binary_op_method!(gte),
+                OpCode::Lt => impl_binary_op_method!(lt),
+                OpCode::Lte => impl_binary_op_method!(lte),
+                OpCode::Eq => impl_binary_op_method!(eq),
+                OpCode::Neq => impl_binary_op_method!(neq),
+                //OpCode::Modulo => impl_binary_op_method!(rem),
+                //OpCode::And => impl_binary_op_method!(and),
+                //OpCode::Or => impl_binary_op_method!(or),
+                OpCode::Not => 'not: {
+                    let left = self.pop();
+
+                    if let Object::Bool(b) = left {
+                        let result = Object::Bool(!b);
+                        self.push(result);
+                        break 'not;
+                    }
+                    return Err(Error::TypeError(format!(
+                        "expected a boolean got: {:#?}",
+                        left
+                    )));
+                }
+                OpCode::Negate => {
+                    let left = self.pop();
+                    let result = match left {
+                        Object::Float64(f) => Object::Float64(-f),
+                        Object::Int64(i) => Object::Int64(-i),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "expected float or int, got: {:#?}",
+                                left
+                            )))
+                        }
+                    };
+                    self.push(result);
+                }
+                OpCode::Call => 'call: {
+                    let num_args = self.read_u8();
+                    let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
+                    let obj = self.pop();
+
+                    if let Object::Fn {ip, num_locals} = obj {
+                        // Make room on the stack for any local variables defined inside this function
+                        for _ in 0..num_locals as u32 - num_args as u32 {
+                            self.push(Object::Nil);
+                        }
+
+                        self.pushframe(ip, base_pointer);
+                        break 'call;
+                    }
+                    return Err(Error::TypeError(format!(
+                        "expected a function, got: {:#?}",
+                        obj
+                    )));
+                }
+                OpCode::CallBuiltin => {
+                    let builtin_byte = self.read_u8();
+                    let num_args = self.read_u8() as usize;
+                    let mut args = Vec::with_capacity(num_args);
+                    for _ in 0..num_args {
+                        args.push(self.pop());
+                    }
+                    args.reverse();
+                    let builtin_func: builtin::Builtin = builtin_byte.into();
+                    let result = builtin::call(builtin_func, &args, &mut gc)?;
+                    self.push(result);
+                }
+                OpCode::ReturnValue => {
+                    let result = self.pop();
+                    self.popframe();
+                    self.push(result);
+                }
+                OpCode::Return => {
+                    self.popframe();
+                    self.push(Object::Nil);
+                }
+                OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
+                // OpCode::GtLocalConst => {
+                //     let local_idx = self.read_u16();
+                //     let left = self.get_local(local_idx);
+                //     let constant_idx = self.read_u16();
+                //     let right = &constants[constant_idx as usize];
+                //     let result = Object::gt(left, right, &mut gc)?;
+                //     self.push(result);
+                // }
+                OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
+                OpCode::LtLocalConst => impl_binary_const_local_op_method!(lt),
+                OpCode::LteLocalConst => impl_binary_const_local_op_method!(lte),
+                OpCode::EqLocalConst => impl_binary_const_local_op_method!(eq),
+                OpCode::NeqLocalConst => impl_binary_const_local_op_method!(neq),
+                OpCode::AddLocalConst => impl_binary_const_local_op_method!(add),
+                OpCode::SubtractLocalConst => impl_binary_const_local_op_method!(sub),
+                //OpCode::MultiplyLocalConst => impl_binary_const_local_op_method!(mul),
+                //OpCode::DivideLocalConst => impl_binary_const_local_op_method!(div),
+                //OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
+                OpCode::Array => {
+                    //todo
+                    let length = self.read_u16();
+                    let mut vec = Vec::with_capacity(length as usize);
+                    for _ in 0..length {
+                        vec.push(self.pop());
+                    }
+                    vec.reverse();
+                    // TODO: Re-use vector allocation here
+                    //self.push(Object::List(vec));
+                }
+                OpCode::IndexGet => {
+                    let index = self.pop();
+                    let left = self.pop();
+                    // let result = index_get(left, index, gc)?;
+                    // self.push(result);
+                }
+                OpCode::IndexSet => {
+                    let value = self.pop();
+                    let index = self.pop();
+                    let left = self.pop();
+                    // let value = index_set(left, index, value)?;
+                    // self.push(value);
+                }
+                OpCode::Halt => {
+                    return Ok(final_result);
+                }
+                _ => unimplemented!()
+            }
         }
     }
 }
+
+// fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
+//     if index.tag() != Type::Int {
+//         return Err(Error::TypeError(format!(
+//             "lijst index moet een integer zijn, geen {}",
+//             index.tag()
+//         )));
+//     }
+//
+//     let result = match left.tag() {
+//         Type::Array => index_get_array(left, index.as_int()),
+//         Type::String => index_get_string(left, index.as_int(), gc),
+//         _ => {
+//             return Err(Error::TypeError(format!(
+//                 "kan niet indexeren in objecten van type {}",
+//                 left.tag()
+//             )))
+//         }
+//     }?;
+//
+//     Ok(result)
+// }
+
+// fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
+//     let array = obj.as_vec();
+//     if index < 0 {
+//         index += array.len() as isize;
+//     }
+//     let index = index as usize;
+//     if index >= array.len() {
+//         return Err(Error::IndexError(
+//             "lijst index valt buiten de lijst".to_string(),
+//         ));
+//     }
+//
+//     Ok(array[index])
+// }
+
+// fn index_get_string(obj: Object, mut index: isize, gc: &mut GC) -> Result<Object, Error> {
+//     let str = obj.as_str();
+//     if index < 0 {
+//         index += str.chars().count() as isize;
+//     }
+//     let index = index as usize;
+//     if index >= str.len() {
+//         return Err(Error::IndexError(
+//             "lijst index valt buiten de lijst".to_string(),
+//         ));
+//     }
+//
+//     let ch = str.chars().nth(index).unwrap();
+//     let result = Object::string(ch.to_string(), gc);
+//     Ok(result)
+// }
+
+// fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
+//     if index.tag() != Type::Int {
+//         return Err(Error::TypeError(format!(
+//             "lijst index moet een integer zijn, geen {}",
+//             index.tag()
+//         )));
+//     }
+//     match left.tag() {
+//         Type::Array => index_set_array(left.as_vec_mut(), index.as_int(), value)?,
+//         Type::String => index_set_string(left.as_string_mut(), index.as_int(), value)?,
+//         _ => {
+//             return Err(Error::TypeError(format!(
+//                 "kan niet indexeren in objecten van type {}",
+//                 left.tag()
+//             )))
+//         }
+//     }
+//
+//     Ok(value)
+// }
+
+// fn index_set_array(array: &mut Vec<Object>, mut index: isize, value: Object) -> Result<(), Error> {
+//     if index < 0 {
+//         index += array.len() as isize;
+//     }
+//     let index = index as usize;
+//     if index >= array.len() {
+//         return Err(Error::IndexError(
+//             "lijst index valt buiten de lijst".to_string(),
+//         ));
+//     }
+//     array[index] = value;
+//     Ok(())
+// }
+//
+// fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Result<(), Error> {
+//     let strlen = string.chars().count();
+//     if index < 0 {
+//         index += strlen as isize;
+//     }
+//     let index = index as usize;
+//     if index >= strlen {
+//         return Err(Error::IndexError(
+//             "lijst index valt buiten de lijst".to_string(),
+//         ));
+//     }
+//
+//     if value.tag() != Type::String {
+//         return Err(Error::TypeError(
+//             "kan geen niet-string invoegen op string object".to_string(),
+//         ));
+//     }
+//
+//     string.replace_range(
+//         string
+//             .char_indices()
+//             .nth(index)
+//             .map(|(pos, ch)| (pos..pos + ch.len_utf8()))
+//             .unwrap(),
+//         value.as_str(),
+//     );
+//
+//     Ok(())
+// }
+
+
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -251,10 +601,32 @@ pub enum Object {
     Int64(i64),
     Float64(f64),
     String(String),
+    Bool(bool),
     List(Vec<Handle<Self>>),
     Box(Rooted<Self>),
     Fn{ip: u32, num_locals: u16},
     Nil,
+}
+
+
+impl Object {
+    pub fn type_string(&self) -> Self {
+        let t = match self {
+            Self::String(_) => "string",
+            Self::Int64(_) => "int",
+            _ => unimplemented!()
+        };
+
+        Self::String(t.to_string())
+    }
+
+    pub fn to_string_object(&self) -> Result<Self, Error> {
+        let s = match self {
+            Self::Int64(i) => i.to_string(),
+            _ => unimplemented!()
+        };
+        Ok(Self::String(s))
+    }
 }
 
 impl Add for Object {
@@ -283,6 +655,26 @@ impl Sub for Object {
     }
 }
 
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int64(a), Self::Int64(b)) => a.eq(b),
+            (Self::Bool(a), Self::Bool(b)) => a.eq(b),
+            _=> unimplemented!()
+        }
+    }
+}
+
+impl PartialOrd for Object {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Self::Int64(a), Self::Int64(b)) => a.partial_cmp(b),
+            (Self::Bool(a), Self::Bool(b)) => a.partial_cmp(b),
+            _=> unimplemented!()
+        }
+    }
+}
+
 impl Trace<Self> for Object {
     fn trace(&self, tracer: &mut Tracer<Self>) {
         match self {
@@ -291,10 +683,61 @@ impl Trace<Self> for Object {
             Self::List(objects) => objects.trace(tracer),
             Self::Box(root) => root.trace(tracer),
             Self::String(_) => {}
+            Self::Bool(_) => {}
             Self::Fn{ .. } => {}
             Self::Nil => {}
         }
     }
+}
+
+macro_rules! impl_arith {
+    ($func_name:ident, $op:tt) => {
+        #[inline(always)]
+        pub fn $func_name(self, rhs: Self, gc: &mut Heap<Object>) -> Result<Object, Error> {
+            Ok(self $op rhs)
+        }
+    };
+}
+
+macro_rules! impl_logical {
+    ($func_name:ident, $op:tt) => {
+        #[inline(always)]
+        pub fn $func_name(self, rhs: Self, _gc: &mut Heap<Object>) -> Result<Object, Error> {
+            let result = match (self, rhs) {
+                (Object::Bool(a), Object::Bool(b)) => Object::Bool(a $op b),
+                _ => return Err(Error::TypeError(format!("for operation {#:?} invalid types {:#?} and {:#?}", stringify!($op), self, rhs)))
+            };
+            Ok(result)
+        }
+    };
+}
+
+macro_rules! impl_cmp {
+    ($func_name:ident, $op:tt) => {
+        #[inline(always)]
+        pub fn $func_name(self, rhs: Self, _gc: &mut Heap<Object>) -> Result<Object, Error> {
+            // Delegate actual comparison to PartialOrd/PartialEq implementation
+            Ok(Object::Bool(self $op rhs,))
+        }
+    };
+}
+
+impl Object {
+    impl_arith!(add, +);
+    impl_arith!(sub, -);
+    //impl_arith!(mul, *);
+    //impl_arith!(div, /);
+    //impl_arith!(rem, %);
+
+    impl_cmp!(gt, >);
+    impl_cmp!(gte, >=);
+    impl_cmp!(lt, <);
+    impl_cmp!(lte, <=);
+    impl_cmp!(eq, ==);
+    impl_cmp!(neq, !=);
+
+    //impl_logical!(and, &&);
+    //impl_logical!(or, ||);
 }
 
 #[derive(Default, Debug)]

@@ -328,7 +328,7 @@ impl Compiler {
                 //
             }
         }
-        unimplemented!()
+        Ok(())
     }
 
     fn compile_block_statement(&mut self, block: &BlockStmt) -> Result<(), Error> {
@@ -735,7 +735,35 @@ impl Compiler {
                 self.compile_expression(&ind.index)?;
                 self.emit_opcode(OpCode::IndexGet);
             }
-            _ => panic!("unsupported {:#?}", expr)
+            Expression::Ident(ident) => 'Ident: {
+
+                if &ident.name == "true" {
+                    self.emit_opcode(OpCode::True);
+                    break 'Ident;
+                } else if &ident.name == "false" {
+                    self.emit_opcode(OpCode::False);
+                    break 'Ident;
+                }
+
+                let symbol = self.symbols.resolve(&ident.name);
+                match symbol.as_ref() {
+                    Some(symbol) => {
+                        let opcode = if symbol.scope == Scope::Global {
+                            OpCode::GetGlobal
+                        } else {
+                            OpCode::GetLocal
+                        };
+                        self.emit_opcode(opcode);
+                        self.emit_u16(symbol.index);
+                    }
+                    None => {
+                        return Err(Error::ReferenceError(format!(
+                            "`{}` is not defined", ident.name
+                        )))
+                    }
+                }
+            }
+            _ => panic!("unsupported expression:  {:#?}", expr)
         }
 
         Ok(())
@@ -815,7 +843,7 @@ impl Display for OpCode {
 // Converts an array of bytes to a string representation consisting of the OpCode along with their u16 values
 // For example: [OpCode::Const, 1, 0] -> "Const(1)"
 #[allow(dead_code)]
-pub(crate) fn bytecode_to_human(code: &[u8], positions: bool) -> String {
+pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
     let mut ip = 0;
     let mut str = String::with_capacity(256);
 
