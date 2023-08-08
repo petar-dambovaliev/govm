@@ -171,7 +171,7 @@ impl Compiler {
     }
 
     /// Compiles the given AST into executable Bytecode
-    pub fn compile_ast(&mut self, ast: File) -> Result<Bytecode, Error> {
+    pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
         for s in &ast.decl {
@@ -948,14 +948,14 @@ mod tests {
     fn run(program: &str) -> String {
         let mut p = Parser::from(program);
         let ast = p.parse_file().unwrap();
-        let program = Compiler::new().compile_ast(ast).unwrap();
+        let program = Compiler::new().compile_ast(&ast).unwrap();
         bytecode_to_human(&program.instructions, false)
     }
 
     fn assert_bytecode_eq(program: &str, expected: &str) {
         let mut p = Parser::from(program);
         let ast = p.parse_file().unwrap();
-        let code = Compiler::new().compile_ast(ast).unwrap();
+        let code = Compiler::new().compile_ast(&ast).unwrap();
         assert_eq!(
             bytecode_to_human(&code.instructions, false),
             expected,
@@ -1105,7 +1105,7 @@ mod tests {
         let mut compiler = Compiler::new();
 
         let ast = p.parse_file().unwrap();
-        let code = compiler.compile_ast(ast).unwrap();
+        let code = compiler.compile_ast(&ast).unwrap();
         println!("{}", bytecode_to_human(&code.instructions, false))
         // assert_eq!(
         //     run(r#"

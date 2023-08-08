@@ -303,7 +303,6 @@ impl VM {
                     let value = self.get_local(idx);
                     self.push(value);
                 }
-                // TODO: Make JUMP* opcodes relative?
                 OpCode::Jump => {
                     let pos = self.read_u16();
                     self.jump(pos);

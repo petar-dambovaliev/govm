@@ -5,6 +5,7 @@ use vm::compiler::bytecode_to_human;
 
 fn main() {
     //todo definition order matters and it shouldn't
+    let mut i = Instant::now();
     let mut parser = Parser::from(
         r#"
         package main
@@ -17,7 +18,7 @@ fn main() {
         }
 
         func main() {
-            var a = FibonacciRecursion(10);
+            var a = FibonacciRecursion(30);
             print("{}", a);
        }
     "#,
@@ -30,12 +31,13 @@ fn main() {
 
     let f = parser.parse_file().unwrap();
     let mut goc = Compiler::new();
-    let code = goc.compile_ast(f).unwrap();
+    let code = goc.compile_ast(&f).unwrap();
     //println!("{:#?}", bytecode_to_human(&code.instructions, false));
 
     let mut vm = VM::new();
     let res = vm.run(code).unwrap();
-    //println!("{:#?}", res);
+
+    println!("{:#?}", i.elapsed().as_millis());
 
     //println!("{:#?}", parser.parse_file().unwrap());
     // let mut vm = VM::new(opts, parser);

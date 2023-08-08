@@ -13,7 +13,15 @@ members = [
 vm = { path = "./vm" }
 parser = { path = "./parser" }
 
+[dev-dependencies]
+criterion = { version = "0.5.1", features = ["html_reports"] }
+
+[[bench]]
+name = "fibonacci"
+harness = false
+
 [profile.release]
 lto = true
 opt-level = 3
 codegen-units = 1
+debug = true
