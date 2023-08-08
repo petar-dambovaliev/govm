@@ -204,6 +204,7 @@ impl VM {
         // Construct a new garbage collector
         // And allow to manage memory for constants
         let mut gc = Heap::new();
+
         // let gc = &mut GC::new();
         // for c in &constants {
         //     gc.maybe_trace(*c)
@@ -312,14 +313,16 @@ impl VM {
                 }
                 OpCode::JumpIfFalse => 'jumpIfFalse: {
                     let condition = self.pop();
+
                     if let Object::Bool(b) = condition {
                         let pos = self.read_u16();
                         if !b {
                             self.jump(pos);
                             break 'jumpIfFalse;
                         }
+                    } else {
+                        return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition)));
                     }
-                    return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition)));
                 }
                 OpCode::Pop => {
                     final_result = self.pop();

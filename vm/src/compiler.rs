@@ -2,9 +2,10 @@ use crate::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
 use broom::Heap;
-use parser::ast::{BlockStmt, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use parser::ast::{BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use parser::Parser;
 use parser::token::{Keyword, LitKind, Operator};
-use crate::Object;
+use crate::{builtin, Object};
 use crate::Error;
 
 #[repr(u8)]
@@ -176,6 +177,9 @@ impl Compiler {
         for s in &ast.decl {
             self.compile_declaration(s)?;
         }
+
+        let entry = Parser::from("main()").expression().unwrap();
+        self.compile_expression(&entry)?;
         self.emit_opcode(OpCode::Halt);
         self.instructions.shrink_to_fit();
         self.constants.shrink_to_fit();
@@ -445,6 +449,8 @@ impl Compiler {
                         }
                     };
 
+                    //println!("{:#?}", self.symbols);
+
                     let symbol = self.symbols.resolve(name);
                     match symbol {
                         Some(symbol) => {
@@ -468,7 +474,7 @@ impl Compiler {
                         }
                         None => {
                             return Err(Error::ReferenceError(format!(
-                                "{name} is niet gedefinieerd"
+                                "`{name}` is not defined"
                             )))
                         }
                     }
@@ -603,10 +609,12 @@ impl Compiler {
 
     fn compile_expression(&mut self, expr: &Expression) -> Result<(), Error> {
         match expr {
+            //todo this is a total mess: fix me
             Expression::Operation(op) => {
                 match op.op {
                     Operator::Star => {
                         match &op.y {
+                            // a * b // multiplication
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {
                                     (Expression::Ident(name), Expression::BasicLit(lit))
@@ -625,6 +633,7 @@ impl Compiler {
                                 self.compile_expression(y.as_ref())?;
                                 self.compile_operator(&op.op);
                             }
+                            // *a // deref
                             None => {
                                 unimplemented!();
                                 self.compile_expression(op.x.as_ref())?;
@@ -647,7 +656,54 @@ impl Compiler {
                             }
                         }
                     }
-                    _ => {}
+                    Operator::Less => {
+                        match &op.y {
+                            // a * b // multiplication
+                            Some(y) => {
+                                match (op.x.as_ref(), y.as_ref()) {
+                                    (Expression::Ident(name), Expression::BasicLit(lit))
+                                    | (Expression::BasicLit(lit), Expression::Ident(name)) if lit.kind == LitKind::Integer => {
+                                        let value: isize = lit.value.parse().unwrap();
+                                        let res = self.compile_const_var_infix_expression(&name.name, value, &op.op);
+                                        if res.is_ok() {
+                                            return res;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
+                                self.compile_expression(op.x.as_ref())?;
+                                self.compile_expression(y.as_ref())?;
+                                self.compile_operator(&op.op);
+                            }
+                            _ => unimplemented!()
+                        }
+                    }
+                    Operator::Add | Operator::Sub => {
+                        match &op.y {
+                            Some(y) => {
+                                match (op.x.as_ref(), y.as_ref()) {
+                                    (Expression::Ident(name), Expression::BasicLit(lit))
+                                    | (Expression::BasicLit(lit), Expression::Ident(name)) if lit.kind == LitKind::Integer => {
+                                        let value: isize = lit.value.parse().unwrap();
+                                        let res = self.compile_const_var_infix_expression(&name.name, value, &op.op);
+                                        if res.is_ok() {
+                                            return res;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
+                                self.compile_expression(op.x.as_ref())?;
+                                self.compile_expression(y.as_ref())?;
+                                self.compile_operator(&op.op);
+                            }
+                            None => unimplemented!()
+                        }
+                    }
+                    _ => unimplemented!()
                 }
                 //
             }
@@ -701,14 +757,12 @@ impl Compiler {
                 }
 
                 if let Expression::Ident(name) = call.func.as_ref() {
-                    //todo process builtins
-
-                    // if let Some(builtin) = builtins::resolve(name) {
-                    //     self.emit_opcode(OpCode::CallBuiltin);
-                    //     self.emit_u8(builtin as u8);
-                    //     self.emit_u8(arguments.len().try_into().unwrap());
-                    //     break 'compile_call;
-                    // }
+                    if let Some(builtin) = builtin::resolve(&name.name) {
+                        self.emit_opcode(OpCode::CallBuiltin);
+                        self.emit_u8(builtin as u8);
+                        self.emit_u8(call.args.len().try_into().unwrap());
+                        break 'compile_call;
+                    }
                 }
                 self.compile_expression(call.func.as_ref())?;
                 self.emit_opcode(OpCode::Call);
@@ -736,7 +790,6 @@ impl Compiler {
                 self.emit_opcode(OpCode::IndexGet);
             }
             Expression::Ident(ident) => 'Ident: {
-
                 if &ident.name == "true" {
                     self.emit_opcode(OpCode::True);
                     break 'Ident;
@@ -889,156 +942,178 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use crate::parser::parse;
-    //
-    // fn run(program: &str) -> String {
-    //     let ast = parse(program).unwrap();
-    //     let program = Compiler::new().compile_ast(&ast).unwrap();
-    //     bytecode_to_human(&program.instructions, false)
-    // }
-    //
-    // fn assert_bytecode_eq(program: &str, expected: &str) {
-    //     let ast = parse(program).unwrap();
-    //     let code = Compiler::new().compile_ast(&ast).unwrap();
-    //     assert_eq!(
-    //         bytecode_to_human(&code.instructions, false),
-    //         expected,
-    //         "\nInput: \t{program}\nBytecode: \t{}",
-    //         bytecode_to_human(&code.instructions, true)
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_int_expression() {
-    //     assert_eq!(run("5"), "Const(0) Pop Halt");
-    //     assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
-    //     assert_eq!(
-    //         run("5; 6; 5"),
-    //         "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_bool_expression() {
-    //     assert_eq!(run("ja"), "True Pop Halt");
-    //     assert_eq!(run("ja; ja"), "True Pop True Pop Halt");
-    //     assert_eq!(run("nee"), "False Pop Halt");
-    // }
-    //
-    // #[test]
-    // fn test_float_expression() {
-    //     assert_eq!(run("1.23"), "Const(0) Pop Halt");
-    //     assert_eq!(run("1.23; 1.23"), "Const(0) Pop Const(0) Pop Halt");
-    //     assert_eq!(
-    //         run("5.00; 6.00; 5.00"),
-    //         "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_infix_expression() {
-    //     assert_eq!(run("1 + 2"), "Const(0) Const(1) Add Pop Halt");
-    //     assert_eq!(run("1 - 2"), "Const(0) Const(1) Subtract Pop Halt");
-    //     assert_eq!(run("1 * 2"), "Const(0) Const(1) Multiply Pop Halt");
-    //     assert_eq!(run("1 / 2"), "Const(0) Const(1) Divide Pop Halt");
-    //     assert_eq!(
-    //         run("1 * 2 * 3"),
-    //         "Const(0) Const(1) Multiply Const(2) Multiply Pop Halt"
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_block_statements() {
-    //     assert_eq!(run("{ 1 }"), "Const(0) Pop Halt");
-    // }
-    //
-    // #[test]
-    // fn test_if_expression() {
-    //     assert_bytecode_eq(
-    //         "als ja { 1 }",
-    //         "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-    //     );
-    //     assert_bytecode_eq(
-    //         "als ja { 1 } anders { 2 }",
-    //         "True JumpIfFalse(10) Const(0) Jump(13) Const(1) Pop Halt",
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_if_expression_empty_body() {
-    //     assert_bytecode_eq(
-    //         "als ja { }",
-    //         "True JumpIfFalse(8) Null Jump(9) Null Pop Halt",
-    //     );
-    //
-    //     assert_bytecode_eq(
-    //         "als ja { } anders { 1 }",
-    //         "True JumpIfFalse(8) Null Jump(11) Const(0) Pop Halt",
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_if_expression_empty_else() {
-    //     assert_bytecode_eq(
-    //         "als ja { 1 } anders {}",
-    //         "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_function_expression() {
-    //     assert_bytecode_eq(
-    //         "functie() { 1 }",
-    //         "Jump(7) Const(0) ReturnValue Const(1) Pop Halt",
-    //     );
-    //
-    //     assert_bytecode_eq(
-    //         "functie() { 1 } functie() { 2 }",
-    //         "Jump(7) Const(0) ReturnValue Const(1) Pop Jump(18) Const(2) ReturnValue Const(3) Pop Halt"
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_call_expression() {
-    //     assert_bytecode_eq(
-    //         "functie(a, b) { 1 }(1, 2)",
-    //         "Const(0) Const(1) Jump(13) Const(0) ReturnValue Const(2) Call(2) Pop Halt",
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_declare_statement() {
-    //     assert_eq!(run("stel a = 1;"), "Const(0) SetGlobal(0) Halt");
-    //
-    //     assert_eq!(
-    //         run("stel a = 1; stel b = 2;"),
-    //         "Const(0) SetGlobal(0) Const(1) SetGlobal(1) Halt"
-    //     );
-    //
-    //     // TODO: Test scoped variables
-    // }
-    //
-    // #[test]
-    // fn test_ident_expressions() {
-    //     assert_eq!(
-    //         run("stel a = 1; a"),
-    //         "Const(0) SetGlobal(0) GetGlobal(0) Pop Halt"
-    //     );
-    //
-    //     assert_eq!(
-    //         run("stel a = 1; stel b = 2; a; b;"),
-    //         "Const(0) SetGlobal(0) Const(1) SetGlobal(1) GetGlobal(0) Pop GetGlobal(1) Pop Halt"
-    //     );
-    //
-    //     // TODO: Test scoped variables
-    // }
-    //
-    // #[test]
-    // fn test_call_builtin() {
-    //     assert_eq!(
-    //         run("print(\"hallo\")"),
-    //         "Const(0) CallBuiltin(0,1) Pop Halt"
-    //     )
-    // }
+    use super::*;
+    use parser::Parser;
+
+    fn run(program: &str) -> String {
+        let mut p = Parser::from(program);
+        let ast = p.parse_file().unwrap();
+        let program = Compiler::new().compile_ast(ast).unwrap();
+        bytecode_to_human(&program.instructions, false)
+    }
+
+    fn assert_bytecode_eq(program: &str, expected: &str) {
+        let mut p = Parser::from(program);
+        let ast = p.parse_file().unwrap();
+        let code = Compiler::new().compile_ast(ast).unwrap();
+        assert_eq!(
+            bytecode_to_human(&code.instructions, false),
+            expected,
+            "\nInput: \t{program}\nBytecode: \t{}",
+            bytecode_to_human(&code.instructions, true)
+        );
+    }
+
+    #[test]
+    fn test_int_expression() {
+        assert_eq!(run("5"), "Const(0) Pop Halt");
+        assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
+        assert_eq!(
+            run("5; 6; 5"),
+            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
+        );
+    }
+
+    #[test]
+    fn test_bool_expression() {
+        assert_eq!(run("ja"), "True Pop Halt");
+        assert_eq!(run("ja; ja"), "True Pop True Pop Halt");
+        assert_eq!(run("nee"), "False Pop Halt");
+    }
+
+    #[test]
+    fn test_float_expression() {
+        assert_eq!(run("1.23"), "Const(0) Pop Halt");
+        assert_eq!(run("1.23; 1.23"), "Const(0) Pop Const(0) Pop Halt");
+        assert_eq!(
+            run("5.00; 6.00; 5.00"),
+            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
+        );
+    }
+
+    #[test]
+    fn test_infix_expression() {
+        assert_eq!(run("1 + 2"), "Const(0) Const(1) Add Pop Halt");
+        assert_eq!(run("1 - 2"), "Const(0) Const(1) Subtract Pop Halt");
+        assert_eq!(run("1 * 2"), "Const(0) Const(1) Multiply Pop Halt");
+        assert_eq!(run("1 / 2"), "Const(0) Const(1) Divide Pop Halt");
+        assert_eq!(
+            run("1 * 2 * 3"),
+            "Const(0) Const(1) Multiply Const(2) Multiply Pop Halt"
+        );
+    }
+
+    #[test]
+    fn test_block_statements() {
+        assert_eq!(run("{ 1 }"), "Const(0) Pop Halt");
+    }
+
+    #[test]
+    fn test_if_expression() {
+        assert_bytecode_eq(
+            "als ja { 1 }",
+            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
+        );
+        assert_bytecode_eq(
+            "als ja { 1 } anders { 2 }",
+            "True JumpIfFalse(10) Const(0) Jump(13) Const(1) Pop Halt",
+        );
+    }
+
+    #[test]
+    fn test_if_expression_empty_body() {
+        assert_bytecode_eq(
+            "als ja { }",
+            "True JumpIfFalse(8) Null Jump(9) Null Pop Halt",
+        );
+
+        assert_bytecode_eq(
+            "als ja { } anders { 1 }",
+            "True JumpIfFalse(8) Null Jump(11) Const(0) Pop Halt",
+        );
+    }
+
+    #[test]
+    fn test_if_expression_empty_else() {
+        assert_bytecode_eq(
+            "als ja { 1 } anders {}",
+            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
+        );
+    }
+
+    #[test]
+    fn test_function_expression() {
+        assert_bytecode_eq(
+            "functie() { 1 }",
+            "Jump(7) Const(0) ReturnValue Const(1) Pop Halt",
+        );
+
+        assert_bytecode_eq(
+            "functie() { 1 } functie() { 2 }",
+            "Jump(7) Const(0) ReturnValue Const(1) Pop Jump(18) Const(2) ReturnValue Const(3) Pop Halt"
+        );
+    }
+
+    #[test]
+    fn test_call_expression() {
+        assert_bytecode_eq(
+            "functie(a, b) { 1 }(1, 2)",
+            "Const(0) Const(1) Jump(13) Const(0) ReturnValue Const(2) Call(2) Pop Halt",
+        );
+    }
+
+    #[test]
+    fn test_declare_statement() {
+        assert_eq!(run("stel a = 1;"), "Const(0) SetGlobal(0) Halt");
+
+        assert_eq!(
+            run("stel a = 1; stel b = 2;"),
+            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) Halt"
+        );
+
+        // TODO: Test scoped variables
+    }
+
+    #[test]
+    fn test_ident_expressions() {
+        assert_eq!(
+            run("stel a = 1; a"),
+            "Const(0) SetGlobal(0) GetGlobal(0) Pop Halt"
+        );
+
+        assert_eq!(
+            run("stel a = 1; stel b = 2; a; b;"),
+            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) GetGlobal(0) Pop GetGlobal(1) Pop Halt"
+        );
+
+        // TODO: Test scoped variables
+    }
+
+    #[test]
+    fn test_call_builtin() {
+        let mut p = Parser::from(r#"
+        package main
+
+        func fib(n int) {
+            if n < 2 {
+                return n
+            }
+
+            return fib(n - 1) + fib(n - 2)
+        }
+    "#);
+        let mut compiler = Compiler::new();
+
+        let ast = p.parse_file().unwrap();
+        let code = compiler.compile_ast(ast).unwrap();
+        println!("{}", bytecode_to_human(&code.instructions, false))
+        // assert_eq!(
+        //     run(r#"
+        //         package main
+        //         func main(){}
+        //         var a = print("hallo")
+        //     "#),
+        //     "Const(0) CallBuiltin(0,1) Pop Halt"
+        // )
+    }
 }
