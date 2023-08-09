@@ -89,7 +89,7 @@ impl VM {
     /// Performance: Skipping the bounds check here does not yield any significant performance improvement
     #[inline(always)]
     fn get_local(&self, rel_idx: u16) -> Object {
-        self.stack[self.bp as usize + rel_idx as usize].clone()
+        unsafe{self.stack.get_unchecked(self.bp as usize + rel_idx as usize).clone()}
     }
 
     fn get_local_ref(&self, rel_idx: u16) -> &Object {
@@ -100,7 +100,7 @@ impl VM {
     /// The passed index is the relative position to the base pointer of the current callframe
     #[inline(always)]
     fn set_local(&mut self, rel_idx: u16, value: Object) {
-        self.stack[self.bp as usize + rel_idx as usize] = value;
+        unsafe{*self.stack.get_unchecked_mut(self.bp as usize + rel_idx as usize) = value;}
     }
 
     /// Reads a u16 value from the current position in the instructions array
@@ -116,7 +116,7 @@ impl VM {
     fn read_u16(&mut self) -> u16 {
         let start = self.ip;
         self.ip += 2;
-        let bytes = self.instructions.get(start..self.ip).expect("read_u16");
+        let bytes = unsafe { self.instructions.get_unchecked(start..self.ip) };
         bytes[0] as u16 | (bytes[1] as u16) << 8
     }
 
@@ -130,7 +130,7 @@ impl VM {
     /// This function still accounts for 25-35% of runtime right now...
     #[inline(always)]
     fn next(&mut self) -> OpCode {
-        let byte = *self.instructions.get(self.ip).expect("next");
+        let byte = unsafe{*self.instructions.get_unchecked(self.ip)};
         self.ip += 1;
         OpCode::from(byte)
     }
@@ -145,7 +145,9 @@ impl VM {
     }
 
     fn pop_ref_mut(&mut self) -> &mut Object {
-        self.stack.last_mut().unwrap()
+        let len = self.stack.len();
+        unsafe{self.stack.get_unchecked_mut(len - 1)}
+        //self.stack.last_mut().unwrap()
     }
 
     /// Push a new object on the stack
@@ -457,12 +459,25 @@ impl VM {
                 //     self.push(result);
                 // }
                 OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
-                OpCode::LtLocalConst => impl_binary_const_local_op_method!(lt),
+                OpCode::LtLocalConst => {
+                    let local_idx = self.read_u16();
+                    let constant_idx = self.read_u16();
+                    let right = &constants[constant_idx as usize];
+                    let left = self.get_local_ref(local_idx);
+                    self.push(Object::Bool(left < right));
+                }//impl_binary_const_local_op_method!(lt),
                 OpCode::LteLocalConst => impl_binary_const_local_op_method!(lte),
                 OpCode::EqLocalConst => impl_binary_const_local_op_method!(eq),
                 OpCode::NeqLocalConst => impl_binary_const_local_op_method!(neq),
                 OpCode::AddLocalConst => impl_binary_const_local_op_method!(add),
-                OpCode::SubtractLocalConst => impl_binary_const_local_op_method!(sub),
+                OpCode::SubtractLocalConst => {
+                    let local_idx = self.read_u16();
+                    let left = self.get_local(local_idx);
+                    let constant_idx = self.read_u16();
+                    let right = unsafe{constants.get_unchecked(constant_idx as usize)}.clone();
+                    let result = Object::sub(left, right, &mut gc)?;
+                    self.push(result);
+                }//impl_binary_const_local_op_method!(sub),
                 //OpCode::MultiplyLocalConst => impl_binary_const_local_op_method!(mul),
                 //OpCode::DivideLocalConst => impl_binary_const_local_op_method!(div),
                 //OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),

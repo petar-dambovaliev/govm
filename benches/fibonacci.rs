@@ -36,11 +36,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("fib_rust", |b| {
-        b.iter(|| {
-            fibonacci_rust(black_box(30))
-        })
-    });
+    // c.bench_function("fib_rust", |b| {
+    //     b.iter(|| {
+    //         fibonacci_rust(black_box(30))
+    //     })
+    // });
 }
 
 fn fibonacci_rust(n: u64) -> u64 {
