@@ -1,12 +1,11 @@
-use crate::symbols::*;
+use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
 use broom::Heap;
-use parser::ast::{BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
-use parser::Parser;
-use parser::token::{Keyword, LitKind, Operator};
-use crate::{builtin, Object};
-use crate::Error;
+use crate::parser::ast::{BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use crate::parser::Parser;
+use crate::parser::token::{Keyword, LitKind, Operator};
+use crate::vm::{builtin, Error, Object};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -123,6 +122,7 @@ impl OpCode {
     }
 }
 
+#[derive(Clone)]
 pub struct Bytecode {
     pub constants: Vec<Object>,
     pub instructions: Vec<u8>,
@@ -943,7 +943,7 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parser::Parser;
+    use crate::parser::Parser;
 
     fn run(program: &str) -> String {
         let mut p = Parser::from(program);

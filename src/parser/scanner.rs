@@ -1,9 +1,9 @@
-use crate::token::Keyword;
-use crate::token::LitKind;
-use crate::token::Operator;
-use crate::token::Token;
-use crate::Error;
-use crate::Result;
+use super::token::Keyword;
+use super::token::LitKind;
+use super::token::Operator;
+use super::token::Token;
+use super::Error;
+use super::Result;
 
 use std::fs;
 use std::path::Path;
@@ -602,9 +602,8 @@ fn is_escaped_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::parser::token::{Operator, Token};
     use super::Scanner;
-    use crate::token::Operator;
-    use crate::token::Token;
 
     #[test]
     fn line_ended() {

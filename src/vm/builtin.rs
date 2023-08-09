@@ -1,5 +1,5 @@
 use broom::Heap;
-use crate::{Error, Object};
+use super::{Error, Object};
 
 #[repr(u8)]
 pub(crate) enum Builtin {

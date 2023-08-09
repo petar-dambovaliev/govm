@@ -1,7 +1,11 @@
+mod vm;
+mod parser;
+
 use std::time::Instant;
-use parser::Parser;
-use vm::{Opts, VM, compiler::Compiler, Object};
-use vm::compiler::bytecode_to_human;
+use crate::parser::Parser;
+use crate::vm::compiler::Compiler;
+use crate::vm::{Opts, VM};
+//use vm::compiler::bytecode_to_human;
 
 fn main() {
     //todo definition order matters and it shouldn't
@@ -19,7 +23,7 @@ fn main() {
 
         func main() {
             var a = FibonacciRecursion(30);
-            print("{}", a);
+            //print("{}", a);
        }
     "#,
     );
@@ -34,8 +38,10 @@ fn main() {
     let code = goc.compile_ast(&f).unwrap();
     //println!("{:#?}", bytecode_to_human(&code.instructions, false));
 
-    let mut vm = VM::new();
-    let res = vm.run(code).unwrap();
+    for i in 0..10 {
+        let mut vm = VM::new();
+        let res = vm.run(code.clone()).unwrap();
+    }
 
     println!("{:#?}", i.elapsed().as_millis());
 

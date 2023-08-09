@@ -1,4 +1,4 @@
-use parser::ast::{Declaration, Expression, Statement};
+use crate::parser::ast::{Declaration, Expression, Statement};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 

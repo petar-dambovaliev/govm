@@ -1,9 +1,9 @@
-use crate::ast;
-use crate::ast::{ChanMode, ChannelType};
-use crate::scanner::Scanner;
-use crate::token::{Keyword, LitKind, Operator, Token, TokenKind};
-use crate::Error;
-use crate::Result;
+use super::ast;
+use super::ast::{ChanMode, ChannelType};
+use super::scanner::Scanner;
+use super::token::{Keyword, LitKind, Operator, Token, TokenKind};
+use super::Error;
+use super::Result;
 
 use std::path::Path;
 use std::rc::Rc;
@@ -2203,9 +2203,9 @@ fn is_type_elem(expr: &ast::Expression) -> bool {
 
 #[cfg(test)]
 mod test {
-    use crate::ast::Declaration;
+    use super::ast::Declaration;
     use crate::parser::Parser;
-    use crate::Result;
+    use super::Result;
 
     #[test]
     fn parse_package() -> Result<()> {

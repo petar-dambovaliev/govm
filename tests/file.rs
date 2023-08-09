@@ -1,9 +1,9 @@
 mod walkdir;
 use walkdir::Walkdir;
 
-use gosyn::parse_dir;
-use gosyn::Parser;
-use gosyn::Result;
+use gno_rs::gosyn::parse_dir;
+use gno_rs::gosyn::Parser;
+use gno_rs::gosyn::Result;
 
 use std::env;
 use std::fs;

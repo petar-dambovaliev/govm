@@ -1,5 +1,5 @@
-use crate::token::Token;
-use crate::token::TokenKind;
+use super::token::Token;
+use super::token::TokenKind;
 
 use std::fmt::Display;
 use std::fmt::{Debug, Formatter};

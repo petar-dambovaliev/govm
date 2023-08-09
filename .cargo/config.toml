@@ -6,3 +6,7 @@ rustflags = ["-Ctarget-cpu=native"]
 
 [profile.release]
 debug = true
+
+[profile.profiling]
+inherits = "release"
+debug = true

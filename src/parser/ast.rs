@@ -1,8 +1,6 @@
 //! Define all golang syntax node
 
-use crate::token::Keyword;
-use crate::token::LitKind;
-use crate::token::Operator;
+use crate::parser::token::{Keyword, LitKind, Operator};
 
 use std::fmt::Debug;
 use std::path::PathBuf;
