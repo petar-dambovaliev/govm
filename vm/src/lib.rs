@@ -7,7 +7,7 @@ mod builtin;
 use std::cmp::Ordering;
 use std::default::Default;
 use std::fmt::{Debug, Display};
-use std::ops::{Add, Sub};
+use std::ops::{Add, Neg, Sub};
 use broom::prelude::{Trace, Tracer};
 use crate::compiler::{Bytecode, OpCode};
 
@@ -72,11 +72,11 @@ impl VM {
 
     /// Creates a new VM with an empty stack and callframes vector
     pub fn new() -> Self {
-        let mut frames = Vec::with_capacity(32);
+        let mut frames = Vec::with_capacity(128);
         frames.push(Frame::new(0, 0));
 
         Self {
-            stack: Vec::with_capacity(32),
+            stack: Vec::with_capacity(128),
             globals: Vec::with_capacity(8),
             frames,
             instructions: Vec::new(),
@@ -141,6 +141,10 @@ impl VM {
         self.stack.pop().expect("pop")
     }
 
+    fn pop_ref_mut(&mut self) -> &mut Object {
+        self.stack.last_mut().unwrap()
+    }
+
     /// Push a new object on the stack
     #[inline(always)]
     fn push(&mut self, obj: Object) {
@@ -150,16 +154,23 @@ impl VM {
     /// Pop a callframe and return IP to the IP of the last callframe
     /// This also truncates the stack back to SP from when this frame was pushed
     #[inline(always)]
-    fn popframe(&mut self) {
+    fn popframe(&mut self, garbage_offset: usize) {
         // pop frame and return stack to frame's base pointer
         let frame = self.frames.pop().unwrap();
-        self.stack.truncate(frame.base_pointer as usize);
+        self.stack.truncate(frame.base_pointer as usize + garbage_offset);
 
         // copy base pointer and instruction pointer out of new current frame
         // this yields an enormous performance improvement
         let frame = self.frames.last().unwrap();
         self.ip = frame.ip;
         self.bp = frame.base_pointer;
+    }
+
+    #[inline(always)]
+    fn stack_frame_swap_last(&mut self) {
+        let frame = self.frames.last().unwrap();
+        let len = self.stack.len();
+        self.stack.swap(frame.base_pointer as usize, len - 1);
     }
 
     /// Push new callframe with the given IP and Base Pointer
@@ -349,11 +360,11 @@ impl VM {
                 //OpCode::And => impl_binary_op_method!(and),
                 //OpCode::Or => impl_binary_op_method!(or),
                 OpCode::Not => 'not: {
-                    let left = self.pop();
+                    let left = self.pop_ref_mut();
 
                     if let Object::Bool(b) = left {
-                        let result = Object::Bool(!b);
-                        self.push(result);
+                        *b = !*b;
+                        //self.push(result);
                         break 'not;
                     }
                     return Err(Error::TypeError(format!(
@@ -362,10 +373,14 @@ impl VM {
                     )));
                 }
                 OpCode::Negate => {
-                    let left = self.pop();
-                    let result = match left {
-                        Object::Float64(f) => Object::Float64(-f),
-                        Object::Int64(i) => Object::Int64(-i),
+                    let left = self.pop_ref_mut();
+                    match left {
+                        Object::Float64(f) => {
+                            *f = f.neg();
+                        },
+                        Object::Int64(i) => {
+                            *i = i.neg();
+                        },
                         _ => {
                             return Err(Error::TypeError(format!(
                                 "expected float or int, got: {:#?}",
@@ -373,7 +388,7 @@ impl VM {
                             )))
                         }
                     };
-                    self.push(result);
+                    //self.push(result);
                 }
                 OpCode::Call => 'call: {
                     let num_args = self.read_u8();
@@ -395,24 +410,27 @@ impl VM {
                     )));
                 }
                 OpCode::CallBuiltin => {
+                    //todo
+                    //this doesn't need to move memory
+                    // change builtin call to accept a reversed iterator
+
                     let builtin_byte = self.read_u8();
                     let num_args = self.read_u8() as usize;
-                    let mut args = Vec::with_capacity(num_args);
-                    for _ in 0..num_args {
-                        args.push(self.pop());
+                    let mut args = self.stack.split_off(self.stack.iter().len() - num_args + 1);
+
+                    if args.len() > 1 {
+                        args.reverse();
                     }
-                    args.reverse();
                     let builtin_func: builtin::Builtin = builtin_byte.into();
                     let result = builtin::call(builtin_func, &args, &mut gc)?;
                     self.push(result);
                 }
                 OpCode::ReturnValue => {
-                    let result = self.pop();
-                    self.popframe();
-                    self.push(result);
+                    self.stack_frame_swap_last();
+                    self.popframe(1);
                 }
                 OpCode::Return => {
-                    self.popframe();
+                    self.popframe(0);
                     self.push(Object::Nil);
                 }
                 OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
