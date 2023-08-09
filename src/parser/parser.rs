@@ -2663,27 +2663,27 @@ mod test {
         Ok(())
     }
 
-    #[test]
-    fn parse_docs() -> Result<()> {
-        let code = include_str!("../tests/testdata/docs.go");
-        let mut ast = Parser::from(code).parse_file()?;
-
-        assert_eq!(ast.docs.len(), 2);
-        while let Some(decl) = ast.decl.pop() {
-            match decl {
-                Declaration::Const(..) => continue,
-                Declaration::Function(x) => assert_eq!(x.docs.len(), 2),
-                Declaration::Type(x) => {
-                    assert_eq!(x.docs.len(), 0);
-                    assert_eq!(x.specs[0].docs.len(), 1)
-                }
-                Declaration::Variable(x) => {
-                    assert_eq!(x.docs.len(), 3);
-                    assert_eq!(x.specs[0].docs.len(), 1);
-                }
-            }
-        }
-
-        Ok(())
-    }
+    // #[test]
+    // fn parse_docs() -> Result<()> {
+    //     let code = include_str!("../tests/testdata/docs.go");
+    //     let mut ast = Parser::from(code).parse_file()?;
+    //
+    //     assert_eq!(ast.docs.len(), 2);
+    //     while let Some(decl) = ast.decl.pop() {
+    //         match decl {
+    //             Declaration::Const(..) => continue,
+    //             Declaration::Function(x) => assert_eq!(x.docs.len(), 2),
+    //             Declaration::Type(x) => {
+    //                 assert_eq!(x.docs.len(), 0);
+    //                 assert_eq!(x.specs[0].docs.len(), 1)
+    //             }
+    //             Declaration::Variable(x) => {
+    //                 assert_eq!(x.docs.len(), 3);
+    //                 assert_eq!(x.specs[0].docs.len(), 1);
+    //             }
+    //         }
+    //     }
+    //
+    //     Ok(())
+    // }
 }

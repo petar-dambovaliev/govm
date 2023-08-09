@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use parser::Parser;
-use vm::compiler::{Bytecode, Compiler};
-use vm::VM;
+use gno_rs::parser::Parser;
+use gno_rs::vm::compiler::{Compiler};
+use gno_rs::vm::VM;
 
 fn fibonacci() {
     let mut parser = Parser::from(
@@ -30,10 +30,15 @@ fn fibonacci() {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-
     c.bench_function("fib", |b| {
         b.iter(|| {
             fibonacci()
+        })
+    });
+
+    c.bench_function("fib_rust", |b| {
+        b.iter(|| {
+            fibonacci_rust(black_box(30))
         })
     });
 }

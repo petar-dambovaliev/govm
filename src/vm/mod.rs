@@ -2,7 +2,7 @@ mod nodes;
 mod symbols;
 pub mod compiler;
 mod builtin;
-mod object;
+pub mod object;
 
 use std::default::Default;
 use std::fmt::{Debug};

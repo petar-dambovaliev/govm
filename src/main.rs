@@ -1,5 +1,5 @@
-mod vm;
-mod parser;
+pub mod vm;
+pub mod parser;
 
 use std::time::Instant;
 use crate::parser::Parser;
