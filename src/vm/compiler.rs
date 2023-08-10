@@ -1,11 +1,12 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use broom::Heap;
 use crate::parser::ast::{BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
+use crate::vm::gc::GC;
+use crate::vm::object::FromString;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -134,7 +135,7 @@ pub struct Compiler {
     instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
     loop_contexts: Vec<LoopContext>,
-    gc: Heap<Object>,
+    gc: GC,
 }
 
 /// Type to keep track of loop constructs so we can emit the proper jump instructions
@@ -166,7 +167,7 @@ impl Compiler {
             constants: Vec::new(),
             last_instruction: None,
             loop_contexts: Vec::new(),
-            gc: Heap::new(),
+            gc: GC::new(),
         }
     }
 
@@ -186,9 +187,9 @@ impl Compiler {
 
         // instruct GC to stop managing any of the constants
         // TODO: Implement custom Clone for object instead?
-        // for c in &self.constants {
-        //     self.gc.untrace(*c);
-        // }
+        for c in &self.constants {
+            self.gc.untrace(*c);
+        }
 
         Ok(Bytecode {
             constants: self.constants.clone(),
@@ -291,7 +292,10 @@ impl Compiler {
                 let num_locals = self.symbols.leave_context();
 
                 // Create function object and store as constant
-                let obj = Object::Fn{ip: pos_start_function.try_into().unwrap(), num_locals: num_locals.try_into().unwrap()};
+                let obj = Object::function(
+                    pos_start_function.try_into().unwrap(),
+                    num_locals.try_into().unwrap(),
+                );
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
@@ -571,7 +575,7 @@ impl Compiler {
         const_value: isize,
         operator: &Operator,
     ) -> Result<(), Error> {
-        let idx_constant = self.add_constant(Object::Int64(const_value as i64));
+        let idx_constant = self.add_constant(Object::int(const_value));
         let symbol = self.symbols.resolve(varname);
         match symbol {
             Some(symbol) => {
@@ -712,21 +716,19 @@ impl Compiler {
                 self.emit_opcode(opcode);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
-                //add to gc
-                let obj = Object::Float64(lit.value.parse().unwrap());
+                let obj = Object::float(lit.value.parse().unwrap(), &mut self.gc);
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
                 // add to gc
-                let idx = self.add_constant(Object::Int64(lit.value.parse().unwrap()));
+                let idx = self.add_constant(Object::int(lit.value.parse().unwrap()));
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::String => {
-                //add to gc
-                let obj = Object::String(lit.value.clone());
+                let obj = Object::string(lit.value.clone(), &mut self.gc);
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);

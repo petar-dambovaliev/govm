@@ -1,8 +1,8 @@
-use broom::Heap;
+use crate::vm::gc::GC;
 use super::{Error, Object};
 
 #[repr(u8)]
-pub(crate) enum Builtin {
+pub enum Builtin {
     Print,
     Type,
     Bool,
@@ -41,15 +41,15 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
 }
 
 #[inline]
-pub(crate) fn call(builtin: Builtin, args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> {
+pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args),
-        Builtin::Type => call_type(args, gc),
-        Builtin::String => call_string(args, gc),
+        //Builtin::Type => call_type(args, gc),
+        //Builtin::String => call_string(args, gc),
         // Builtin::Bool => call_bool(args),
         // Builtin::Float => call_float(args, gc),
         // Builtin::Int => call_int(args),
-        Builtin::Length => call_length(args),
+        //Builtin::Length => call_length(args),
         _ => unimplemented!()
     }
 }
@@ -70,35 +70,35 @@ fn call_print(args: &[Object]) -> Result<Object, Error> {
     }
 
     println!();
-    Ok(Object::Nil)
+    Ok(Object::null())
 }
 
 // Returns the given type of an object as a string object
-fn call_type(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> {
-    if args.len() != 1 {
-        return Err(Error::ArgumentError(format!(
-            "type() should have 1 argument given {}",
-            args.len()
-        )));
-    }
+// fn call_type(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> {
+//     if args.len() != 1 {
+//         return Err(Error::ArgumentError(format!(
+//             "type() should have 1 argument given {}",
+//             args.len()
+//         )));
+//     }
+//
+//     //add to gc
+//     Ok(args[0].to_string())
+// }
 
-    //add to gc
-    Ok(args[0].type_string())
-}
+// Casts the given object to a string object
+// fn call_string(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> {
+//     if args.len() != 1 {
+//         return Err(Error::ArgumentError(format!(
+//             "expected 1 arg {}",
+//             args.len()
+//         )));
+//     }
+//
+//     args[0].to_string_object()
+// }
 
-/// Casts the given object to a string object
-fn call_string(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> {
-    if args.len() != 1 {
-        return Err(Error::ArgumentError(format!(
-            "string() verwacht 1 argument, maar kreeg er {}",
-            args.len()
-        )));
-    }
-
-    args[0].to_string_object()
-}
-
-/// Casts the given object to an object of type int
+// Casts the given object to an object of type int
 // fn call_int(args: &[Object]) -> Result<Object, Error> {
 //     if args.len() != 1 {
 //         return Err(Error::ArgumentError(format!(
@@ -140,7 +140,7 @@ fn call_string(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> 
 //     Ok(Object::int(result))
 // }
 
-/// Casts the given object to an object of type float
+// Casts the given object to an object of type float
 // fn call_float(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
 //     if args.len() != 1 {
 //         return Err(Error::ArgumentError(format!(
@@ -182,23 +182,23 @@ fn call_string(args: &[Object], gc: &mut Heap<Object>) -> Result<Object, Error> 
 //     Ok(Object::float(result, gc))
 // }
 
-fn call_length(args: &[Object]) -> Result<Object, Error> {
-    if args.len() != 1 {
-        return Err(Error::ArgumentError(format!(
-            "lengte() verwacht 1 argument, maar kreeg er {}",
-            args.len()
-        )));
-    }
-
-    let length = match &args[0] {
-        Object::String(s) => s.as_str().chars().count(),
-        Object::List(l) => l.len(),
-        _ => {
-            return Err(Error::TypeError(format!(
-                "does not support len:  {:#?}",
-                args[0]
-            )))
-        }
-    };
-    Ok(Object::Int64(length as i64))
-}
+// fn call_length(args: &[Object]) -> Result<Object, Error> {
+//     if args.len() != 1 {
+//         return Err(Error::ArgumentError(format!(
+//             "expected 1 arg {}",
+//             args.len()
+//         )));
+//     }
+//
+//     let length = match &args[0] {
+//         Object::String(s) => s.as_str().chars().count(),
+//         Object::List(l) => l.len(),
+//         _ => {
+//             return Err(Error::TypeError(format!(
+//                 "does not support len:  {:#?}",
+//                 args[0]
+//             )))
+//         }
+//     };
+//     Ok(Object::Int64(length as i64))
+// }

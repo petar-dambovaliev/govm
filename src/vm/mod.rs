@@ -3,6 +3,7 @@ mod symbols;
 pub mod compiler;
 mod builtin;
 pub mod object;
+mod gc;
 
 use std::default::Default;
 use std::fmt::{Debug};
@@ -10,12 +11,13 @@ use std::fmt::{Debug};
 #[cfg(feature = "debug")]
 use std::io::Write;
 use std::ops::Neg;
-use broom::Heap;
+use std::ptr;
 
 #[cfg(feature = "debug")]
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{Bytecode, OpCode};
-use crate::vm::object::Object;
+use crate::vm::gc::GC;
+use crate::vm::object::{FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -89,24 +91,20 @@ impl VM {
     /// Performance: Skipping the bounds check here does not yield any significant performance improvement
     #[inline(always)]
     fn get_local(&self, rel_idx: u16) -> Object {
-        unsafe{self.stack.get_unchecked(self.bp as usize + rel_idx as usize).clone()}
-    }
-
-    fn get_local_ref(&self, rel_idx: u16) -> &Object {
-        &self.stack[self.bp as usize + rel_idx as usize]
+        self.stack[self.bp as usize + rel_idx as usize]
     }
 
     /// Store a local variable (on the stack)
     /// The passed index is the relative position to the base pointer of the current callframe
     #[inline(always)]
     fn set_local(&mut self, rel_idx: u16, value: Object) {
-        unsafe{*self.stack.get_unchecked_mut(self.bp as usize + rel_idx as usize) = value;}
+        self.stack[self.bp as usize + rel_idx as usize] = value;
     }
 
     /// Reads a u16 value from the current position in the instructions array
     #[inline(always)]
     fn read_u8(&mut self) -> u8 {
-        let v = *self.instructions.get(self.ip).expect("read_u8");
+        let v = unsafe { *self.instructions.get_unchecked(self.ip) };
         self.ip += 1;
         v
     }
@@ -130,7 +128,9 @@ impl VM {
     /// This function still accounts for 25-35% of runtime right now...
     #[inline(always)]
     fn next(&mut self) -> OpCode {
-        let byte = unsafe{*self.instructions.get_unchecked(self.ip)};
+        // Safety: if compiler did its job correctly, IP will always be in bounds
+        // Performance: skipping the bounds check yields a 22% performance improvement
+        let byte = unsafe { *self.instructions.get_unchecked(self.ip) };
         self.ip += 1;
         OpCode::from(byte)
     }
@@ -141,13 +141,13 @@ impl VM {
     #[inline(always)]
     fn pop(&mut self) -> Object {
         debug_assert!(!self.stack.is_empty());
-        self.stack.pop().expect("pop")
-    }
 
-    fn pop_ref_mut(&mut self) -> &mut Object {
-        let len = self.stack.len();
-        unsafe{self.stack.get_unchecked_mut(len - 1)}
-        //self.stack.last_mut().unwrap()
+        // Safety: if the compiler and VM are implemented correctly, the stack will never be empty
+        unsafe {
+            let new_len = self.stack.len() - 1;
+            self.stack.set_len(new_len);
+            ptr::read(self.stack.as_ptr().add(new_len))
+        }
     }
 
     /// Push a new object on the stack
@@ -159,23 +159,16 @@ impl VM {
     /// Pop a callframe and return IP to the IP of the last callframe
     /// This also truncates the stack back to SP from when this frame was pushed
     #[inline(always)]
-    fn popframe(&mut self, garbage_offset: usize) {
+    fn popframe(&mut self) {
         // pop frame and return stack to frame's base pointer
         let frame = self.frames.pop().unwrap();
-        self.stack.truncate(frame.base_pointer as usize + garbage_offset);
+        self.stack.truncate(frame.base_pointer as usize);
 
         // copy base pointer and instruction pointer out of new current frame
         // this yields an enormous performance improvement
         let frame = self.frames.last().unwrap();
         self.ip = frame.ip;
         self.bp = frame.base_pointer;
-    }
-
-    #[inline(always)]
-    fn stack_frame_swap_last(&mut self) {
-        let frame = self.frames.last().unwrap();
-        let len = self.stack.len();
-        self.stack.swap(frame.base_pointer as usize, len - 1);
     }
 
     /// Push new callframe with the given IP and Base Pointer
@@ -215,44 +208,31 @@ impl VM {
 
         // Keep your friends close
         let constants = code.constants;
-        let mut final_result = Object::Nil;
+        let mut final_result = Object::null();
 
         // Construct a new garbage collector
         // And allow to manage memory for constants
-        let mut gc = Heap::new();
-
-        // let gc = &mut GC::new();
-        // for c in &constants {
-        //     gc.maybe_trace(*c)
-        // }
-
-        macro_rules! impl_binary_op_method_arit {
-            ($op:tt) => {{
-                let right = self.pop();
-                let left = self.pop();
-                let result = Object::$op(left, right, &mut gc)?;
-                self.push(result);
-            }};
+        let gc = &mut GC::new();
+        for c in &constants {
+            gc.maybe_trace(*c)
         }
 
         macro_rules! impl_binary_op_method {
             ($op:tt) => {{
                 let right = self.pop();
                 let left = self.pop();
-                let result = Object::$op(left, right, &mut gc)?;
+                let result = left.$op(right, gc)?;
                 self.push(result);
             }};
         }
-
-
 
         macro_rules! impl_binary_const_local_op_method {
             ($op:tt) => {{
                 let local_idx = self.read_u16();
                 let left = self.get_local(local_idx);
                 let constant_idx = self.read_u16();
-                let right = constants[constant_idx as usize].clone();
-                let result = Object::$op(left, right, &mut gc)?;
+                let right = constants[constant_idx as usize];
+                let result = left.$op(right, gc)?;
                 self.push(result);
             }};
         }
@@ -304,20 +284,20 @@ impl VM {
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();
-                    let value = constants[idx as usize].clone();
+                    let value = constants[idx as usize];
                     self.push(value);
                 }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
                     let value = self.pop();
                     while self.globals.len() <= idx {
-                        self.globals.push(Object::Nil);
+                        self.globals.push(Object::null());
                     }
                     self.globals[idx] = value;
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
-                    let value = self.globals[idx as usize].clone();
+                    let value = self.globals[idx as usize];
                     self.push(value);
                 }
                 OpCode::SetLocal => {
@@ -337,152 +317,124 @@ impl VM {
                     // collect garbage on every jump instruction
                     // gc.run(&[&self.stack, &constants, &self.globals, &[final_result]]);
                 }
-                OpCode::JumpIfFalse => 'jumpIfFalse: {
+                OpCode::JumpIfFalse => {
                     let condition = self.pop();
-
-                    if let Object::Bool(b) = condition {
-                        let pos = self.read_u16();
-                        if !b {
-                            self.jump(pos);
-                            break 'jumpIfFalse;
-                        }
-                    } else {
+                    if condition.tag() != Type::Bool {
                         return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition)));
+                    }
+
+                    let pos = self.read_u16();
+                    if !condition.as_bool() {
+                        self.jump(pos);
                     }
                 }
                 OpCode::Pop => {
                     final_result = self.pop();
                 }
                 OpCode::Null => {
-                    self.push(Object::Nil);
+                    self.push(Object::null());
                 }
                 OpCode::True => {
-                    self.push(Object::Bool(true));
+                    self.push(Object::bool(true));
                 }
                 OpCode::False => {
-                    self.push(Object::Bool(false));
+                    self.push(Object::bool(false));
                 }
-                OpCode::Add => impl_binary_op_method_arit!(add),
-                OpCode::Subtract => impl_binary_op_method_arit!(sub),
-                //OpCode::Divide => impl_binary_op_method!(div),
-                //OpCode::Multiply => impl_binary_op_method!(mul),
+                OpCode::Add => impl_binary_op_method!(add),
+                OpCode::Subtract => impl_binary_op_method!(sub),
+                OpCode::Divide => impl_binary_op_method!(div),
+                OpCode::Multiply => impl_binary_op_method!(mul),
                 OpCode::Gt => impl_binary_op_method!(gt),
                 OpCode::Gte => impl_binary_op_method!(gte),
                 OpCode::Lt => impl_binary_op_method!(lt),
                 OpCode::Lte => impl_binary_op_method!(lte),
                 OpCode::Eq => impl_binary_op_method!(eq),
                 OpCode::Neq => impl_binary_op_method!(neq),
-                //OpCode::Modulo => impl_binary_op_method!(rem),
-                //OpCode::And => impl_binary_op_method!(and),
-                //OpCode::Or => impl_binary_op_method!(or),
-                OpCode::Not => 'not: {
-                    let left = self.pop_ref_mut();
-
-                    if let Object::Bool(b) = left {
-                        *b = !*b;
-                        //self.push(result);
-                        break 'not;
+                OpCode::Modulo => impl_binary_op_method!(rem),
+                OpCode::And => impl_binary_op_method!(and),
+                OpCode::Or => impl_binary_op_method!(or),
+                OpCode::Not => {
+                    let left = self.pop();
+                    if left.tag() != Type::Bool {
+                        return Err(Error::TypeError(format!(
+                            "expected a boolean got: {:#?}",
+                            left.tag()
+                        )));
                     }
-                    return Err(Error::TypeError(format!(
-                        "expected a boolean got: {:#?}",
-                        left
-                    )));
+                    let result = Object::bool(!left.as_bool());
+                    self.push(result);
                 }
                 OpCode::Negate => {
-                    let left = self.pop_ref_mut();
-                    match left {
-                        Object::Float64(f) => {
-                            *f = f.neg();
-                        },
-                        Object::Int64(i) => {
-                            *i = i.neg();
-                        },
+                    let left = self.pop();
+                    let result = match left.tag() {
+                        Type::Float => unsafe { Object::float(-left.as_f64_unchecked(), gc) },
+                        Type::Int => Object::int(-left.as_int()),
                         _ => {
                             return Err(Error::TypeError(format!(
                                 "expected float or int, got: {:#?}",
-                                left
+                                left.tag()
                             )))
                         }
                     };
-                    //self.push(result);
+                    self.push(result);
                 }
-                OpCode::Call => 'call: {
+                OpCode::Call => {
                     let num_args = self.read_u8();
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
                     let obj = self.pop();
-
-                    if let Object::Fn {ip, num_locals} = obj {
-                        // Make room on the stack for any local variables defined inside this function
-                        for _ in 0..num_locals as u32 - num_args as u32 {
-                            self.push(Object::Nil);
-                        }
-
-                        self.pushframe(ip, base_pointer);
-                        break 'call;
+                    if obj.tag() != Type::Function {
+                        return Err(Error::TypeError(format!(
+                            "expected a function, got: {:#?}",
+                            obj.tag()
+                        )));
                     }
-                    return Err(Error::TypeError(format!(
-                        "expected a function, got: {:#?}",
-                        obj
-                    )));
+                    let [ip, num_locals] = obj.as_function();
+
+                    // Make room on the stack for any local variables defined inside this function
+                    for _ in 0..num_locals - num_args as u32 {
+                        self.push(Object::null());
+                    }
+
+                    self.pushframe(ip, base_pointer);
                 }
                 OpCode::CallBuiltin => {
                     //todo
                     //this doesn't need to move memory
                     // change builtin call to accept a reversed iterator
+                    // also take all arguments from the stack in 1 op
 
-                    let builtin_byte = self.read_u8();
+                    let builtin = self.read_u8();
                     let num_args = self.read_u8() as usize;
-                    let mut args = self.stack.split_off(self.stack.iter().len() - num_args + 1);
-
-                    if args.len() > 1 {
-                        args.reverse();
+                    let mut args = Vec::with_capacity(num_args);
+                    for _ in 0..num_args {
+                        args.push(self.pop());
                     }
-                    let builtin_func: builtin::Builtin = builtin_byte.into();
-                    let result = builtin::call(builtin_func, &args, &mut gc)?;
+                    args.reverse();
+                    let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
+                    let result = builtin::call(builtin, &args, gc)?;
                     self.push(result);
                 }
                 OpCode::ReturnValue => {
-                    self.stack_frame_swap_last();
-                    self.popframe(1);
+                    let result = self.pop();
+                    self.popframe();
+                    self.push(result);
                 }
                 OpCode::Return => {
-                    self.popframe(0);
-                    self.push(Object::Nil);
+                    self.popframe();
+                    self.push(Object::null());
                 }
                 OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
-                // OpCode::GtLocalConst => {
-                //     let local_idx = self.read_u16();
-                //     let left = self.get_local(local_idx);
-                //     let constant_idx = self.read_u16();
-                //     let right = &constants[constant_idx as usize];
-                //     let result = Object::gt(left, right, &mut gc)?;
-                //     self.push(result);
-                // }
                 OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
-                OpCode::LtLocalConst => {
-                    let local_idx = self.read_u16();
-                    let constant_idx = self.read_u16();
-                    let right = &constants[constant_idx as usize];
-                    let left = self.get_local_ref(local_idx);
-                    self.push(Object::Bool(left < right));
-                }//impl_binary_const_local_op_method!(lt),
+                OpCode::LtLocalConst => impl_binary_const_local_op_method!(lt),
                 OpCode::LteLocalConst => impl_binary_const_local_op_method!(lte),
                 OpCode::EqLocalConst => impl_binary_const_local_op_method!(eq),
                 OpCode::NeqLocalConst => impl_binary_const_local_op_method!(neq),
                 OpCode::AddLocalConst => impl_binary_const_local_op_method!(add),
-                OpCode::SubtractLocalConst => {
-                    let local_idx = self.read_u16();
-                    let left = self.get_local(local_idx);
-                    let constant_idx = self.read_u16();
-                    let right = unsafe{constants.get_unchecked(constant_idx as usize)}.clone();
-                    let result = Object::sub(left, right, &mut gc)?;
-                    self.push(result);
-                }//impl_binary_const_local_op_method!(sub),
-                //OpCode::MultiplyLocalConst => impl_binary_const_local_op_method!(mul),
-                //OpCode::DivideLocalConst => impl_binary_const_local_op_method!(div),
-                //OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
+                OpCode::SubtractLocalConst => impl_binary_const_local_op_method!(sub),
+                OpCode::MultiplyLocalConst => impl_binary_const_local_op_method!(mul),
+                OpCode::DivideLocalConst => impl_binary_const_local_op_method!(div),
+                OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
                 OpCode::Array => {
-                    //todo
                     let length = self.read_u16();
                     let mut vec = Vec::with_capacity(length as usize);
                     for _ in 0..length {
@@ -490,25 +442,30 @@ impl VM {
                     }
                     vec.reverse();
                     // TODO: Re-use vector allocation here
-                    //self.push(Object::List(vec));
+                    let obj = Object::array(vec, gc);
+                    self.push(obj);
                 }
                 OpCode::IndexGet => {
-                    let index = self.pop();
-                    let left = self.pop();
+                    //todo
+
+                    // let index = self.pop();
+                    // let left = self.pop();
                     // let result = index_get(left, index, gc)?;
                     // self.push(result);
                 }
                 OpCode::IndexSet => {
-                    let value = self.pop();
-                    let index = self.pop();
-                    let left = self.pop();
+                    //todo
+
+                    // let value = self.pop();
+                    // let index = self.pop();
+                    // let left = self.pop();
                     // let value = index_set(left, index, value)?;
                     // self.push(value);
                 }
                 OpCode::Halt => {
+                    gc.untrace(final_result);
                     return Ok(final_result);
                 }
-                _ => unimplemented!()
             }
         }
     }
