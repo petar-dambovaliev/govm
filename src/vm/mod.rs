@@ -320,7 +320,7 @@ impl VM {
                 OpCode::JumpIfFalse => {
                     let condition = self.pop();
                     if condition.tag() != Type::Bool {
-                        return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition)));
+                        return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition.tag())));
                     }
 
                     let pos = self.read_u16();
@@ -357,7 +357,7 @@ impl VM {
                     let left = self.pop();
                     if left.tag() != Type::Bool {
                         return Err(Error::TypeError(format!(
-                            "expected a boolean got: {:#?}",
+                            "OpCode::Not: expected a boolean got: {:#?}",
                             left.tag()
                         )));
                     }

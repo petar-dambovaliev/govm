@@ -3,8 +3,9 @@ pub mod parser;
 
 use std::time::Instant;
 use crate::parser::Parser;
-use crate::vm::compiler::Compiler;
+use crate::vm::compiler::{Bytecode, bytecode_to_human, Compiler};
 use crate::vm::{Opts, VM};
+use crate::vm::object::Object;
 //use vm::compiler::bytecode_to_human;
 
 fn main() {
@@ -14,17 +15,23 @@ fn main() {
         r#"
         package main
 
-       func FibonacciRecursion(n int) int {
-            if n < 2 {
+        func fibonacci(n int) int {
+            if n <= 1 {
                 return n
             }
-            return FibonacciRecursion(n-1) + FibonacciRecursion(n-2)
+
+            a, b := 0, 1
+            for i := 2; i <= n; i++ {
+                c := a + b
+                a, b = b, c
+            }
+
+            return b
         }
 
         func main() {
-            var a = FibonacciRecursion(30);
-            //print("{}", a);
-       }
+            fibonacci(30)
+        }
     "#,
     );
 
@@ -36,14 +43,14 @@ fn main() {
     let f = parser.parse_file().unwrap();
     let mut goc = Compiler::new();
     let code = goc.compile_ast(&f).unwrap();
-    //println!("{:#?}", bytecode_to_human(&code.instructions, false));
+    println!("{:#?}", bytecode_to_human(&code.instructions, false));
 
-    for i in 0..10 {
+    for i in 0..1 {
         let mut vm = VM::new();
         let res = vm.run(code.clone()).unwrap();
     }
 
-    println!("{:#?}", i.elapsed().as_millis());
+    println!("fibonacci_rust: {:#?}", fibonacci_rust(10));
 
     //println!("{:#?}", parser.parse_file().unwrap());
     // let mut vm = VM::new(opts, parser);
@@ -51,4 +58,11 @@ fn main() {
     // vm.run();
     // println!("{:#?}", vm);
     // println!("{:#?}", i.elapsed());
+}
+
+fn fibonacci_rust(n: u64) -> u64 {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci_rust(n - 1) + fibonacci_rust(n - 2);
 }

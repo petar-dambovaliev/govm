@@ -1,7 +1,7 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use crate::parser::ast::{BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
@@ -123,7 +123,7 @@ impl OpCode {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Bytecode {
     pub constants: Vec<Object>,
     pub instructions: Vec<u8>,
@@ -361,21 +361,40 @@ impl Compiler {
                 self.emit_opcode(OpCode::Null);
                 self.loop_contexts
                     .push(LoopContext::new(self.instructions.len()));
+
+                if let Some(init) = &forstmt.init {
+                    self.compile_statement(init.as_ref())?;
+                }
+
                 let pos_before_condition = self.instructions.len();
 
                 if let Some(cond) = &forstmt.cond {
                     self.compile_statement(cond.as_ref())?;
                 }
 
+                if self.last_instruction_is(OpCode::Pop) {
+                    self.remove_last_instruction();
+                }
+
                 let pos_jump_if_false = self.instructions.len();
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
                 self.emit_opcode(OpCode::Pop);
+
                 self.compile_block_statement(&forstmt.body)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
+                    //todo
+                    // need to propagate info to add the post condition
+                    // to places where there are breaks/continues
+                    if let Some(post) = &forstmt.post {
+                        self.compile_statement(post.as_ref())?;
+                    }
                 } else {
+                    if let Some(post) = &forstmt.post {
+                        self.compile_statement(post.as_ref())?;
+                    }
                     self.emit_opcode(OpCode::Null);
                 }
 
@@ -436,51 +455,71 @@ impl Compiler {
             }
             Statement::Assign(assign) => {
                 for (left, right) in assign.left.iter().zip(assign.right.iter()) {
-                    let name = match &left {
-                        Expression::Ident(name) => name.name.as_str(),
-                        Expression::Index(ind) => {
-                            self.compile_expression(ind.left.as_ref())?;
-                            self.compile_expression(ind.index.as_ref())?;
+                    match &assign.op {
+                        Operator::Define => {
+                            let name = match left {
+                                Expression::Ident(ident) => &ident.name,
+                                _=> panic!("only identifiers can be defined: {:#?}", left)
+                            };
+
+                            let symbol = self.symbols.define(name.as_str());
                             self.compile_expression(right)?;
-                            self.emit_opcode(OpCode::IndexSet);
-                            return Ok(());
+                            let op = if symbol.scope == Scope::Global {
+                                OpCode::SetGlobal
+                            } else {
+                                OpCode::SetLocal
+                            };
+                            self.emit_opcode(op);
+                            self.emit_u16(symbol.index);
                         }
-                        _ => {
-                            return Err(Error::TypeError(format!(
-                                "cannot assign a value to expressions of type {:?}",
-                                left
-                            )))
-                        }
-                    };
-
-                    //println!("{:#?}", self.symbols);
-
-                    let symbol = self.symbols.resolve(name);
-                    match symbol {
-                        Some(symbol) => {
-                            self.compile_expression(right)?;
-
-                            match symbol.scope {
-                                Scope::Global => {
-                                    self.emit_opcode(OpCode::SetGlobal);
-                                    self.emit_u16(symbol.index);
-                                    self.emit_opcode(OpCode::GetGlobal);
-                                    self.emit_u16(symbol.index);
+                        Operator::Assign => {
+                            let name = match &left {
+                                Expression::Ident(name) => name.name.as_str(),
+                                Expression::Index(ind) => {
+                                    self.compile_expression(ind.left.as_ref())?;
+                                    self.compile_expression(ind.index.as_ref())?;
+                                    self.compile_expression(right)?;
+                                    self.emit_opcode(OpCode::IndexSet);
+                                    return Ok(());
                                 }
+                                _ => {
+                                    panic!("cannot assign a value to expressions of type");
+                                    return Err(Error::TypeError(format!(
+                                        "cannot assign a value to expressions of type {:?}",
+                                        left
+                                    )))
+                                }
+                            };
 
-                                Scope::Local => {
-                                    self.emit_opcode(OpCode::SetLocal);
-                                    self.emit_u16(symbol.index);
-                                    self.emit_opcode(OpCode::GetLocal);
-                                    self.emit_u16(symbol.index);
+                            let symbol = self.symbols.resolve(name);
+                            match symbol {
+                                Some(symbol) => {
+                                    self.compile_expression(right)?;
+
+                                    match symbol.scope {
+                                        Scope::Global => {
+                                            self.emit_opcode(OpCode::SetGlobal);
+                                            self.emit_u16(symbol.index);
+                                            self.emit_opcode(OpCode::GetGlobal);
+                                            self.emit_u16(symbol.index);
+                                        }
+
+                                        Scope::Local => {
+                                            self.emit_opcode(OpCode::SetLocal);
+                                            self.emit_u16(symbol.index);
+                                            self.emit_opcode(OpCode::GetLocal);
+                                            self.emit_u16(symbol.index);
+                                        }
+                                    }
+                                }
+                                None => {
+                                    return Err(Error::ReferenceError(format!(
+                                        "`{name}` is not defined"
+                                    )))
                                 }
                             }
                         }
-                        None => {
-                            return Err(Error::ReferenceError(format!(
-                                "`{name}` is not defined"
-                            )))
-                        }
+                        _ => unimplemented!()
                     }
                 }
             }
@@ -539,7 +578,40 @@ impl Compiler {
                     _ => panic!("key: {:#?}", branch.key)
                 }
             }
-            _ => panic!("stmt not supported: {:#?}", stmt)
+            Statement::IncDec(incdec) => {
+                let name = match &incdec.expr {
+                    Expression::Ident(ident) => ident.clone(),
+                    _=> panic!("only ident allowed inc/dec")
+                };
+
+                let op = match incdec.op {
+                    Operator::Inc => Operator::Add,
+                    Operator::Dec => Operator::Sub,
+                    _ => panic!("invalid op")
+                };
+
+                self.compile_statement(&Statement::Assign(AssignStmt{
+                    pos: 0,
+                    op: Operator::Assign,
+                    left: vec![Expression::Ident(name.clone())],
+                    right: vec![
+                        Expression::Operation(Operation{
+                            pos: 0,
+                            op,
+                            x: Box::new(Expression::Ident(name)),
+                            y: Some(Box::new(Expression::BasicLit(BasicLit {
+                                pos: 0,
+                                kind: LitKind::Integer,
+                                value: "1".to_string(),
+                            }))),
+                        })
+                    ],
+                }))?;
+            }
+            Statement::Empty(_) => {}
+            _ => return Err(Error::ReferenceError(format!(
+                "`{:#?}` stmt not supported:", stmt
+            ))),
         }
 
         Ok(())
@@ -660,7 +732,7 @@ impl Compiler {
                             }
                         }
                     }
-                    Operator::Less => {
+                    Operator::Less | Operator::LessEqual => {
                         match &op.y {
                             // a * b // multiplication
                             Some(y) => {
@@ -672,6 +744,7 @@ impl Compiler {
                                         if res.is_ok() {
                                             return res;
                                         }
+                                        panic!("res: {:#?}", res);
                                     }
                                     _ => {}
                                 }
@@ -707,7 +780,7 @@ impl Compiler {
                             None => unimplemented!()
                         }
                     }
-                    _ => unimplemented!()
+                    _ => panic!("unsupported op: {:#?}", op)
                 }
                 //
             }
@@ -779,7 +852,9 @@ impl Compiler {
                             Element::Expr(el_expr) => {
                                 self.compile_expression(el_expr)?;
                             }
-                            _ => {}
+                            _ => {
+                                panic!("123");
+                            }
                         }
                     }
                     self.emit_opcode(OpCode::Array);

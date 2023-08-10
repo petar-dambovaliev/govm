@@ -314,6 +314,7 @@ impl FromVec<&[Object]> for Object {
 impl PartialEq for Object {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
+        //todo this should be an error
         if self.tag() != other.tag() {
             return false;
         }

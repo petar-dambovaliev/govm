@@ -103,7 +103,7 @@ impl GC {
 /// Implement Drop trait so that GC::destroy() is automatically called once the Garbage Collector goes out of scope
 impl Drop for GC {
     fn drop(&mut self) {
-        self.destroy();
+        //self.destroy();
     }
 }
 
