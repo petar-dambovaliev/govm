@@ -1,16 +1,14 @@
-mod nodes;
 mod symbols;
 pub mod compiler;
 mod builtin;
 pub mod object;
 mod gc;
 
-use std::default::Default;
+//use std::default::Default;
 use std::fmt::{Debug};
 
 #[cfg(feature = "debug")]
 use std::io::Write;
-use std::ops::Neg;
 use std::ptr;
 
 #[cfg(feature = "debug")]
@@ -601,18 +599,18 @@ pub enum Error {
     ArgumentError(String),
 }
 
-#[derive(Default, Debug)]
-pub struct Opts {
-    // percantage of the heap increasing
-    // to trigger a garbage collection cycle
-    pub gogc: f64,
-    // min heap size in bytes to trigger a
-    // garbage collection cycle
-    pub min_gc: usize,
-}
+// #[derive(Default, Debug)]
+// pub struct Opts {
+//     // percantage of the heap increasing
+//     // to trigger a garbage collection cycle
+//     pub gogc: f64,
+//     // min heap size in bytes to trigger a
+//     // garbage collection cycle
+//     pub min_gc: usize,
+// }
 
-#[derive(Default, Debug)]
-struct Stats {
-    allocs: usize,
-    prev_allocs: usize,
-}
+// #[derive(Default, Debug)]
+// struct Stats {
+//     allocs: usize,
+//     prev_allocs: usize,
+// }

@@ -84,7 +84,7 @@ impl GC {
             // Object is heap allocated
             // Read its header to check if its marked
             // If its marked, clear flag & continue
-            let mut header = unsafe { Header::read(&mut obj) };
+            let header = unsafe { Header::read(&mut obj) };
             if header.marked {
                 header.marked = false;
                 i += 1;
@@ -114,7 +114,7 @@ fn mark(o: &mut Object) {
         return;
     }
 
-    let mut header = unsafe { Header::read(o) };
+    let header = unsafe { Header::read(o) };
     header.marked = true;
 
     if o.tag() == Type::Array {

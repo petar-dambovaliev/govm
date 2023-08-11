@@ -41,7 +41,7 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
 }
 
 #[inline]
-pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Error> {
+pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args),
         //Builtin::Type => call_type(args, gc),

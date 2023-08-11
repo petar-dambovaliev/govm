@@ -1,7 +1,7 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Call, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
@@ -10,6 +10,7 @@ use crate::vm::object::FromString;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub(crate) enum OpCode {
     Const = 0,
     Pop,
@@ -329,7 +330,8 @@ impl Compiler {
                     }
                 }
             }
-            Declaration::Type(t) => {
+            Declaration::Type(_t) => {
+                //todo implement struct
                 // for spec in &t.specs {
                 //     spec.name
                 // }
@@ -483,7 +485,6 @@ impl Compiler {
                                     return Ok(());
                                 }
                                 _ => {
-                                    panic!("cannot assign a value to expressions of type");
                                     return Err(Error::TypeError(format!(
                                         "cannot assign a value to expressions of type {:?}",
                                         left
@@ -712,7 +713,7 @@ impl Compiler {
                             // *a // deref
                             None => {
                                 unimplemented!();
-                                self.compile_expression(op.x.as_ref())?;
+                                //self.compile_expression(op.x.as_ref())?;
 
                                 // match operator {
                                 //     Operator::Negate | Operator::Subtract => {
@@ -844,7 +845,7 @@ impl Compiler {
                 self.emit_u8(call.args.len().try_into().unwrap());
             }
             Expression::CompositeLit(clit) => {
-                if let Expression::TypeArray(ta) = clit.typ.as_ref() {
+                if let Expression::TypeArray(_ta) = clit.typ.as_ref() {
                     //todo assert length
                     //if ta.len != clit.val.values.len() { }
                     for v in &clit.val.values {

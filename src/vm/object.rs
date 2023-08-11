@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::ops::{Add, Sub};
 use std::ptr::drop_in_place;
 use crate::vm::Error;
 use crate::vm::gc::GC;
@@ -649,10 +648,10 @@ mod tests {
     #[test]
     fn test_pointer_float() {
         let mut gc = GC::new();
-        let obj = Object::float(3.1415, &mut gc);
+        let obj = Object::float(std::f64::consts::PI, &mut gc);
         assert_eq!(obj.tag(), Type::Float);
         assert!(obj.is_heap_allocated());
-        assert_eq!(obj.as_f64(), 3.1415);
+        assert_eq!(obj.as_f64(), std::f64::consts::PI);
     }
 
     #[test]
