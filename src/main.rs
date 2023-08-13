@@ -15,7 +15,6 @@ fn main() {
 
         func main() {
             a := "asd"
-
             for i, ch := range a {
                 print(i)
                 print(ch)

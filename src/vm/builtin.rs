@@ -90,7 +90,7 @@ fn call_length(args: &[Object]) -> Result<Object, Error> {
     };
 
     let length = match obj.tag() {
-        Type::String => obj.as_str().chars().count(),
+        Type::String => obj.as_str().chars().count() - 2,
         Type::Array => obj.as_vec().len(),
         _ => {
             return Err(Error::TypeError(format!(

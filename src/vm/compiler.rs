@@ -715,6 +715,8 @@ impl Compiler {
                     body: BlockStmt{ pos: body.pos, list: add_stmt },
                 });
 
+                //panic!("");
+
                 self.compile_statement(&forstmt)?;
             }
             _ => return Err(Error::ReferenceError(format!(
@@ -868,7 +870,7 @@ impl Compiler {
                             _ => unimplemented!()
                         }
                     }
-                    Operator::Add | Operator::Sub => {
+                    Operator::Add | Operator::Sub | Operator::Rem | Operator::Equal => {
                         match &op.y {
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {

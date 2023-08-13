@@ -538,11 +538,11 @@ fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
     Ok(array[index])
 }
 
-fn index_get_string(obj: Object, mut index: isize, gc: &mut GC) -> Result<Object, Error> {
+fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Error> {
     let str = obj.as_str();
     if index < 0 {
         return Err(Error::IndexError(
-            "out of bounds".to_string(),
+            "i: out of bounds".to_string(),
         ));
     }
 
