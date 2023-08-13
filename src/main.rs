@@ -14,8 +14,11 @@ fn main() {
         package main
 
         func main() {
-            a := &[]int{1,2,3}
-            print(a)
+            a := &[]int{1,2}
+
+            for i, el := range a {
+                print(el)
+            }
         }
     "#,
     );
@@ -39,11 +42,4 @@ fn main() {
     // vm.run();
     // println!("{:#?}", vm);
     // println!("{:#?}", i.elapsed());
-}
-
-fn fibonacci_rust(n: u64) -> u64 {
-    if n <= 1 {
-        return n;
-    }
-    return fibonacci_rust(n - 1) + fibonacci_rust(n - 2);
 }

@@ -465,7 +465,7 @@ impl Header {
 #[repr(C)]
 pub struct Ref {
     header: Header,
-    value: Object,
+    pub value: Object,
 }
 
 impl Ref {

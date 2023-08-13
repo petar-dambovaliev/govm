@@ -1,7 +1,7 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, File, LiteralValue, Operation, Statement};
+use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Call, Declaration, DeclStmt, Element, Expression, ExprStmt, File, ForStmt, Ident, IncDecStmt, Index, LiteralValue, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
@@ -612,6 +612,105 @@ impl Compiler {
                 }))?;
             }
             Statement::Empty(_) => {}
+            Statement::Range(rng) => {
+                let i = Expression::Ident(Ident{ pos: 0, name: "__i__".to_string() });
+
+                // __i__ < len(slice)
+                let condition = Box::new(Statement::Expr(ExprStmt{ expr: Expression::Operation(Operation{
+                    pos: 0,
+                    op: Operator::Less,
+                    x: Box::new(i.clone()),
+                    y: Some(Box::new(Expression::Call(Call{
+                        pos: (0, 0),
+                        args: vec![rng.expr.clone()],
+                        func: Box::new(Expression::Ident(Ident{ pos: 0, name: "len".to_string() })),
+                        dots: None,
+                    }))),
+                }) }));
+
+                // __i__ := 0
+                let init = Box::new(Statement::Assign(
+                    AssignStmt{
+                        pos: 0,
+                        op: Operator::Define,
+                        //todo
+                        //come up with better naming convention
+                        //for compiler generated variables as to not clash with the user
+                        left: vec![i.clone()],
+                        right: vec![Expression::BasicLit(BasicLit{
+                            pos: 0,
+                            kind: LitKind::Integer,
+                            value: "0".to_string(),
+                        })],
+                    }
+                ));
+
+                // __i__++
+                let post = Box::new(Statement::IncDec(IncDecStmt{
+                    pos: 0,
+                    op: Operator::Inc,
+                    expr: i.clone(),
+                }));
+
+                let mut body = rng.body.clone();
+
+                let mut add_stmt = vec![];
+
+                // assign to user vars
+                // this might look stupid but without it, if the user
+                // hasn't defined a key, there would be no way to terminate the loop
+                // i = __i__
+                if let Some(key) = &rng.key {
+                    let key_ident = match key {
+                        Expression::Ident(_) => key.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    add_stmt.push(Statement::Assign(AssignStmt{
+                        pos: 0,
+                        op: Operator::Define,
+                        left: vec![key_ident],
+                        right: vec![i.clone()],
+                    }));
+                }
+
+                //todo this doesn't support slice literals
+
+                // val = slice[__i__]
+                if let Some(val) = &rng.value {
+                    let val_ident = match val {
+                        Expression::Ident(_) => val.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    let slice_ident = match &rng.expr {
+                        Expression::Ident(_) => rng.expr.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    add_stmt.push( Statement::Assign(AssignStmt{
+                        pos: 0,
+                        op: Operator::Define,
+                        left: vec![val_ident],
+                        right: vec![Expression::Index(Index{
+                            pos: (0, 0),
+                            left: Box::new(slice_ident),
+                            index: Box::new(i.clone()),
+                        })],
+                    }));
+                }
+
+                add_stmt.append(&mut body.list);
+
+                let forstmt = Statement::For(ForStmt{
+                    pos: 0,
+                    init: Some(init),
+                    cond: Some(condition),
+                    post: Some(post),
+                    body: BlockStmt{ pos: body.pos, list: add_stmt },
+                });
+                self.compile_statement(&forstmt)?;
+            }
             _ => return Err(Error::ReferenceError(format!(
                 "`{:#?}` stmt not supported:", stmt
             ))),
