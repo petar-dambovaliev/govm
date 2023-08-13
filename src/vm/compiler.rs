@@ -1,12 +1,12 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, File, Operation, Statement};
+use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, File, LiteralValue, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
 use crate::vm::gc::GC;
-use crate::vm::object::FromString;
+use crate::vm::object::{FromString, Type};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -56,6 +56,7 @@ pub(crate) enum OpCode {
     Array,
     IndexGet,
     IndexSet,
+    Ref,
     Halt,
 }
 
@@ -119,7 +120,8 @@ impl OpCode {
             | OpCode::ReturnValue
             | OpCode::IndexGet
             | OpCode::IndexSet
-            | OpCode::Halt => &[],
+            | OpCode::Halt
+            | OpCode::Ref => &[],
         }
     }
 }
@@ -647,7 +649,7 @@ impl Compiler {
         varname: &str,
         const_value: isize,
         operator: &Operator,
-    ) -> Result<(), Error> {
+    ) -> Result<Type, Error> {
         let idx_constant = self.add_constant(Object::int(const_value));
         let symbol = self.symbols.resolve(varname);
         match symbol {
@@ -681,10 +683,10 @@ impl Compiler {
             }
         }
 
-        Ok(())
+        Ok(Type::Int)
     }
 
-    fn compile_expression(&mut self, expr: &Expression) -> Result<(), Error> {
+    fn compile_expression(&mut self, expr: &Expression) -> Result<Type, Error> {
         match expr {
             //todo this is a total mess: fix me
             Expression::Operation(op) => {
@@ -709,6 +711,8 @@ impl Compiler {
                                 self.compile_expression(op.x.as_ref())?;
                                 self.compile_expression(y.as_ref())?;
                                 self.compile_operator(&op.op);
+
+                                return Ok(Type::Int);
                             }
                             // *a // deref
                             None => {
@@ -745,7 +749,6 @@ impl Compiler {
                                         if res.is_ok() {
                                             return res;
                                         }
-                                        panic!("res: {:#?}", res);
                                     }
                                     _ => {}
                                 }
@@ -754,6 +757,8 @@ impl Compiler {
                                 self.compile_expression(op.x.as_ref())?;
                                 self.compile_expression(y.as_ref())?;
                                 self.compile_operator(&op.op);
+
+                                return Ok(Type::Int);
                             }
                             _ => unimplemented!()
                         }
@@ -777,9 +782,26 @@ impl Compiler {
                                 self.compile_expression(op.x.as_ref())?;
                                 self.compile_expression(y.as_ref())?;
                                 self.compile_operator(&op.op);
+
+                                return Ok(Type::Int);
                             }
                             None => unimplemented!()
                         }
+                    }
+                    Operator::And => {
+                    match &op.y {
+                        Some(_y) => {
+                            // a & b
+                        }
+                        //reference expression
+                        None => {
+                            let t = self.compile_expression(&op.x)?;
+                            self.emit_opcode(OpCode::Ref);
+                            if t != Type::Array {
+                                panic!("not implemented: {:#?}", op.x);
+                            }
+                        }
+                    }
                     }
                     _ => panic!("unsupported op: {:#?}", op)
                 }
@@ -788,24 +810,32 @@ impl Compiler {
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident && (lit.value == "true" || lit.value == "false") => {
                 let opcode = if lit.value == "true" { OpCode::True } else { OpCode::False };
                 self.emit_opcode(opcode);
+
+                return Ok(Type::Bool);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
                 let obj = Object::float(lit.value.parse().unwrap(), &mut self.gc);
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
+
+                return Ok(Type::Float);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
                 // add to gc
                 let idx = self.add_constant(Object::int(lit.value.parse().unwrap()));
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
+
+                return Ok(Type::Int);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::String => {
                 let obj = Object::string(lit.value.clone(), &mut self.gc);
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
+
+                return Ok(Type::String);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
                 let symbol = self.symbols.resolve(&lit.value);
@@ -845,13 +875,33 @@ impl Compiler {
                 self.emit_u8(call.args.len().try_into().unwrap());
             }
             Expression::CompositeLit(clit) => {
-                if let Expression::TypeArray(_ta) = clit.typ.as_ref() {
+                if let Expression::TypeSlice(ta) = clit.typ.as_ref() {
                     //todo assert length
                     //if ta.len != clit.val.values.len() { }
+
+                    let inner_t = match ta.typ.as_ref() {
+                        Expression::Ident(ident) => ident.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    let slice_t = Type::try_from(inner_t.name.as_str()).unwrap();
+                    let mut el_t = None;
+                    let key_required = clit.val.values.first().map(|a| a.key.is_some()).unwrap_or_default();
+
                     for v in &clit.val.values {
+                        //todo replace this with error handling
+                        //this makes sure keyed and unkeyed slice values aren't mixed
+                        assert_eq!(key_required, v.key.is_some());
+
                         match &v.val {
                             Element::Expr(el_expr) => {
-                                self.compile_expression(el_expr)?;
+                                let expr_t = self.compile_expression(el_expr)?;
+                                assert_eq!(slice_t, expr_t);
+                                if let Some(expected_t) = &el_t {
+                                    assert_eq!(expected_t, &expr_t);
+                                } else {
+                                    el_t = Some(expr_t);
+                                }
                             }
                             _ => {
                                 panic!("123");
@@ -860,6 +910,7 @@ impl Compiler {
                     }
                     self.emit_opcode(OpCode::Array);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    return Ok(Type::Array);
                 }
             }
             Expression::Index(ind) => {
@@ -897,7 +948,7 @@ impl Compiler {
             _ => panic!("unsupported expression:  {:#?}", expr)
         }
 
-        Ok(())
+        Ok(Type::Null)
     }
 
     fn add_constant(&mut self, obj: Object) -> u16 {
@@ -963,6 +1014,7 @@ impl Display for OpCode {
             DivideLocalConst => "DivideLocalConst",
             ModuloLocalConst => "ModuloLocalConst",
             Array => "Array",
+            Ref => "Ref",
             IndexGet => "IndexGet",
             IndexSet => "IndexSet",
             Halt => "Halt",

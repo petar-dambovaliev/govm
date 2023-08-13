@@ -13,22 +13,9 @@ fn main() {
         r#"
         package main
 
-        func fibonacci(n int) int {
-            if n <= 1 {
-                return n
-            }
-
-            a, b := 0, 1
-            for i := 2; i <= n; i++ {
-                c := a + b
-                a, b = b, c
-            }
-
-            return b
-        }
-
         func main() {
-            fibonacci(30)
+            a := &[]int{1,2,3}
+            print(a)
         }
     "#,
     );
@@ -43,12 +30,8 @@ fn main() {
     let code = goc.compile_ast(&f).unwrap();
     println!("{:#?}", bytecode_to_human(&code.instructions, false));
 
-    for _i in 0..1 {
-        let mut vm = VM::new();
-        let _ = vm.run(code.clone()).unwrap();
-    }
-
-    println!("fibonacci_rust: {:#?}", fibonacci_rust(10));
+    let mut vm = VM::new();
+    let _ = vm.run(code.clone()).unwrap();
 
     //println!("{:#?}", parser.parse_file().unwrap());
     // let mut vm = VM::new(opts, parser);

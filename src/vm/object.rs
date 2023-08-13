@@ -46,6 +46,24 @@ pub enum Type {
     Float,
     String,
     Array,
+    // refs
+    Ref
+}
+
+impl TryFrom<&str> for Type {
+    type Error = RString;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(match value {
+            "nil" => Self::Null,
+            "int" => Self::Int,
+            "bool" => Self::Bool,
+            "func" => Self::Function,
+            "float" => Self::Float,
+            "string" => Self::String,
+            _ => return Err("".to_string()),
+        })
+    }
 }
 
 // Object is a wrapper over raw pointers so we can tag them with immediate values (null, bool, int)
@@ -104,6 +122,13 @@ impl Object {
         ptr
     }
 
+    #[inline]
+    pub fn ref_t(value: Object, gc: &mut GC) -> Self {
+        let ptr = Ref::from_obj(value);
+        gc.trace(ptr);
+        ptr
+    }
+
     /// Returns the boolean value of this object pointer
     /// Note that is up to the caller to ensure this pointer is of the correct type
     #[inline(always)]
@@ -140,6 +165,12 @@ impl Object {
     pub fn as_f64(self) -> f64 {
         assert_eq!(self.tag(), Type::Float);
         unsafe { self.as_f64_unchecked() }
+    }
+
+    #[inline]
+    pub fn as_ref(&self) -> &Ref {
+        assert_eq!(self.tag(), Type::Ref);
+        unsafe { self.get::<Ref>() }
     }
 
     /// Returns the f64 value of this object pointer
@@ -229,7 +260,7 @@ impl Object {
     /// Get a mutable reference to the value this object points to
     /// It is up to the caller to ensure the object is actually heap-allocated and points to a valid memory location.
     #[inline]
-    unsafe fn get_mut<'a, T>(self) -> &'a mut T {
+    pub(crate) unsafe fn get_mut<'a, T>(self) -> &'a mut T {
         &mut *(self.as_ptr() as *mut T)
     }
 
@@ -324,7 +355,7 @@ impl PartialEq for Object {
             Type::Null | Type::Bool | Type::Int | Type::Function => self.0 == other.0,
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
-            Type::Array => {
+            Type::Array | Type::Ref => {
                 unimplemented!("Can not yet compare objects of type array")
             }
         }
@@ -341,7 +372,7 @@ impl PartialOrd for Object {
             Type::Null | Type::Bool | Type::Int => self.0.partial_cmp(&other.0),
             Type::Float => unsafe { self.as_f64_unchecked().partial_cmp(&other.as_f64()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
-            Type::Array | Type::Function => {
+            Type::Array | Type::Function | Type::Ref => {
                 unimplemented!(
                     "cannot compare {}",
                     self.tag()
@@ -432,6 +463,23 @@ impl Header {
 }
 
 #[repr(C)]
+pub struct Ref {
+    header: Header,
+    value: Object,
+}
+
+impl Ref {
+    fn from_obj(value: Object) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Ref);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value );
+        ptr
+    }
+}
+
+
+#[repr(C)]
 struct Float {
     header: Header,
     value: f64,
@@ -480,7 +528,7 @@ impl String {
 }
 
 #[repr(C)]
-struct Array {
+pub struct Array {
     header: Header,
     value: Vec<Object>,
 }
@@ -529,6 +577,10 @@ impl Display for Object {
                 f.write_char(']')?;
             }
             Type::Function => f.write_str("func")?,
+            Type::Ref => {
+                f.write_char('&')?;
+                std::fmt::Display::fmt(&self.as_ref().value, f)?;
+            }
         }
         Ok(())
     }
@@ -550,6 +602,7 @@ impl Display for Type {
             Type::String => "string",
             Type::Array => "array",
             Type::Function => "func",
+            Type::Ref => "&",
         };
         f.write_str(str)
     }

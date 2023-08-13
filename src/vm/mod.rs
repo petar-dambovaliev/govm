@@ -15,7 +15,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{FromVec, Object, Type};
+use crate::vm::object::{Array, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -133,6 +133,17 @@ impl VM {
         OpCode::from(byte)
     }
 
+    fn peak_instruction(&self) -> Option<OpCode> {
+        self.instructions.get(self.ip + 1).map(|a| OpCode::from(*a))
+    }
+
+    fn ignore_next_instruction(&mut self) {
+        let new_ip = self.ip + 1;
+        if self.instructions.len() < new_ip {
+            self.ip = new_ip;
+        }
+    }
+
     /// Pop an object off the stack
     /// This is like `Vec::pop`, but without checking if it's empty first.
     /// Performance: -25% over a regular call to `Vec::pop()`
@@ -146,6 +157,13 @@ impl VM {
             self.stack.set_len(new_len);
             ptr::read(self.stack.as_ptr().add(new_len))
         }
+    }
+
+    fn pop_ref_mut(&mut self) -> &mut Object {
+        debug_assert!(!self.stack.is_empty());
+
+        let i = self.stack.len() - 1;
+        &mut self.stack[i]
     }
 
     /// Push a new object on the stack
@@ -349,7 +367,12 @@ impl VM {
                 OpCode::Eq => impl_binary_op_method!(eq),
                 OpCode::Neq => impl_binary_op_method!(neq),
                 OpCode::Modulo => impl_binary_op_method!(rem),
-                OpCode::And => impl_binary_op_method!(and),
+                OpCode::And => {
+                    let right = self.pop();
+                    let left = self.pop();
+                    let result = left.and(right, gc)?;
+                    self.push(result);
+                },
                 OpCode::Or => impl_binary_op_method!(or),
                 OpCode::Not => {
                     let left = self.pop();
@@ -432,6 +455,10 @@ impl VM {
                 OpCode::MultiplyLocalConst => impl_binary_const_local_op_method!(mul),
                 OpCode::DivideLocalConst => impl_binary_const_local_op_method!(div),
                 OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
+                OpCode::Ref => {
+                    let val = self.pop();
+                    self.push(Object::ref_t(val, gc));
+                }
                 OpCode::Array => {
                     let length = self.read_u16();
                     let mut vec = Vec::with_capacity(length as usize);
