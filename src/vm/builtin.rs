@@ -57,7 +57,7 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
 
 /// Prints all the given arguments using a very simple format scheme
 /// Example:
-///     print("Hallo {}!", "wereld") => prints "Hallo wereld" to stdout
+///     print("hello {}!", "world") => prints "hello world" to stdout
 fn call_print(args: &[Object]) -> Result<Object, Error> {
     if !args.is_empty() {
         let mut args = args.iter();

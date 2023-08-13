@@ -656,11 +656,16 @@ impl Compiler {
 
                 let mut add_stmt = vec![];
 
+                let (key, value) = match &rng.value {
+                    Some(v) => (rng.key.clone(), Some(v.clone())),
+                    None => (None, rng.key.clone())
+                };
+
                 // assign to user vars
                 // this might look stupid but without it, if the user
                 // hasn't defined a key, there would be no way to terminate the loop
                 // i = __i__
-                if let Some(key) = &rng.key {
+                if let Some(key) = &key {
                     let key_ident = match key {
                         Expression::Ident(_) => key.clone(),
                         _ => unimplemented!()
@@ -677,7 +682,7 @@ impl Compiler {
                 //todo this doesn't support slice literals
 
                 // val = slice[__i__]
-                if let Some(val) = &rng.value {
+                if let Some(val) = value {
                     let val_ident = match val {
                         Expression::Ident(_) => val.clone(),
                         _ => unimplemented!()
@@ -691,7 +696,7 @@ impl Compiler {
                     add_stmt.push( Statement::Assign(AssignStmt{
                         pos: 0,
                         op: Operator::Define,
-                        left: vec![val_ident],
+                        left: vec![val_ident.clone()],
                         right: vec![Expression::Index(Index{
                             pos: (0, 0),
                             left: Box::new(slice_ident),
@@ -709,6 +714,7 @@ impl Compiler {
                     post: Some(post),
                     body: BlockStmt{ pos: body.pos, list: add_stmt },
                 });
+
                 self.compile_statement(&forstmt)?;
             }
             _ => return Err(Error::ReferenceError(format!(

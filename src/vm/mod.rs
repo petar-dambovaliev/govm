@@ -15,7 +15,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{Array, FromVec, Object, Type};
+use crate::vm::object::{Array, FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -471,12 +471,10 @@ impl VM {
                     self.push(obj);
                 }
                 OpCode::IndexGet => {
-                    //todo
-
-                    // let index = self.pop();
-                    // let left = self.pop();
-                    // let result = index_get(left, index, gc)?;
-                    // self.push(result);
+                    let index = self.pop();
+                    let left = self.pop();
+                    let result = index_get(left, index, gc)?;
+                    self.push(result);
                 }
                 OpCode::IndexSet => {
                     //todo
@@ -496,59 +494,69 @@ impl VM {
     }
 }
 
-// fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
-//     if index.tag() != Type::Int {
-//         return Err(Error::TypeError(format!(
-//             "lijst index moet een integer zijn, geen {}",
-//             index.tag()
-//         )));
-//     }
-//
-//     let result = match left.tag() {
-//         Type::Array => index_get_array(left, index.as_int()),
-//         Type::String => index_get_string(left, index.as_int(), gc),
-//         _ => {
-//             return Err(Error::TypeError(format!(
-//                 "kan niet indexeren in objecten van type {}",
-//                 left.tag()
-//             )))
-//         }
-//     }?;
-//
-//     Ok(result)
-// }
+fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
+    if index.tag() != Type::Int {
+        return Err(Error::TypeError(format!(
+            "lijst index moet een integer zijn, geen {}",
+            index.tag()
+        )));
+    }
 
-// fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
-//     let array = obj.as_vec();
-//     if index < 0 {
-//         index += array.len() as isize;
-//     }
-//     let index = index as usize;
-//     if index >= array.len() {
-//         return Err(Error::IndexError(
-//             "lijst index valt buiten de lijst".to_string(),
-//         ));
-//     }
-//
-//     Ok(array[index])
-// }
+    let let_obj = match left.tag() {
+        Type::Ref => {
+            left.as_ref().value
+        }
+        _ => left
+    };
 
-// fn index_get_string(obj: Object, mut index: isize, gc: &mut GC) -> Result<Object, Error> {
-//     let str = obj.as_str();
-//     if index < 0 {
-//         index += str.chars().count() as isize;
-//     }
-//     let index = index as usize;
-//     if index >= str.len() {
-//         return Err(Error::IndexError(
-//             "lijst index valt buiten de lijst".to_string(),
-//         ));
-//     }
-//
-//     let ch = str.chars().nth(index).unwrap();
-//     let result = Object::string(ch.to_string(), gc);
-//     Ok(result)
-// }
+    let result = match let_obj.tag() {
+        Type::Array => index_get_array(let_obj, index.as_int()),
+        Type::String => index_get_string(let_obj, index.as_int(), gc),
+        _ => {
+            return Err(Error::TypeError(format!(
+                "object cannot be indexed: {}",
+                left.tag()
+            )))
+        }
+    }?;
+
+    Ok(result)
+}
+
+fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
+    let array = obj.as_vec();
+    if index < 0 {
+        index += array.len() as isize;
+    }
+    let index = index as usize;
+    if index >= array.len() {
+        return Err(Error::IndexError(
+            "out of bounds".to_string(),
+        ));
+    }
+
+    Ok(array[index])
+}
+
+fn index_get_string(obj: Object, mut index: isize, gc: &mut GC) -> Result<Object, Error> {
+    let str = obj.as_str();
+    if index < 0 {
+        return Err(Error::IndexError(
+            "out of bounds".to_string(),
+        ));
+    }
+
+    let i = index as usize + 1;
+    if i >= str.len() - 1 {
+        return Err(Error::IndexError(
+            "out of bounds".to_string(),
+        ));
+    }
+
+    let ch = str.chars().nth(i).unwrap();
+    let result = Object::string(ch.to_string(), gc);
+    Ok(result)
+}
 
 // fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
 //     if index.tag() != Type::Int {

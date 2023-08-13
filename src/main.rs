@@ -14,10 +14,11 @@ fn main() {
         package main
 
         func main() {
-            a := &[]int{1,2}
+            a := "asd"
 
-            for i, el := range a {
-                print(el)
+            for i, ch := range a {
+                print(i)
+                print(ch)
             }
         }
     "#,
