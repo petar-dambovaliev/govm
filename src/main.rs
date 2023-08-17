@@ -9,15 +9,25 @@ use crate::vm::VM;
 fn main() {
     //todo definition order matters and it shouldn't
     let _i = Instant::now();
+    //todo
+    // this seems to make the vm crazy &[]int{1,2,3}
     let mut parser = Parser::from(
         r#"
         package main
 
         func main() {
-            a := "asd"
-            for i, ch := range a {
-                print(i)
-                print(ch)
+            // commits := map[string]int{
+            //     "rsc": 3711,
+            //     "r":   2138,
+            //     "gri": 1908,
+            //     "adg": 912,
+            // }
+
+            commits := []int{1,2,3}
+
+            for k, v := range commits {
+                print(k)
+                print(v)
             }
         }
     "#,
@@ -32,7 +42,6 @@ fn main() {
     let mut goc = Compiler::new();
     let code = goc.compile_ast(&f).unwrap();
     println!("{:#?}", bytecode_to_human(&code.instructions, false));
-
     let mut vm = VM::new();
     let _ = vm.run(code.clone()).unwrap();
 

@@ -4,6 +4,8 @@ use crate::vm::Error;
 use crate::vm::gc::GC;
 use std::string::String as RString;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::collections::btree_map::{IntoIter};
+use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
 
 
@@ -17,13 +19,13 @@ macro_rules! init {
 }
 
 /// The mask to apply to get just the type (tag) from a value object
-const TAG_MASK: usize = 0b111;
+const TAG_MASK: usize = 0b1111;
 
 /// The mask to apply to get just the pointer address from a pointer object
 const PTR_MASK: usize = !TAG_MASK;
 
-/// The amount of bits to shift-left the actual value in value objects (last 3 bits store the type tag)
-const VALUE_SHIFT_BITS: usize = 3;
+/// The amount of bits to shift-left the actual value in value objects (last 4 bits store the type tag)
+const VALUE_SHIFT_BITS: usize = 4;
 
 #[allow(unused)]
 /// The max integer value we can store in a value object
@@ -33,11 +35,12 @@ const MAX_INT: isize = isize::MAX >> VALUE_SHIFT_BITS;
 /// The minimum integer value we can store in a value object
 const MIN_INT: isize = isize::MIN >> VALUE_SHIFT_BITS;
 
-#[derive(Debug, PartialEq)]
+// this is 4 bits and it supports up to 16 variants
+#[derive(Debug, PartialEq, Copy, Clone)]
 #[repr(u8)]
 pub enum Type {
     // The types below are all stored directly inside the pointer
-    Null = 0b000,
+    Null = 0b0000,
     Int,
     Bool,
     Function,
@@ -46,6 +49,8 @@ pub enum Type {
     Float,
     String,
     Array,
+    Map,
+    Iter,
     // refs
     Ref
 }
@@ -67,7 +72,7 @@ impl TryFrom<&str> for Type {
 }
 
 // Object is a wrapper over raw pointers so we can tag them with immediate values (null, bool, int)
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq)]
 pub struct Object(*mut u8);
 unsafe impl Sync for Object {}
 unsafe impl Send for Object {}
@@ -76,7 +81,9 @@ impl Object {
     /// Creates a new object from the value (or address) given with the given type mask applied
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {
-        Self((raw as usize | t as usize) as _)
+        let s =  Self((raw as usize | t as usize) as _);
+        assert_eq!(s.tag(), t);
+        s
     }
 
     /// Returns the type of this object pointer
@@ -215,6 +222,12 @@ impl Object {
         unsafe { self.as_vec_unchecked() }
     }
 
+    #[inline]
+    pub fn as_iter(&mut self) -> &mut ObjIter {
+        assert_eq!(self.tag(), Type::Iter);
+        unsafe { ObjIter::read(self) }
+    }
+
     /// Returns a reference to the Vec<Object> value this pointer points to
     ///
     /// # Safety
@@ -231,6 +244,22 @@ impl Object {
     pub fn as_vec_mut(&mut self) -> &mut Vec<Object> {
         assert_eq!(self.tag(), Type::Array);
         unsafe { self.as_vec_unchecked_mut() }
+    }
+
+    /// Returns a mutable reference to the Vec<Object> value this pointer points to
+    /// Panics if object does not point to an Array
+    #[inline]
+    pub fn as_map_mut(&mut self) -> &mut BTreeMap<Object, Object> {
+        assert_eq!(self.tag(), Type::Map);
+        unsafe { &mut self.get_mut::<Map>().value }
+    }
+
+    /// Returns a mutable reference to the Vec<Object> value this pointer points to
+    /// Panics if object does not point to an Array
+    #[inline]
+    pub fn as_map(&self) -> &BTreeMap<Object, Object> {
+        assert_eq!(self.tag(), Type::Map);
+        unsafe { &self.get_mut::<Map>().value }
     }
 
     /// Returns a mutable reference to the Vec<Object> value this pointer points to
@@ -344,19 +373,31 @@ impl FromVec<&[Object]> for Object {
 impl PartialEq for Object {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        //todo this should be an error
-        if self.tag() != other.tag() {
-            return false;
+        match (self.tag(), other.tag()) {
+            (Type::Ref, Type::Null) => {
+                let reference = self.as_ref();
+                return reference.value.tag() == Type::Null;
+            }
+            (Type::Null, Type::Ref) => {
+                let reference = other.as_ref();
+                return reference.value.tag() == Type::Null;
+            }
+            _ => {
+                if self.tag() != other.tag() {
+                    return false;
+                }
+            }
         }
-
         // TODO: Maybe delay type check (on other object) to here
         //  (and then only for heap-allocated objects)
         match self.tag() {
             Type::Null | Type::Bool | Type::Int | Type::Function => self.0 == other.0,
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
-            Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
-            Type::Array | Type::Ref => {
-                unimplemented!("Can not yet compare objects of type array")
+            Type::String => {
+                unsafe { self.as_str_unchecked() == other.as_str_unchecked() }
+            },
+            Type::Array | Type::Ref | Type::Map | Type::Iter => {
+                unimplemented!("Can not yet compare objects of type {} and {}", self.tag(), other.tag())
             }
         }
     }
@@ -371,14 +412,25 @@ impl PartialOrd for Object {
         match self.tag() {
             Type::Null | Type::Bool | Type::Int => self.0.partial_cmp(&other.0),
             Type::Float => unsafe { self.as_f64_unchecked().partial_cmp(&other.as_f64()) },
-            Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
-            Type::Array | Type::Function | Type::Ref => {
+            Type::String => {
+                unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) }
+            },
+            Type::Array | Type::Function | Type::Ref | Type::Map | Type::Iter => {
                 unimplemented!(
                     "cannot compare {}",
                     self.tag()
                 )
             }
         }
+    }
+}
+
+impl Ord for Object {
+    fn cmp(&self, other: &Self) -> Ordering {
+        debug_assert_eq!(self.tag(), other.tag());
+
+        let ord = self.partial_cmp(other).unwrap_or(Ordering::Less);
+        ord
     }
 }
 
@@ -422,8 +474,13 @@ macro_rules! impl_cmp {
     ($func_name:ident, $op:tt) => {
         #[inline(always)]
         pub fn $func_name(self, rhs: Self, _gc: &mut GC) -> Result<Object, Error> {
-            if self.tag() != rhs.tag() {
-                return Err(Error::TypeError(format!("invalid types {} and {}", self.tag(), rhs.tag())));
+            match (self.tag(), rhs.tag()) {
+                (Type::Ref, Type::Null) | (Type::Null, Type::Ref) => {}
+                _ => {
+                    if self.tag() != rhs.tag() {
+                        return Err(Error::TypeError(format!("invalid types {} and {}", self.tag(), rhs.tag())));
+                    }
+                }
             }
 
             // Delegate actual comparison to PartialOrd/PartialEq implementation
@@ -528,6 +585,22 @@ impl String {
 }
 
 #[repr(C)]
+pub struct Map {
+    header: Header,
+    value: BTreeMap<Object, Object>
+}
+
+impl Map {
+    pub(crate) fn from_map(map: BTreeMap<Object, Object>, gc: &mut GC) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Map);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => map);
+        ptr
+    }
+}
+
+#[repr(C)]
 pub struct Array {
     header: Header,
     value: Vec<Object>,
@@ -576,6 +649,12 @@ impl Display for Object {
                 }
                 f.write_char(']')?;
             }
+            Type::Map => {
+                unimplemented!()
+            }
+            Type::Iter => {
+                unimplemented!()
+            }
             Type::Function => f.write_str("func")?,
             Type::Ref => {
                 f.write_char('&')?;
@@ -583,6 +662,65 @@ impl Display for Object {
             }
         }
         Ok(())
+    }
+}
+
+#[repr(C)]
+pub enum IterType {
+    Map(IntoIter<Object, Object>),
+    Array(std::iter::Enumerate<std::vec::IntoIter<Object>>)
+}
+
+#[repr(C)]
+pub struct ObjIter {
+    header: Header,
+    value: IterType
+}
+
+impl ObjIter {
+    unsafe fn read(ptr: &mut Object) -> &mut ObjIter {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn next(&mut self) -> (Object, Object) {
+        match &mut self.value {
+            IterType::Map(map_iter) => {
+                map_iter.next().unwrap_or((Object::null(), Object::null()))
+            }
+            IterType::Array(iter) => {
+                iter.next()
+                    .map(|(a, b)| (Object::int(a as isize), b))
+                    .unwrap_or((Object::null(), Object::null()))
+            }
+        }
+    }
+
+    pub fn from_obj(obj: Object) -> Object {
+        match obj.tag() {
+            Type::Map => {
+                Self::from_map(obj.as_map().clone())
+            }
+            Type::Array => {
+                Self::from_vec(obj.as_vec().clone())
+            }
+            _ => panic!("not an iterator: {:#?}", obj)
+        }
+    }
+
+    pub fn from_map(map: BTreeMap<Object, Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => IterType::Map(map.into_iter()));
+        ptr
+    }
+
+    pub fn from_vec(vec: Vec<Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => IterType::Array(vec.into_iter().enumerate()));
+        ptr
     }
 }
 
@@ -602,6 +740,8 @@ impl Display for Type {
             Type::String => "string",
             Type::Array => "array",
             Type::Function => "func",
+            Type::Map => "map",
+            Type::Iter => "iter",
             Type::Ref => "&",
         };
         f.write_str(str)
@@ -725,5 +865,20 @@ mod tests {
         ptr.free();
     }
 
+    #[test]
+    fn test_iter() {
+        let mut ptr = ObjIter::from_vec(vec![Object::int(1)]);
+        assert_eq!(ptr.tag(), Type::Iter);
+        let iter = ptr.as_iter();
+        assert_eq!((Object::int(0), Object::int(1)), iter.next());
+    }
+
+    #[test]
+    fn test_ord() {
+        let mut gc = GC::new();
+        let left = Object::string("foo", &mut gc);
+        let right = Object::string("foo", &mut gc);
+        assert_eq!(left.cmp(&right), Ordering::Equal)
+    }
     // TODO: Test PartialEq & PartialOrd implementations
 }

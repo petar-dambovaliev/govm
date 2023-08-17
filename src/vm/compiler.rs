@@ -1,7 +1,7 @@
 use crate::vm::symbols::*;
 use std::fmt::Display;
 use std::fmt::Write;
-use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Call, Declaration, DeclStmt, Element, Expression, ExprStmt, File, ForStmt, Ident, IncDecStmt, Index, LiteralValue, Operation, Statement};
+use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, ExprStmt, File, Ident, Operation, Statement};
 use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
@@ -57,6 +57,9 @@ pub(crate) enum OpCode {
     IndexGet,
     IndexSet,
     Ref,
+    Map,
+    Range,
+    IntoIter,
     Halt,
 }
 
@@ -73,7 +76,7 @@ impl OpCode {
     fn operands(&self) -> &[usize] {
         match self {
             // OpCodes with 1 operand of 2 bytes
-            OpCode::Const | OpCode::Jump | OpCode::JumpIfFalse | OpCode::Array => &[2],
+            OpCode::Const | OpCode::Jump | OpCode::JumpIfFalse | OpCode::Array | OpCode::Map => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -86,13 +89,14 @@ impl OpCode {
             | OpCode::SubtractLocalConst
             | OpCode::MultiplyLocalConst
             | OpCode::DivideLocalConst
-            | OpCode::ModuloLocalConst => &[2, 2],
+            | OpCode::ModuloLocalConst
+            | OpCode::Range => &[2, 2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call => &[1],
+            OpCode::Call  => &[1],
 
             OpCode::SetLocal | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::GetLocal => &[2],
 
@@ -121,7 +125,8 @@ impl OpCode {
             | OpCode::IndexGet
             | OpCode::IndexSet
             | OpCode::Halt
-            | OpCode::Ref => &[],
+            | OpCode::Ref
+            | OpCode::IntoIter => &[],
         }
     }
 }
@@ -176,6 +181,16 @@ impl Compiler {
 
     /// Compiles the given AST into executable Bytecode
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
+        //insert builtin values
+        self.constants.push(Object::null());
+        let nil_symbol = self.symbols.define("nil");
+        assert_eq!(0, nil_symbol.index);
+
+        self.constants.push(Object::null());
+        let nil_symbol = self.symbols.define("_");
+        assert_eq!(1, nil_symbol.index);
+
+
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
         for s in &ast.decl {
@@ -458,6 +473,7 @@ impl Compiler {
                 self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
             }
             Statement::Assign(assign) => {
+                //todo this isn't going to work for `a,b := call()`
                 for (left, right) in assign.left.iter().zip(assign.right.iter()) {
                     match &assign.op {
                         Operator::Define => {
@@ -476,7 +492,8 @@ impl Compiler {
                             self.emit_opcode(op);
                             self.emit_u16(symbol.index);
                         }
-                        Operator::Assign => {
+                        //Operator::Define
+                        Operator::Assign => 'assign: {
                             let name = match &left {
                                 Expression::Ident(name) => name.name.as_str(),
                                 Expression::Index(ind) => {
@@ -493,6 +510,10 @@ impl Compiler {
                                     )))
                                 }
                             };
+
+                            if name == "_" {
+                                break 'assign;
+                            }
 
                             let symbol = self.symbols.resolve(name);
                             match symbol {
@@ -517,7 +538,7 @@ impl Compiler {
                                 }
                                 None => {
                                     return Err(Error::ReferenceError(format!(
-                                        "`{name}` is not defined"
+                                        "assign: `{name}` is not defined"
                                     )))
                                 }
                             }
@@ -613,111 +634,86 @@ impl Compiler {
             }
             Statement::Empty(_) => {}
             Statement::Range(rng) => {
-                let i = Expression::Ident(Ident{ pos: 0, name: "__i__".to_string() });
+                self.emit_opcode(OpCode::Null);
+                self.loop_contexts
+                    .push(LoopContext::new(self.instructions.len()));
+                let iter_sym;
 
-                // __i__ < len(slice)
-                let condition = Box::new(Statement::Expr(ExprStmt{ expr: Expression::Operation(Operation{
-                    pos: 0,
-                    op: Operator::Less,
-                    x: Box::new(i.clone()),
-                    y: Some(Box::new(Expression::Call(Call{
-                        pos: (0, 0),
-                        args: vec![rng.expr.clone()],
-                        func: Box::new(Expression::Ident(Ident{ pos: 0, name: "len".to_string() })),
-                        dots: None,
-                    }))),
-                }) }));
+                // __iter__ := into_iter X
+                let iter_ident = Expression::Ident(Ident{ pos: 0, name: "__iter__".to_string() });
+                {
+                    let name = "__iter__";
+                    iter_sym = self.symbols.define(name);
+                    self.compile_expression(&rng.expr)?;
+                    self.emit_opcode(OpCode::IntoIter);
+                    self.emit_opcode(OpCode::SetLocal);
+                    self.emit_u16(iter_sym.index);
+                }
 
-                // __i__ := 0
-                let init = Box::new(Statement::Assign(
-                    AssignStmt{
-                        pos: 0,
-                        op: Operator::Define,
-                        //todo
-                        //come up with better naming convention
-                        //for compiler generated variables as to not clash with the user
-                        left: vec![i.clone()],
-                        right: vec![Expression::BasicLit(BasicLit{
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: "0".to_string(),
-                        })],
+                let pos_before_condition = self.instructions.len();
+
+                // k, v := range __iter__
+                let key = rng.key.clone().unwrap_or(Expression::Ident(Ident{ pos: 0, name: "_".to_string() }));
+                let value = rng.value.clone().unwrap_or(Expression::Ident(Ident{ pos: 0, name: "_".to_string() }));
+                match (&key, &value) {
+                    (Expression::Ident(key_id), Expression::Ident(value_id)) => {
+                        let key_symbol = self.symbols.define(key_id.name.as_str());
+                        let value_symbol = self.symbols.define(value_id.name.as_str());
+
+                        self.emit_opcode(OpCode::GetLocal);
+                        self.emit_u16(iter_sym.index);
+
+                        self.emit_opcode(OpCode::Range);
+                        self.emit_u16(key_symbol.index);
+                        self.emit_u16(value_symbol.index);
                     }
-                ));
-
-                // __i__++
-                let post = Box::new(Statement::IncDec(IncDecStmt{
-                    pos: 0,
-                    op: Operator::Inc,
-                    expr: i.clone(),
-                }));
-
-                let mut body = rng.body.clone();
-
-                let mut add_stmt = vec![];
-
-                let (key, value) = match &rng.value {
-                    Some(v) => (rng.key.clone(), Some(v.clone())),
-                    None => (None, rng.key.clone())
-                };
-
-                // assign to user vars
-                // this might look stupid but without it, if the user
-                // hasn't defined a key, there would be no way to terminate the loop
-                // i = __i__
-                if let Some(key) = &key {
-                    let key_ident = match key {
-                        Expression::Ident(_) => key.clone(),
-                        _ => unimplemented!()
-                    };
-
-                    add_stmt.push(Statement::Assign(AssignStmt{
-                        pos: 0,
-                        op: Operator::Define,
-                        left: vec![key_ident],
-                        right: vec![i.clone()],
-                    }));
+                    _ => panic!("invalid")
                 }
 
-                //todo this doesn't support slice literals
-
-                // val = slice[__i__]
-                if let Some(val) = value {
-                    let val_ident = match val {
-                        Expression::Ident(_) => val.clone(),
-                        _ => unimplemented!()
-                    };
-
-                    let slice_ident = match &rng.expr {
-                        Expression::Ident(_) => rng.expr.clone(),
-                        _ => unimplemented!()
-                    };
-
-                    add_stmt.push( Statement::Assign(AssignStmt{
+                self.compile_statement(&Statement::Expr(ExprStmt{ expr: Expression::Operation(Operation{
+                    pos: 0,
+                    op: Operator::NotEqual,
+                    x: Box::new(Expression::Operation(Operation{
                         pos: 0,
-                        op: Operator::Define,
-                        left: vec![val_ident.clone()],
-                        right: vec![Expression::Index(Index{
-                            pos: (0, 0),
-                            left: Box::new(slice_ident),
-                            index: Box::new(i.clone()),
-                        })],
-                    }));
+                        op: Operator::And,
+                        x: Box::new(key),
+                        y: None,
+                    })),
+                    y: Some(Box::new(Expression::Ident(Ident{ pos: 0, name: "nil".to_string() }))),
+                }) }))?;
+
+                if self.last_instruction_is(OpCode::Pop) {
+                    self.remove_last_instruction();
                 }
 
-                add_stmt.append(&mut body.list);
+                let pos_jump_if_false = self.instructions.len();
+                self.emit_opcode(OpCode::JumpIfFalse);
+                self.emit_u16(JUMP_PLACEHOLDER);
+                self.emit_opcode(OpCode::Pop);
 
-                let forstmt = Statement::For(ForStmt{
-                    pos: 0,
-                    init: Some(init),
-                    cond: Some(condition),
-                    post: Some(post),
-                    body: BlockStmt{ pos: body.pos, list: add_stmt },
-                });
+                self.compile_block_statement(&rng.body)?;
 
-                //panic!("");
+                if self.last_instruction_is(OpCode::Pop) {
+                    self.remove_last_instruction();
+                } else {
+                    self.emit_opcode(OpCode::Null);
+                }
 
-                self.compile_statement(&forstmt)?;
+                // emit jump instruction to loop condition
+                self.emit_opcode(OpCode::Jump);
+                self.emit_u16(pos_before_condition.try_into().unwrap());
+
+                // Update jump statement for when initial condition evaluated to false (should skip over entire loop)
+                self.change_jump_operand_at(
+                    pos_jump_if_false,
+                    self.instructions.len().try_into().unwrap(),
+                );
+
+                // Update jump statements for every break statement inside this loop
+                let ctx = self.loop_contexts.pop().unwrap();
+                for ip in ctx.break_instructions {
+                    self.change_jump_operand_at(ip, self.instructions.len().try_into().unwrap());
+                }
             }
             _ => return Err(Error::ReferenceError(format!(
                 "`{:#?}` stmt not supported:", stmt
@@ -796,6 +792,9 @@ impl Compiler {
     fn compile_expression(&mut self, expr: &Expression) -> Result<Type, Error> {
         match expr {
             //todo this is a total mess: fix me
+            Expression::TypeMap(tm) => {
+                panic!("{:#?}", tm);
+            }
             Expression::Operation(op) => {
                 match op.op {
                     Operator::Star => {
@@ -844,7 +843,7 @@ impl Compiler {
                             }
                         }
                     }
-                    Operator::Less | Operator::LessEqual => {
+                    Operator::Less | Operator::LessEqual | Operator::NotEqual => {
                         match &op.y {
                             // a * b // multiplication
                             Some(y) => {
@@ -902,11 +901,11 @@ impl Compiler {
                         }
                         //reference expression
                         None => {
-                            let t = self.compile_expression(&op.x)?;
+                            let _ = self.compile_expression(&op.x)?;
                             self.emit_opcode(OpCode::Ref);
-                            if t != Type::Array {
-                                panic!("not implemented: {:#?}", op.x);
-                            }
+                            // if t != Type::Array {
+                            //     panic!("not implemented: {:#?}", op.x);
+                            // }
                         }
                     }
                     }
@@ -982,6 +981,50 @@ impl Compiler {
                 self.emit_u8(call.args.len().try_into().unwrap());
             }
             Expression::CompositeLit(clit) => {
+                //map
+                if let Expression::TypeMap(mp) = clit.typ.as_ref() {
+                    let inner_key_t = match mp.key.as_ref() {
+                        Expression::Ident(ident) => ident.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    let inner_val_t = match mp.val.as_ref() {
+                        Expression::Ident(ident) => ident.clone(),
+                        _ => unimplemented!()
+                    };
+
+                    let map_key_t = Type::try_from(inner_key_t.name.as_str()).unwrap();
+                    let map_val_t = Type::try_from(inner_val_t.name.as_str()).unwrap();
+
+                    for v in &clit.val.values {
+                        if let Some(key) = &v.key {
+                            match key {
+                                Element::Expr(el_expr) => {
+                                    let expr_t = self.compile_expression(el_expr)?;
+                                    assert_eq!(map_key_t, expr_t);
+                                }
+                                _ => {
+                                    panic!("TypeMap val");
+                                }
+                            }
+                        }
+
+                        match &v.val {
+                            Element::Expr(el_expr) => {
+                                let expr_t = self.compile_expression(el_expr)?;
+                                assert_eq!(map_val_t, expr_t);
+                            }
+                            _ => {
+                                panic!("TypeMap key");
+                            }
+                        }
+                    }
+                    self.emit_opcode(OpCode::Map);
+                    self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    return Ok(Type::Array);
+                }
+
+                //slice
                 if let Expression::TypeSlice(ta) = clit.typ.as_ref() {
                     //todo assert length
                     //if ta.len != clit.val.values.len() { }
@@ -1035,6 +1078,7 @@ impl Compiler {
                 }
 
                 let symbol = self.symbols.resolve(&ident.name);
+
                 match symbol.as_ref() {
                     Some(symbol) => {
                         let opcode = if symbol.scope == Scope::Global {
@@ -1047,12 +1091,16 @@ impl Compiler {
                     }
                     None => {
                         return Err(Error::ReferenceError(format!(
-                            "`{}` is not defined", ident.name
+                            "ident: `{}` is not defined", ident.name
                         )))
                     }
                 }
             }
-            _ => panic!("unsupported expression:  {:#?}", expr)
+            _ => {
+                return Err(Error::SyntaxError(format!(
+                    "unsupported expression:  {:#?}", expr
+                )))
+            }
         }
 
         Ok(Type::Null)
@@ -1124,6 +1172,9 @@ impl Display for OpCode {
             Ref => "Ref",
             IndexGet => "IndexGet",
             IndexSet => "IndexSet",
+            Map => "Map",
+            Range => "Range",
+            IntoIter => "IntoIter",
             Halt => "Halt",
         };
         f.write_str(s)
@@ -1156,13 +1207,18 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
             }
 
             match width {
-                2 => write!(
-                    str,
-                    "{}",
-                    (code[ip + 1] as u16) | ((code[ip + 2] as u16) << 8)
-                )
-                    .unwrap(),
-                1 => write!(str, "{}", code[ip + 1]).unwrap(),
+                2 => {
+                    write!(
+                        str,
+                        "{}",
+                        (code[ip + 1] as u16) | ((code[ip + 2] as u16) << 8)
+                    )
+                        .unwrap()
+                },
+                1 => {
+
+                    write!(str, "{}", code[ip + 1]).unwrap()
+                },
                 _ => panic!("invalid operand width"),
             };
             ip += width;

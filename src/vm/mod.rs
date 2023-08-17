@@ -4,6 +4,7 @@ mod builtin;
 pub mod object;
 mod gc;
 
+use std::collections::BTreeMap;
 //use std::default::Default;
 use std::fmt::{Debug};
 
@@ -15,7 +16,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{Array, FromString, FromVec, Object, Type};
+use crate::vm::object::{Array, FromString, FromVec, Map, ObjIter, Object, Type, IterType};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -321,6 +322,18 @@ impl VM {
                     let value = self.pop();
                     self.set_local(idx, value);
                 }
+                OpCode::Range => {
+                    let key_idx = self.read_u16();
+                    let value_idx = self.read_u16();
+
+                    let mut obj = self.pop();
+
+                    let iter = obj.as_iter();
+                    let (k, v) = iter.next();
+
+                    self.set_local(key_idx, k);
+                    self.set_local(value_idx, v);
+                }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
                     let value = self.get_local(idx);
@@ -470,11 +483,28 @@ impl VM {
                     let obj = Object::array(vec, gc);
                     self.push(obj);
                 }
+                OpCode::Map => {
+                    let length = self.read_u16();
+                    let mut map = BTreeMap::new();
+                    for _ in 0..length {
+                        let value = self.pop();
+                        let key = self.pop();
+                        map.insert(key, value);
+                    }
+
+                    let obj = Map::from_map(map, gc);
+                    self.push(obj);
+                }
                 OpCode::IndexGet => {
                     let index = self.pop();
                     let left = self.pop();
                     let result = index_get(left, index, gc)?;
                     self.push(result);
+                }
+                OpCode::IntoIter => {
+                    let obj = self.pop();
+                    let iter = ObjIter::from_obj(obj);
+                    self.push(iter);
                 }
                 OpCode::IndexSet => {
                     //todo
@@ -495,13 +525,6 @@ impl VM {
 }
 
 fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
-    if index.tag() != Type::Int {
-        return Err(Error::TypeError(format!(
-            "lijst index moet een integer zijn, geen {}",
-            index.tag()
-        )));
-    }
-
     let let_obj = match left.tag() {
         Type::Ref => {
             left.as_ref().value
@@ -510,8 +533,26 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
     };
 
     let result = match let_obj.tag() {
-        Type::Array => index_get_array(let_obj, index.as_int()),
-        Type::String => index_get_string(let_obj, index.as_int(), gc),
+        Type::Array => {
+            if index.tag() != Type::Int {
+                return Err(Error::TypeError(format!(
+                    "expected int index: {}",
+                    index.tag()
+                )));
+            }
+            index_get_array(let_obj, index.as_int())
+        },
+        Type::String => {
+            if index.tag() != Type::Int {
+                return Err(Error::TypeError(format!(
+                    "expected int index: {}",
+                    index.tag()
+                )));
+            }
+
+            index_get_string(let_obj, index.as_int(), gc)
+        },
+        Type::Map => index_get_map(let_obj, index, gc),
         _ => {
             return Err(Error::TypeError(format!(
                 "object cannot be indexed: {}",
@@ -521,6 +562,12 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
     }?;
 
     Ok(result)
+}
+
+fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
+    let map = obj.as_map();
+    let res = map.get(&key).cloned().unwrap_or(Object::null());
+    Ok(res)
 }
 
 fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
