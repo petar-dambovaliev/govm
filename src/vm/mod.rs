@@ -570,7 +570,9 @@ fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error>
 
 fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
     let map = left.as_map_mut();
-    *map.get_mut(&index).unwrap() = value;
+    //isert returns the old value
+    // later for the gc
+    map.insert(index, value);
 
     Ok(value)
 }

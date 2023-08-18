@@ -23,8 +23,8 @@ fn main() {
                 "adg": 912,
             }
 
-           commits["rsc"] = 999
-           print(commits["rsc"])
+           commits["asd"] = 999
+           print(len(commits))
         }
     "#,
     );
