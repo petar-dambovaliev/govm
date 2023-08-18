@@ -507,13 +507,11 @@ impl VM {
                     self.push(iter);
                 }
                 OpCode::IndexSet => {
-                    //todo
-
-                    // let value = self.pop();
-                    // let index = self.pop();
-                    // let left = self.pop();
-                    // let value = index_set(left, index, value)?;
-                    // self.push(value);
+                    let value = self.pop();
+                    let index = self.pop();
+                    let left = self.pop();
+                    let value = index_set(left, index, value)?;
+                    self.push(value);
                 }
                 OpCode::Halt => {
                     gc.untrace(final_result);
@@ -570,6 +568,13 @@ fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error>
     Ok(res)
 }
 
+fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
+    let map = left.as_map_mut();
+    *map.get_mut(&index).unwrap() = value;
+
+    Ok(value)
+}
+
 fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
     let array = obj.as_vec();
     if index < 0 {
@@ -605,70 +610,73 @@ fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Er
     Ok(result)
 }
 
-// fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
-//     if index.tag() != Type::Int {
-//         return Err(Error::TypeError(format!(
-//             "lijst index moet een integer zijn, geen {}",
-//             index.tag()
-//         )));
-//     }
-//     match left.tag() {
-//         Type::Array => index_set_array(left.as_vec_mut(), index.as_int(), value)?,
-//         Type::String => index_set_string(left.as_string_mut(), index.as_int(), value)?,
-//         _ => {
-//             return Err(Error::TypeError(format!(
-//                 "kan niet indexeren in objecten van type {}",
-//                 left.tag()
-//             )))
-//         }
-//     }
-//
-//     Ok(value)
-// }
+fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
+    if left.tag() == Type::Map {
+        return index_set_map(left, index, value);
+    }
+    if index.tag() != Type::Int {
+        return Err(Error::TypeError(format!(
+            "index should be int {}",
+            index.tag()
+        )));
+    }
+    match left.tag() {
+        Type::Array => index_set_array(left.as_vec_mut(), index.as_int(), value)?,
+        Type::String => index_set_string(left.as_string_mut(), index.as_int(), value)?,
+        _ => {
+            return Err(Error::TypeError(format!(
+                "index_set: invalid type {}",
+                left.tag()
+            )))
+        }
+    }
 
-// fn index_set_array(array: &mut Vec<Object>, mut index: isize, value: Object) -> Result<(), Error> {
-//     if index < 0 {
-//         index += array.len() as isize;
-//     }
-//     let index = index as usize;
-//     if index >= array.len() {
-//         return Err(Error::IndexError(
-//             "lijst index valt buiten de lijst".to_string(),
-//         ));
-//     }
-//     array[index] = value;
-//     Ok(())
-// }
-//
-// fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Result<(), Error> {
-//     let strlen = string.chars().count();
-//     if index < 0 {
-//         index += strlen as isize;
-//     }
-//     let index = index as usize;
-//     if index >= strlen {
-//         return Err(Error::IndexError(
-//             "lijst index valt buiten de lijst".to_string(),
-//         ));
-//     }
-//
-//     if value.tag() != Type::String {
-//         return Err(Error::TypeError(
-//             "kan geen niet-string invoegen op string object".to_string(),
-//         ));
-//     }
-//
-//     string.replace_range(
-//         string
-//             .char_indices()
-//             .nth(index)
-//             .map(|(pos, ch)| (pos..pos + ch.len_utf8()))
-//             .unwrap(),
-//         value.as_str(),
-//     );
-//
-//     Ok(())
-// }
+    Ok(value)
+}
+
+fn index_set_array(array: &mut Vec<Object>, mut index: isize, value: Object) -> Result<(), Error> {
+    if index < 0 {
+        index += array.len() as isize;
+    }
+    let index = index as usize;
+    if index >= array.len() {
+        return Err(Error::IndexError(
+            "index_set_array: out of bounds".to_string(),
+        ));
+    }
+    array[index] = value;
+    Ok(())
+}
+
+fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Result<(), Error> {
+    let strlen = string.chars().count();
+    if index < 0 {
+        index += strlen as isize;
+    }
+    let index = index as usize;
+    if index >= strlen {
+        return Err(Error::IndexError(
+            "out of bounds".to_string(),
+        ));
+    }
+
+    if value.tag() != Type::String {
+        return Err(Error::TypeError(
+            "expected string".to_string(),
+        ));
+    }
+
+    string.replace_range(
+        string
+            .char_indices()
+            .nth(index)
+            .map(|(pos, ch)| (pos..pos + ch.len_utf8()))
+            .unwrap(),
+        value.as_str(),
+    );
+
+    Ok(())
+}
 
 
 

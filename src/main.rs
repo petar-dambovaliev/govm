@@ -16,19 +16,15 @@ fn main() {
         package main
 
         func main() {
-            // commits := map[string]int{
-            //     "rsc": 3711,
-            //     "r":   2138,
-            //     "gri": 1908,
-            //     "adg": 912,
-            // }
-
-            commits := []int{1,2,3}
-
-            for k, v := range commits {
-                print(k)
-                print(v)
+            commits := map[string]int{
+                "rsc": 3711,
+                "r":   2138,
+                "gri": 1908,
+                "adg": 912,
             }
+
+           commits["rsc"] = 999
+           print(commits["rsc"])
         }
     "#,
     );

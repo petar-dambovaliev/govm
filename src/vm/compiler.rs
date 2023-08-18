@@ -476,6 +476,19 @@ impl Compiler {
                 //todo this isn't going to work for `a,b := call()`
                 for (left, right) in assign.left.iter().zip(assign.right.iter()) {
                     match &assign.op {
+                        Operator::AddAssign => {
+                            self.compile_statement(&Statement::Assign(AssignStmt{
+                                pos: 0,
+                                op: Operator::Assign,
+                                left: vec![left.clone()],
+                                right: vec![Expression::Operation(Operation{
+                                    pos: 0,
+                                    op: Operator::Add,
+                                    x: Box::new(left.clone()),
+                                    y: Some(Box::new(right.clone())),
+                                })],
+                            }))?;
+                        }
                         Operator::Define => {
                             let name = match left {
                                 Expression::Ident(ident) => &ident.name,
