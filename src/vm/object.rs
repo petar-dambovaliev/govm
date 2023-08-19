@@ -36,7 +36,7 @@ const MAX_INT: isize = isize::MAX >> VALUE_SHIFT_BITS;
 const MIN_INT: isize = isize::MIN >> VALUE_SHIFT_BITS;
 
 // this is 4 bits and it supports up to 16 variants
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum Type {
     // The types below are all stored directly inside the pointer
@@ -66,7 +66,7 @@ impl TryFrom<&str> for Type {
             "func" => Self::Function,
             "float" => Self::Float,
             "string" => Self::String,
-            _ => return Err("".to_string()),
+            _ => return Err(value.to_string()),
         })
     }
 }

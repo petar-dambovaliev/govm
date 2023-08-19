@@ -449,9 +449,17 @@ impl VM {
                     self.push(result);
                 }
                 OpCode::ReturnValue => {
-                    let result = self.pop();
+                    let num_r = self.read_u16();
+                    let mut res = Vec::with_capacity(num_r as usize);
+
+                    for _ in 0..num_r {
+                        res.push(self.pop());
+                    }
                     self.popframe();
-                    self.push(result);
+
+                    for re in res {
+                        self.push(re);
+                    }
                 }
                 OpCode::Return => {
                     self.popframe();

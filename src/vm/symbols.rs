@@ -1,3 +1,5 @@
+use crate::vm::object::Type;
+
 pub(crate) struct SymbolTable {
     /// A vector of contexts
     /// The context at index 0 will always be the global context,
@@ -21,7 +23,7 @@ pub(crate) enum Scope {
 pub(crate) struct Context {
     scope: Scope,
     max_size: usize,
-    symbols: Vec<Vec<String>>,
+    symbols: Vec<Vec<(String, Vec<Type>)>>,
 }
 
 impl Context {
@@ -46,9 +48,9 @@ impl Context {
     }
 
     /// Defines a new symbol in the current context its inner-most scope.
-    fn define(&mut self, name: &str) -> Symbol {
+    fn define(&mut self, name: &str, types: Vec<Type>) -> Symbol {
         let current_scope = self.symbols.last_mut().unwrap();
-        current_scope.push(name.to_string());
+        current_scope.push((name.to_string(), types));
         self.max_size += 1;
 
         Symbol {
@@ -59,15 +61,15 @@ impl Context {
 
     /// Resolves a symbol in this context along with its absolute index (relative to the context its top scope)
     #[inline]
-    fn resolve(&self, name: &str) -> Option<Symbol> {
+    fn resolve(&self, name: &str) -> Option<(Symbol, Vec<Type>)> {
         let mut abs_index = self.total_len();
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
-            if let Some(index) = scope.iter().position(|n| n == name) {
-                return Some(Symbol {
+            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+                return Some((Symbol {
                     index: (abs_index + index).try_into().unwrap(),
                     scope: self.scope,
-                });
+                }, scope[index].1.clone()));
             }
         }
 
@@ -112,12 +114,12 @@ impl SymbolTable {
     }
 
     /// Define a symbol in the current context (and current scope within that context).
-    pub fn define(&mut self, name: &str) -> Symbol {
-        self.current_context().define(name)
+    pub fn define(&mut self, name: &str, types: Vec<Type>) -> Symbol {
+        self.current_context().define(name, types)
     }
 
     /// Resolve a symbol in either the current context or the global context if no local was found.
-    pub fn resolve(&mut self, name: &str) -> Option<Symbol> {
+    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, Vec<Type>)> {
         let symbol = self.current_context().resolve(name);
         if symbol.is_some() {
             return symbol;

@@ -240,6 +240,15 @@ pub enum Expression {
     TypeInterface(InterfaceType), // interface { ... }
 }
 
+impl Expression {
+    pub fn as_ident(&self) -> &Ident {
+        match self {
+            Expression::Ident(id) => id,
+            _ => panic!("{:#?} is not an identifier", self)
+        }
+    }
+}
+
 // ================ Declaration Definition ================
 
 #[derive(Debug, Clone)]

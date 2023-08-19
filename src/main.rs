@@ -15,16 +15,18 @@ fn main() {
         r#"
         package main
 
-        func main() {
-            commits := map[string]int{
-                "rsc": 3711,
-                "r":   2138,
-                "gri": 1908,
-                "adg": 912,
-            }
+        func work1() (int, int) {
+            return 1, 2
+        }
 
-           commits["asd"] = 999
-           print(len(commits))
+        func work() (int, int) {
+            return work1()
+        }
+
+        func main() {
+            a, b := work()
+            print(a)
+            print(b)
         }
     "#,
     );
