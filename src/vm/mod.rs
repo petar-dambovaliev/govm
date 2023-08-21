@@ -14,9 +14,10 @@ use std::ptr;
 
 #[cfg(feature = "debug")]
 use crate::compiler::bytecode_to_human;
-use crate::vm::compiler::{Bytecode, OpCode};
+use crate::vm::compiler::{Bytecode, bytecode_to_human, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{Array, FromString, FromVec, Map, ObjIter, Object, Type, IterType};
+use crate::vm::object::{Array, FromString, FromVec, Map, ObjIter, Object, Type, IterType, Struct};
+use std::io::Write;
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -205,7 +206,7 @@ impl VM {
 
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
-        #[cfg(feature = "debug")]
+        //#[cfg(feature = "debug")]
         {
             println!("Bytecode (raw)= \n{:?}", &code.instructions);
             print!(
@@ -254,50 +255,48 @@ impl VM {
             }};
         }
 
-        #[cfg(feature = "debug")]
-            let mut debug_pause = 0;
+        //#[cfg(feature = "debug")]
+            //let mut debug_pause = 0;
 
-        #[cfg(feature = "debug")]
+        //#[cfg(feature = "debug")]
             // Buffer used to capture input from stdin during stepped debugging
-            let mut buffer = String::new();
-
+            //let mut buffer = String::new();
         loop {
-            #[cfg(feature = "debug")]
-            {
-                println!(
-                    "{:16}= {}/{}: {}",
-                    "Instruction",
-                    self.ip,
-                    self.instructions.len() - 1,
-                    // This prints the OpCode along with all of its operand values (in decimal form)
-                    bytecode_to_human(&self.instructions[self.ip..], false)
-                        .split(" ")
-                        .next()
-                        .unwrap()
-                );
-                print!("{:16}= [", "Globals");
-                for (i, v) in self.globals.iter().enumerate() {
-                    print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
-                }
-                println!("]");
-                print!("{:16}= [", "Stack");
-                for (i, v) in self.stack.iter().enumerate() {
-                    print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
-                }
-                println!("]");
-
-                if debug_pause == 0 {
-                    print!("{} ", ">".repeat(40));
-                    std::io::stdout().flush().unwrap();
-                    buffer.clear();
-                    std::io::stdin().read_line(&mut buffer).unwrap();
-                    debug_pause = buffer.trim().parse().unwrap_or(1) - 1;
-                } else {
-                    println!("{} ", ">".repeat(40));
-                    debug_pause -= 1;
-                }
-            }
-
+            //#[cfg(feature = "debug")]
+            // {
+            //     println!(
+            //         "{:16}= {}/{}: {}",
+            //         "Instruction",
+            //         self.ip,
+            //         self.instructions.len() - 1,
+            //         // This prints the OpCode along with all of its operand values (in decimal form)
+            //         bytecode_to_human(&self.instructions[self.ip..], false)
+            //             .split(" ")
+            //             .next()
+            //             .unwrap()
+            //     );
+            //     print!("{:16}= [", "Globals");
+            //     for (i, v) in self.globals.iter().enumerate() {
+            //         print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
+            //     }
+            //     println!("]");
+            //     print!("{:16}= [", "Stack");
+            //     for (i, v) in self.stack.iter().enumerate() {
+            //         print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
+            //     }
+            //     println!("]");
+            //
+            //     if debug_pause == 0 {
+            //         print!("{} ", ">".repeat(40));
+            //         std::io::stdout().flush().unwrap();
+            //         buffer.clear();
+            //         std::io::stdin().read_line(&mut buffer).unwrap();
+            //         debug_pause = buffer.trim().parse().unwrap_or(1) - 1;
+            //     } else {
+            //         println!("{} ", ">".repeat(40));
+            //         debug_pause -= 1;
+            //     }
+            // }
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();
@@ -501,6 +500,18 @@ impl VM {
                     }
 
                     let obj = Map::from_map(map, gc);
+                    self.push(obj);
+                }
+                OpCode::Struct => {
+                    let length = self.read_u16();
+
+                    let mut fields = Vec::with_capacity(length as usize);
+                    for _ in 0..length {
+                        let value = self.pop();
+                        fields.push(value);
+                    }
+
+                    let obj = Struct::object(fields);
                     self.push(obj);
                 }
                 OpCode::IndexGet => {

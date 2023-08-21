@@ -6,7 +6,7 @@ use crate::parser::Parser;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::vm::{builtin, Error, Object};
 use crate::vm::gc::GC;
-use crate::vm::object::{FromString, Type};
+use crate::vm::object::{FromString, Struct, Type};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -60,6 +60,7 @@ pub(crate) enum OpCode {
     Map,
     Range,
     IntoIter,
+    Struct,
     Halt,
 }
 
@@ -76,7 +77,7 @@ impl OpCode {
     fn operands(&self) -> &[usize] {
         match self {
             // OpCodes with 1 operand of 2 bytes
-            OpCode::Const | OpCode::Jump | OpCode::JumpIfFalse | OpCode::Array | OpCode::Map | OpCode::ReturnValue => &[2],
+            OpCode::Const | OpCode::Jump | OpCode::JumpIfFalse | OpCode::Array | OpCode::Map | OpCode::ReturnValue | OpCode::Struct => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -182,11 +183,11 @@ impl Compiler {
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         //insert builtin values
         self.constants.push(Object::null());
-        let nil_symbol = self.symbols.define("nil", vec![Type::Null]);
+        let nil_symbol = self.symbols.define("nil", DefineType::Var,vec![ContextType::Unnamed(Type::Null)]);
         assert_eq!(0, nil_symbol.index);
 
         self.constants.push(Object::null());
-        let nil_symbol = self.symbols.define("_", vec![]);
+        let nil_symbol = self.symbols.define("_", DefineType::Var,vec![]);
         assert_eq!(1, nil_symbol.index);
 
         //todo define error interface properly
@@ -262,7 +263,7 @@ impl Compiler {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
                     for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-                        let symbol = self.symbols.define(name.name.as_str(), vec![]);
+                        let symbol = self.symbols.define(name.name.as_str(),DefineType::Var, vec![]);
                         self.compile_expression(value)?;
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -280,9 +281,9 @@ impl Compiler {
                     for el in &f.typ.result.list {
                         //println!("el {:#?}", el);
                         let t: Type = el.typ.as_ident().name.as_str().try_into().unwrap();
-                        decl_r_types.push(t);
+                        decl_r_types.push(ContextType::Unnamed(t));
                     }
-                    Some(self.symbols.define(&f.name.name, decl_r_types.clone()))
+                    Some(self.symbols.define(&f.name.name, DefineType::Func,decl_r_types.clone()))
                 } else {
                     None
                 };
@@ -296,7 +297,7 @@ impl Compiler {
                 for p in &f.typ.params.list {
                     let t: Type = p.typ.as_ident().name.as_str().try_into().unwrap();
                     for name in &p.name {
-                        self.symbols.define(&name.name, vec![t]);
+                        self.symbols.define(&name.name, DefineType::Var,vec![ContextType::Unnamed(t)]);
                     }
                 }
 
@@ -309,9 +310,10 @@ impl Compiler {
 
                 if !decl_r_types.is_empty() {
                     decl_r_types.sort();
+                    let a: Vec<Type> = decl_r_types.iter().map(|b|b.as_unnamed()).collect();
                     let mut rts = rts.unwrap();
                     rts.sort();
-                    assert_eq!(decl_r_types, rts);
+                    assert_eq!(a, rts);
                 }
 
                 if self.last_instruction_is(OpCode::Pop) {
@@ -356,7 +358,7 @@ impl Compiler {
             Declaration::Const(c) => {
                 for spec in &c.specs {
                     for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-                        let symbol = self.symbols.define(name.name.as_str(), vec![]);
+                        let symbol = self.symbols.define(name.name.as_str(), DefineType::Var,vec![]);
                         self.compile_expression(value)?;
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -368,12 +370,67 @@ impl Compiler {
                     }
                 }
             }
-            Declaration::Type(_t) => {
-                //todo implement struct
-                // for spec in &t.specs {
-                //     spec.name
-                // }
-                //
+            Declaration::Type(t) => {
+                for spec in &t.specs {
+                    if !spec.alias {
+                        let mut field_types = vec![];
+                        if let Expression::TypeStruct(ta) = &spec.typ {
+                            //todo tags
+                            for field in &ta.fields {
+                                //todo won't work for refs
+                                let inner_t = field.typ.as_ident();
+
+                                let t = match (Type::try_from(inner_t.name.as_str()), self.symbols.resolve(inner_t.name.as_str())) {
+                                    (Ok(t), None) => t,
+                                    (Err(_), Some((_, dt, _))) => {
+                                        // if it has more than 1 field, it is a struct or a function
+                                        match dt {
+                                            DefineType::Struct => Type::Struct,
+                                            DefineType::Func => Type::Null,
+                                            _ => {
+                                                panic!("undefined type: {:#?}", inner_t);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        panic!("undefined type: {:#?}", inner_t);
+                                    }
+                                };
+
+                                for name in &field.name {
+                                    field_types.push(ContextType::Named(name.name.as_str().to_string(), t));
+                                }
+                            }
+                        }
+
+                        let ftl = field_types.len();
+
+                        let mut field_values = Vec::with_capacity(ftl);
+
+                        for _ in 0..ftl {
+                            field_values.push(Object::null());
+                        }
+
+                        let name = spec.name.name.as_str();
+                        let symbol = self.symbols.define(name, DefineType::Struct, field_types);
+
+                        let obj = Struct::object(field_values);
+                        let idx = self.add_constant(obj);
+                        self.emit_opcode(OpCode::Const);
+                        self.emit_u16(idx);
+
+                        let opcode = if symbol.scope == Scope::Global {
+                            OpCode::SetGlobal
+                        } else {
+                            OpCode::SetLocal
+                        };
+                        self.emit_opcode(opcode);
+                        self.emit_u16(symbol.index);
+
+                        self.emit_opcode(OpCode::Const);
+                        self.emit_u16(idx);
+                    }
+                }
             }
         }
         Ok(())
@@ -512,7 +569,7 @@ impl Compiler {
                                     _=> panic!("only identifiers can be defined: {:#?}", left)
                                 };
 
-                                let symbol = self.symbols.define(name.as_str(), vec![]);
+                                let symbol = self.symbols.define(name.as_str(), DefineType::Var, vec![]);
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
                                 } else {
@@ -565,6 +622,7 @@ impl Compiler {
                             _ => unimplemented!()
                         }
                     }
+                    return Ok(vec![]);
                 }
 
                 for (left, right) in assign.left.iter().zip(assign.right.iter()) {
@@ -588,7 +646,7 @@ impl Compiler {
                                 _=> panic!("only identifiers can be defined: {:#?}", left)
                             };
 
-                            let symbol = self.symbols.define(name.as_str(), vec![]);
+                            let symbol = self.symbols.define(name.as_str(), DefineType::Var,vec![]);
                             self.compile_expression(right)?;
                             let op = if symbol.scope == Scope::Global {
                                 OpCode::SetGlobal
@@ -757,7 +815,7 @@ impl Compiler {
                 let iter_ident = Expression::Ident(Ident{ pos: 0, name: "__iter__".to_string() });
                 {
                     let name = "__iter__";
-                    iter_sym = self.symbols.define(name, vec![]);
+                    iter_sym = self.symbols.define(name, DefineType::Var,vec![]);
                     self.compile_expression(&rng.expr)?;
                     self.emit_opcode(OpCode::IntoIter);
                     self.emit_opcode(OpCode::SetLocal);
@@ -771,8 +829,8 @@ impl Compiler {
                 let value = rng.value.clone().unwrap_or(Expression::Ident(Ident{ pos: 0, name: "_".to_string() }));
                 match (&key, &value) {
                     (Expression::Ident(key_id), Expression::Ident(value_id)) => {
-                        let key_symbol = self.symbols.define(key_id.name.as_str(), vec![]);
-                        let value_symbol = self.symbols.define(value_id.name.as_str(), vec![]);
+                        let key_symbol = self.symbols.define(key_id.name.as_str(), DefineType::Var, vec![]);
+                        let value_symbol = self.symbols.define(value_id.name.as_str(),DefineType::Var, vec![]);
 
                         self.emit_opcode(OpCode::GetLocal);
                         self.emit_u16(iter_sym.index);
@@ -1094,8 +1152,12 @@ impl Compiler {
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
 
-                let (_, rts) = self.symbols.resolve(call.func.as_ident().name.as_str()).unwrap();
-                return Ok(rts);
+                let (_, dt, rts) = self.symbols.resolve(call.func.as_ident().name.as_str()).unwrap();
+                if dt != DefineType::Func {
+                    panic!("tried to call not a function");
+                }
+                let r: Vec<Type> = rts.iter().map(|a|a.as_unnamed()).collect();
+                return Ok(r);
             }
             Expression::CompositeLit(clit) => {
                 //map
@@ -1179,6 +1241,72 @@ impl Compiler {
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
                     return Ok(vec![Type::Array]);
                 }
+
+                //struct
+                if let Expression::Ident(name) = clit.typ.as_ref() {
+                    let (s, dt, inner_types) = self.symbols.resolve(name.name.as_str()).unwrap();
+                    assert_eq!(DefineType::Struct, dt);
+                    if let Some(ct) = inner_types.first() {
+                        let _ = ct.as_named();
+                    }
+
+                    let opcode = if s.scope == Scope::Global {
+                        OpCode::GetGlobal
+                    } else {
+                        OpCode::GetLocal
+                    };
+                    self.emit_opcode(opcode);
+                    self.emit_u16(s.index);
+
+
+                    //sort by order of definition
+                    let mut clit_values = clit.val.values.clone();
+                    clit_values.sort_by_key(|val| {
+                        inner_types.iter().map(|inner_type| inner_type.as_named()).position(|x| {
+                            let k_el = val.key.as_ref().unwrap();
+                            let k = match k_el {
+                                Element::Expr(expr) => {
+                                    expr.as_ident().clone()
+                                }
+                                _ => panic!("ident")
+                            };
+
+                            x.0 == k.name.as_str()
+                        })
+                    });
+
+                    let key_required = clit.val.values.first().map(|a| a.key.is_some()).unwrap_or_default();
+
+                    for (i, inner_type) in inner_types.iter().enumerate() {
+                        let (_, inner_type) = inner_type.as_named();
+                        match clit_values.get(i) {
+                            Some(kel) => {
+                                assert_eq!(key_required, kel.key.is_some());
+
+                                //compile values
+                                let el_expr = match &kel.val {
+                                    Element::Expr(expr) => expr.clone(),
+                                    _ => panic!("expr")
+                                };
+                                let rt = self.compile_expression(&el_expr)?;
+                                assert_eq!(1, rt.len());
+                                assert_eq!(inner_type, rt[0]);
+
+                            }
+                            None => {
+                                //push to the stack default value
+                                //inner_type
+                            }
+                        }
+                    }
+
+                    self.emit_opcode(OpCode::Struct);
+                    self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    return Ok(vec![Type::Struct]);
+
+                    //panic!("s: {:#?}, dt: {:#?}, types: {:#?}", s.index, dt, inner_types);
+                }
+                panic!("unknown composite lit {:#?}", clit);
             }
             Expression::Index(ind) => {
                 self.compile_expression(&ind.left)?;
@@ -1292,6 +1420,7 @@ impl Display for OpCode {
             Map => "Map",
             Range => "Range",
             IntoIter => "IntoIter",
+            Struct => "Struct",
             Halt => "Halt",
         };
         f.write_str(s)

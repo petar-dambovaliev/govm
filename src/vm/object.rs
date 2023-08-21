@@ -7,6 +7,7 @@ use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::collections::btree_map::{IntoIter};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
+use std::io::Write as IoWrite;
 
 
 /// A macro for initialising a struct field (without dropping the original default value)
@@ -51,7 +52,7 @@ pub enum Type {
     Array,
     Map,
     Iter,
-    // refs
+    Struct,
     Ref
 }
 
@@ -228,6 +229,18 @@ impl Object {
         unsafe { ObjIter::read(self) }
     }
 
+    #[inline]
+    pub fn as_struct(&self) -> &Struct {
+        assert_eq!(self.tag(), Type::Struct);
+        unsafe { Struct::read(self) }
+    }
+
+    #[inline]
+    pub fn as_struct_mut(&mut self) -> &mut Struct {
+        assert_eq!(self.tag(), Type::Struct);
+        unsafe { Struct::read_mut(self) }
+    }
+
     /// Returns a reference to the Vec<Object> value this pointer points to
     ///
     /// # Safety
@@ -396,7 +409,7 @@ impl PartialEq for Object {
             Type::String => {
                 unsafe { self.as_str_unchecked() == other.as_str_unchecked() }
             },
-            Type::Array | Type::Ref | Type::Map | Type::Iter => {
+            Type::Array | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
                 unimplemented!("Can not yet compare objects of type {} and {}", self.tag(), other.tag())
             }
         }
@@ -415,7 +428,7 @@ impl PartialOrd for Object {
             Type::String => {
                 unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) }
             },
-            Type::Array | Type::Function | Type::Ref | Type::Map | Type::Iter => {
+            Type::Array | Type::Function | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
                 unimplemented!(
                     "cannot compare {}",
                     self.tag()
@@ -649,6 +662,18 @@ impl Display for Object {
                 }
                 f.write_char(']')?;
             }
+            Type::Struct => {
+                let strct = unsafe { self.as_struct() };
+
+                f.write_str("Struct{")?;
+                for (i, obj) in strct.values.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    std::fmt::Display::fmt(&obj, f)?;
+                }
+                f.write_char('}')?;
+            }
             Type::Map => {
                 unimplemented!()
             }
@@ -662,6 +687,30 @@ impl Display for Object {
             }
         }
         Ok(())
+    }
+}
+
+#[repr(C)]
+pub struct Struct {
+    header: Header,
+    values: Vec<Object>
+}
+
+impl Struct {
+    unsafe fn read(ptr: &Object) -> &Self {
+        ptr.get::<Self>()
+    }
+
+    unsafe fn read_mut(ptr: &Object) -> &mut Self {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn object(values: Vec<Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.values => values);
+        ptr
     }
 }
 
@@ -743,6 +792,7 @@ impl Display for Type {
             Type::Map => "map",
             Type::Iter => "iter",
             Type::Ref => "&",
+            Type::Struct => "struct",
         };
         f.write_str(str)
     }

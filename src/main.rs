@@ -15,18 +15,13 @@ fn main() {
         r#"
         package main
 
-        func work1() (int, int) {
-            return 1, 2
+        type Foo struct {
+            i int
+            b int
         }
-
-        func work() (int, int) {
-            return work1()
-        }
-
         func main() {
-            a, b := work()
-            print(a)
-            print(b)
+            f := Foo{b: 2, i: 1}
+            print(f)
         }
     "#,
     );
@@ -37,9 +32,10 @@ fn main() {
     // };
 
     let f = parser.parse_file().unwrap();
+    //panic!("{:#?}", f);
     let mut goc = Compiler::new();
     let code = goc.compile_ast(&f).unwrap();
-    println!("{:#?}", bytecode_to_human(&code.instructions, false));
+    //println!("{:#?}", bytecode_to_human(&code.instructions, false));
     let mut vm = VM::new();
     let _ = vm.run(code.clone()).unwrap();
 

@@ -19,11 +19,40 @@ pub(crate) enum Scope {
     Global,
 }
 
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+pub enum ContextType {
+    Named(String, Type),
+    Unnamed(Type)
+}
+
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+pub enum DefineType {
+    Var,
+    Struct,
+    Func
+}
+
+impl ContextType {
+    pub fn as_named(&self) -> (String, Type) {
+        match &self {
+            Self::Named(s, t) => (s.clone(), t.clone()),
+            _ => panic!()
+        }
+    }
+
+    pub fn as_unnamed(&self) -> Type {
+        match &self {
+            Self::Unnamed(t) => t.clone(),
+            _ => panic!()
+        }
+    }
+}
+
 /// A context is a type of environment to store values in. This can be either a global context or a local (to a function) context.
 pub(crate) struct Context {
     scope: Scope,
     max_size: usize,
-    symbols: Vec<Vec<(String, Vec<Type>)>>,
+    symbols: Vec<Vec<(String, DefineType, Vec<ContextType>)>>,
 }
 
 impl Context {
@@ -48,9 +77,9 @@ impl Context {
     }
 
     /// Defines a new symbol in the current context its inner-most scope.
-    fn define(&mut self, name: &str, types: Vec<Type>) -> Symbol {
+    fn define(&mut self, name: &str, dt: DefineType, types: Vec<ContextType>) -> Symbol {
         let current_scope = self.symbols.last_mut().unwrap();
-        current_scope.push((name.to_string(), types));
+        current_scope.push((name.to_string(), dt, types));
         self.max_size += 1;
 
         Symbol {
@@ -61,7 +90,7 @@ impl Context {
 
     /// Resolves a symbol in this context along with its absolute index (relative to the context its top scope)
     #[inline]
-    fn resolve(&self, name: &str) -> Option<(Symbol, Vec<Type>)> {
+    fn resolve(&self, name: &str) -> Option<(Symbol, DefineType, Vec<ContextType>)> {
         let mut abs_index = self.total_len();
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
@@ -69,7 +98,7 @@ impl Context {
                 return Some((Symbol {
                     index: (abs_index + index).try_into().unwrap(),
                     scope: self.scope,
-                }, scope[index].1.clone()));
+                }, scope[index].1.clone(), scope[index].2.clone()));
             }
         }
 
@@ -114,12 +143,12 @@ impl SymbolTable {
     }
 
     /// Define a symbol in the current context (and current scope within that context).
-    pub fn define(&mut self, name: &str, types: Vec<Type>) -> Symbol {
-        self.current_context().define(name, types)
+    pub fn define(&mut self, name: &str, dt: DefineType, types: Vec<ContextType>) -> Symbol {
+        self.current_context().define(name, dt, types)
     }
 
     /// Resolve a symbol in either the current context or the global context if no local was found.
-    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, Vec<Type>)> {
+    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, DefineType, Vec<ContextType>)> {
         let symbol = self.current_context().resolve(name);
         if symbol.is_some() {
             return symbol;
