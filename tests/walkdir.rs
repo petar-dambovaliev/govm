@@ -21,7 +21,11 @@ impl Walkdir {
         exclude: [S; N2],
     ) -> io::Result<Walkext<S, N1, N2>> {
         let dir = self;
-        Ok(Walkext { dir, include, exclude })
+        Ok(Walkext {
+            dir,
+            include,
+            exclude,
+        })
     }
 
     pub fn next(&mut self) -> io::Result<Option<PathBuf>> {

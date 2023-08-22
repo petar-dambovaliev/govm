@@ -1,14 +1,13 @@
-use std::cmp::Ordering;
-use std::ptr::drop_in_place;
-use crate::vm::Error;
 use crate::vm::gc::GC;
-use std::string::String as RString;
+use crate::vm::Error;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
-use std::collections::btree_map::{IntoIter};
+use std::cmp::Ordering;
+use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
 use std::io::Write as IoWrite;
-
+use std::ptr::drop_in_place;
+use std::string::String as RString;
 
 /// A macro for initialising a struct field (without dropping the original default value)
 macro_rules! init {
@@ -53,7 +52,7 @@ pub enum Type {
     Map,
     Iter,
     Struct,
-    Ref
+    Ref,
 }
 
 impl TryFrom<&str> for Type {
@@ -82,7 +81,7 @@ impl Object {
     /// Creates a new object from the value (or address) given with the given type mask applied
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {
-        let s =  Self((raw as usize | t as usize) as _);
+        let s = Self((raw as usize | t as usize) as _);
         assert_eq!(s.tag(), t);
         s
     }
@@ -406,11 +405,13 @@ impl PartialEq for Object {
         match self.tag() {
             Type::Null | Type::Bool | Type::Int | Type::Function => self.0 == other.0,
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
-            Type::String => {
-                unsafe { self.as_str_unchecked() == other.as_str_unchecked() }
-            },
+            Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             Type::Array | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
-                unimplemented!("Can not yet compare objects of type {} and {}", self.tag(), other.tag())
+                unimplemented!(
+                    "Can not yet compare objects of type {} and {}",
+                    self.tag(),
+                    other.tag()
+                )
             }
         }
     }
@@ -425,14 +426,9 @@ impl PartialOrd for Object {
         match self.tag() {
             Type::Null | Type::Bool | Type::Int => self.0.partial_cmp(&other.0),
             Type::Float => unsafe { self.as_f64_unchecked().partial_cmp(&other.as_f64()) },
-            Type::String => {
-                unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) }
-            },
+            Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
             Type::Array | Type::Function | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
-                unimplemented!(
-                    "cannot compare {}",
-                    self.tag()
-                )
+                unimplemented!("cannot compare {}", self.tag())
             }
         }
     }
@@ -548,7 +544,6 @@ impl Ref {
     }
 }
 
-
 #[repr(C)]
 struct Float {
     header: Header,
@@ -600,7 +595,7 @@ impl String {
 #[repr(C)]
 pub struct Map {
     header: Header,
-    value: BTreeMap<Object, Object>
+    value: BTreeMap<Object, Object>,
 }
 
 impl Map {
@@ -693,7 +688,7 @@ impl Display for Object {
 #[repr(C)]
 pub struct Struct {
     header: Header,
-    values: Vec<Object>
+    values: Vec<Object>,
 }
 
 impl Struct {
@@ -717,13 +712,13 @@ impl Struct {
 #[repr(C)]
 pub enum IterType {
     Map(IntoIter<Object, Object>),
-    Array(std::iter::Enumerate<std::vec::IntoIter<Object>>)
+    Array(std::iter::Enumerate<std::vec::IntoIter<Object>>),
 }
 
 #[repr(C)]
 pub struct ObjIter {
     header: Header,
-    value: IterType
+    value: IterType,
 }
 
 impl ObjIter {
@@ -733,26 +728,19 @@ impl ObjIter {
 
     pub fn next(&mut self) -> (Object, Object) {
         match &mut self.value {
-            IterType::Map(map_iter) => {
-                map_iter.next().unwrap_or((Object::null(), Object::null()))
-            }
-            IterType::Array(iter) => {
-                iter.next()
-                    .map(|(a, b)| (Object::int(a as isize), b))
-                    .unwrap_or((Object::null(), Object::null()))
-            }
+            IterType::Map(map_iter) => map_iter.next().unwrap_or((Object::null(), Object::null())),
+            IterType::Array(iter) => iter
+                .next()
+                .map(|(a, b)| (Object::int(a as isize), b))
+                .unwrap_or((Object::null(), Object::null())),
         }
     }
 
     pub fn from_obj(obj: Object) -> Object {
         match obj.tag() {
-            Type::Map => {
-                Self::from_map(obj.as_map().clone())
-            }
-            Type::Array => {
-                Self::from_vec(obj.as_vec().clone())
-            }
-            _ => panic!("not an iterator: {:#?}", obj)
+            Type::Map => Self::from_map(obj.as_map().clone()),
+            Type::Array => Self::from_vec(obj.as_vec().clone()),
+            _ => panic!("not an iterator: {:#?}", obj),
         }
     }
 

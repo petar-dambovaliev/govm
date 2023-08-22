@@ -1,12 +1,15 @@
-use crate::vm::symbols::*;
-use std::fmt::Display;
-use std::fmt::Write;
-use crate::parser::ast::{AssignStmt, BasicLit, BlockStmt, Declaration, DeclStmt, Element, Expression, ExprStmt, File, Ident, Operation, Statement};
-use crate::parser::Parser;
+use crate::parser::ast::{
+    AssignStmt, BasicLit, BlockStmt, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
+    Expression, File, Ident, KeyedElement, LiteralValue, Operation, Statement,
+};
 use crate::parser::token::{Keyword, LitKind, Operator};
-use crate::vm::{builtin, Error, Object};
+use crate::parser::Parser;
 use crate::vm::gc::GC;
 use crate::vm::object::{FromString, Struct, Type};
+use crate::vm::symbols::*;
+use crate::vm::{builtin, Error, Object};
+use std::fmt::Display;
+use std::fmt::Write;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -77,7 +80,13 @@ impl OpCode {
     fn operands(&self) -> &[usize] {
         match self {
             // OpCodes with 1 operand of 2 bytes
-            OpCode::Const | OpCode::Jump | OpCode::JumpIfFalse | OpCode::Array | OpCode::Map | OpCode::ReturnValue | OpCode::Struct => &[2],
+            OpCode::Const
+            | OpCode::Jump
+            | OpCode::JumpIfFalse
+            | OpCode::Array
+            | OpCode::Map
+            | OpCode::ReturnValue
+            | OpCode::Struct => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -97,7 +106,7 @@ impl OpCode {
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call  => &[1],
+            OpCode::Call => &[1],
 
             OpCode::SetLocal | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::GetLocal => &[2],
 
@@ -183,16 +192,19 @@ impl Compiler {
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         //insert builtin values
         self.constants.push(Object::null());
-        let nil_symbol = self.symbols.define("nil", DefineType::Var,vec![ContextType::Unnamed(Type::Null)]);
+        let nil_symbol = self.symbols.define(
+            "nil",
+            DefineType::Var,
+            vec![ContextType::Unnamed(Type::Null)],
+        );
         assert_eq!(0, nil_symbol.index);
 
         self.constants.push(Object::null());
-        let nil_symbol = self.symbols.define("_", DefineType::Var,vec![]);
+        let nil_symbol = self.symbols.define("_", DefineType::Var, vec![]);
         assert_eq!(1, nil_symbol.index);
 
         //todo define error interface properly
         // implement interfaces
-
 
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
@@ -263,7 +275,9 @@ impl Compiler {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
                     for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-                        let symbol = self.symbols.define(name.name.as_str(),DefineType::Var, vec![]);
+                        let symbol =
+                            self.symbols
+                                .define(name.name.as_str(), DefineType::Var, vec![]);
                         self.compile_expression(value)?;
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -283,7 +297,10 @@ impl Compiler {
                         let t: Type = el.typ.as_ident().name.as_str().try_into().unwrap();
                         decl_r_types.push(ContextType::Unnamed(t));
                     }
-                    Some(self.symbols.define(&f.name.name, DefineType::Func,decl_r_types.clone()))
+                    Some(
+                        self.symbols
+                            .define(&f.name.name, DefineType::Func, decl_r_types.clone()),
+                    )
                 } else {
                     None
                 };
@@ -297,7 +314,11 @@ impl Compiler {
                 for p in &f.typ.params.list {
                     let t: Type = p.typ.as_ident().name.as_str().try_into().unwrap();
                     for name in &p.name {
-                        self.symbols.define(&name.name, DefineType::Var,vec![ContextType::Unnamed(t)]);
+                        self.symbols.define(
+                            &name.name,
+                            DefineType::Var,
+                            vec![ContextType::Unnamed(t)],
+                        );
                     }
                 }
 
@@ -310,7 +331,7 @@ impl Compiler {
 
                 if !decl_r_types.is_empty() {
                     decl_r_types.sort();
-                    let a: Vec<Type> = decl_r_types.iter().map(|b|b.as_unnamed()).collect();
+                    let a: Vec<Type> = decl_r_types.iter().map(|b| b.as_unnamed()).collect();
                     let mut rts = rts.unwrap();
                     rts.sort();
                     assert_eq!(a, rts);
@@ -319,7 +340,7 @@ impl Compiler {
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
                     assert!(decl_r_types.len() < u16::MAX as usize);
-                    let num_r_types=  decl_r_types.len() as u16;
+                    let num_r_types = decl_r_types.len() as u16;
 
                     self.emit_opcode(OpCode::ReturnValue);
                     self.emit_u16(num_r_types);
@@ -358,7 +379,9 @@ impl Compiler {
             Declaration::Const(c) => {
                 for spec in &c.specs {
                     for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-                        let symbol = self.symbols.define(name.name.as_str(), DefineType::Var,vec![]);
+                        let symbol =
+                            self.symbols
+                                .define(name.name.as_str(), DefineType::Var, vec![]);
                         self.compile_expression(value)?;
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -380,12 +403,15 @@ impl Compiler {
                                 //todo won't work for refs
                                 let inner_t = field.typ.as_ident();
 
-                                let t = match (Type::try_from(inner_t.name.as_str()), self.symbols.resolve(inner_t.name.as_str())) {
+                                let t = match (
+                                    Type::try_from(inner_t.name.as_str()),
+                                    self.symbols.resolve(inner_t.name.as_str()),
+                                ) {
                                     (Ok(t), None) => t,
                                     (Err(_), Some((_, dt, _))) => {
                                         // if it has more than 1 field, it is a struct or a function
                                         match dt {
-                                            DefineType::Struct => Type::Struct,
+                                            DefineType::Struct(_) => Type::Struct,
                                             DefineType::Func => Type::Null,
                                             _ => {
                                                 panic!("undefined type: {:#?}", inner_t);
@@ -398,7 +424,11 @@ impl Compiler {
                                 };
 
                                 for name in &field.name {
-                                    field_types.push(ContextType::Named(name.name.as_str().to_string(), t));
+                                    field_types.push(ContextType::Named(
+                                        name.name.as_str().to_string(),
+                                        inner_t.name.as_str().to_string(),
+                                        t,
+                                    ));
                                 }
                             }
                         }
@@ -412,7 +442,11 @@ impl Compiler {
                         }
 
                         let name = spec.name.name.as_str();
-                        let symbol = self.symbols.define(name, DefineType::Struct, field_types);
+                        let symbol = self.symbols.define(
+                            name,
+                            DefineType::Struct(name.to_string()),
+                            field_types,
+                        );
 
                         let obj = Struct::object(field_values);
                         let idx = self.add_constant(obj);
@@ -543,7 +577,7 @@ impl Compiler {
                         Statement::Block(bl) => {
                             self.compile_block_statement(bl)?;
                         }
-                        _ => panic!("else should be a block")
+                        _ => panic!("else should be a block"),
                     }
 
                     if self.last_instruction_is(OpCode::Pop) {
@@ -566,10 +600,11 @@ impl Compiler {
                             Operator::Define => {
                                 let name = match left {
                                     Expression::Ident(ident) => &ident.name,
-                                    _=> panic!("only identifiers can be defined: {:#?}", left)
+                                    _ => panic!("only identifiers can be defined: {:#?}", left),
                                 };
 
-                                let symbol = self.symbols.define(name.as_str(), DefineType::Var, vec![]);
+                                let symbol =
+                                    self.symbols.define(name.as_str(), DefineType::Var, vec![]);
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
                                 } else {
@@ -593,25 +628,23 @@ impl Compiler {
                                     break 'assign;
                                 }
 
-                                let symbol = self.symbols.resolve(name).map(|a|a.0);
+                                let symbol = self.symbols.resolve(name).map(|a| a.0);
                                 match symbol {
-                                    Some(symbol) => {
-                                        match symbol.scope {
-                                            Scope::Global => {
-                                                self.emit_opcode(OpCode::SetGlobal);
-                                                self.emit_u16(symbol.index);
-                                                self.emit_opcode(OpCode::GetGlobal);
-                                                self.emit_u16(symbol.index);
-                                            }
-
-                                            Scope::Local => {
-                                                self.emit_opcode(OpCode::SetLocal);
-                                                self.emit_u16(symbol.index);
-                                                self.emit_opcode(OpCode::GetLocal);
-                                                self.emit_u16(symbol.index);
-                                            }
+                                    Some(symbol) => match symbol.scope {
+                                        Scope::Global => {
+                                            self.emit_opcode(OpCode::SetGlobal);
+                                            self.emit_u16(symbol.index);
+                                            self.emit_opcode(OpCode::GetGlobal);
+                                            self.emit_u16(symbol.index);
                                         }
-                                    }
+
+                                        Scope::Local => {
+                                            self.emit_opcode(OpCode::SetLocal);
+                                            self.emit_u16(symbol.index);
+                                            self.emit_opcode(OpCode::GetLocal);
+                                            self.emit_u16(symbol.index);
+                                        }
+                                    },
                                     None => {
                                         return Err(Error::ReferenceError(format!(
                                             "assign: `{name}` is not defined"
@@ -619,7 +652,7 @@ impl Compiler {
                                     }
                                 }
                             }
-                            _ => unimplemented!()
+                            _ => unimplemented!(),
                         }
                     }
                     return Ok(vec![]);
@@ -628,11 +661,11 @@ impl Compiler {
                 for (left, right) in assign.left.iter().zip(assign.right.iter()) {
                     match &assign.op {
                         Operator::AddAssign => {
-                            self.compile_statement(&Statement::Assign(AssignStmt{
+                            self.compile_statement(&Statement::Assign(AssignStmt {
                                 pos: 0,
                                 op: Operator::Assign,
                                 left: vec![left.clone()],
-                                right: vec![Expression::Operation(Operation{
+                                right: vec![Expression::Operation(Operation {
                                     pos: 0,
                                     op: Operator::Add,
                                     x: Box::new(left.clone()),
@@ -643,10 +676,11 @@ impl Compiler {
                         Operator::Define => {
                             let name = match left {
                                 Expression::Ident(ident) => &ident.name,
-                                _=> panic!("only identifiers can be defined: {:#?}", left)
+                                _ => panic!("only identifiers can be defined: {:#?}", left),
                             };
 
-                            let symbol = self.symbols.define(name.as_str(), DefineType::Var,vec![]);
+                            let symbol =
+                                self.symbols.define(name.as_str(), DefineType::Var, vec![]);
                             self.compile_expression(right)?;
                             let op = if symbol.scope == Scope::Global {
                                 OpCode::SetGlobal
@@ -679,7 +713,7 @@ impl Compiler {
                                 break 'assign;
                             }
 
-                            let symbol = self.symbols.resolve(name).map(|a|a.0);
+                            let symbol = self.symbols.resolve(name).map(|a| a.0);
                             match symbol {
                                 Some(symbol) => {
                                     self.compile_expression(right)?;
@@ -707,7 +741,7 @@ impl Compiler {
                                 }
                             }
                         }
-                        _ => unimplemented!()
+                        _ => unimplemented!(),
                     }
                 }
             }
@@ -717,21 +751,18 @@ impl Compiler {
             }
             Statement::Block(stmts) => {
                 return self.compile_block_statement(stmts);
-            },
-            Statement::Declaration(declr) => {
-                match declr {
-                    DeclStmt::Type(t) => {
-                        self.compile_declaration(&Declaration::Type(t.clone()))?;
-                    }
-                    DeclStmt::Const(t) => {
-                        self.compile_declaration(&Declaration::Const(t.clone()))?;
-                    }
-                    DeclStmt::Variable(t) => {
-                        self.compile_declaration(&Declaration::Variable(t.clone()))?;
-                    }
-                }
-
             }
+            Statement::Declaration(declr) => match declr {
+                DeclStmt::Type(t) => {
+                    self.compile_declaration(&Declaration::Type(t.clone()))?;
+                }
+                DeclStmt::Const(t) => {
+                    self.compile_declaration(&Declaration::Const(t.clone()))?;
+                }
+                DeclStmt::Variable(t) => {
+                    self.compile_declaration(&Declaration::Variable(t.clone()))?;
+                }
+            },
             Statement::Return(expr) => {
                 let mut rts = Vec::with_capacity(expr.ret.len());
                 for r in &expr.ret {
@@ -742,66 +773,58 @@ impl Compiler {
                 assert!(rts.len() < u16::MAX as usize);
                 self.emit_opcode(OpCode::ReturnValue);
                 self.emit_u16(rts.len() as u16);
-                return Ok(rts)
+                return Ok(rts);
             }
-            Statement::Branch(branch) => {
-                match branch.key {
-                    Keyword::Break => {
-                        self.emit_opcode(OpCode::Null);
-                        let pos = self.instructions.len();
-                        self.emit_opcode(OpCode::Jump);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-                        let ctx = match self.loop_contexts.last_mut() {
-                            Some(ctx) => ctx,
-                            None => {
-                                return Err(Error::SyntaxError("bad call 1".to_string()))
-                            }
-                        };
-                        ctx.break_instructions.push(pos);
-                    }
-                    Keyword::Continue => {
-                        self.emit_opcode(OpCode::Null);
-
-                        let pos = match self.loop_contexts.iter().last() {
-                            Some(ctx) => Ok(ctx.start),
-                            None => Err(Error::SyntaxError(
-                                "bad call 2".to_string(),
-                            )),
-                        }?;
-                        self.emit_opcode(OpCode::Jump);
-                        self.emit_u16(pos.try_into().unwrap());
-                    }
-                    _ => panic!("key: {:#?}", branch.key)
+            Statement::Branch(branch) => match branch.key {
+                Keyword::Break => {
+                    self.emit_opcode(OpCode::Null);
+                    let pos = self.instructions.len();
+                    self.emit_opcode(OpCode::Jump);
+                    self.emit_u16(JUMP_PLACEHOLDER);
+                    let ctx = match self.loop_contexts.last_mut() {
+                        Some(ctx) => ctx,
+                        None => return Err(Error::SyntaxError("bad call 1".to_string())),
+                    };
+                    ctx.break_instructions.push(pos);
                 }
-            }
+                Keyword::Continue => {
+                    self.emit_opcode(OpCode::Null);
+
+                    let pos = match self.loop_contexts.iter().last() {
+                        Some(ctx) => Ok(ctx.start),
+                        None => Err(Error::SyntaxError("bad call 2".to_string())),
+                    }?;
+                    self.emit_opcode(OpCode::Jump);
+                    self.emit_u16(pos.try_into().unwrap());
+                }
+                _ => panic!("key: {:#?}", branch.key),
+            },
             Statement::IncDec(incdec) => {
                 let name = match &incdec.expr {
                     Expression::Ident(ident) => ident.clone(),
-                    _=> panic!("only ident allowed inc/dec")
+                    _ => panic!("only ident allowed inc/dec"),
                 };
 
                 let op = match incdec.op {
                     Operator::Inc => Operator::Add,
                     Operator::Dec => Operator::Sub,
-                    _ => panic!("invalid op")
+                    _ => panic!("invalid op"),
                 };
 
-                self.compile_statement(&Statement::Assign(AssignStmt{
+                self.compile_statement(&Statement::Assign(AssignStmt {
                     pos: 0,
                     op: Operator::Assign,
                     left: vec![Expression::Ident(name.clone())],
-                    right: vec![
-                        Expression::Operation(Operation{
+                    right: vec![Expression::Operation(Operation {
+                        pos: 0,
+                        op,
+                        x: Box::new(Expression::Ident(name)),
+                        y: Some(Box::new(Expression::BasicLit(BasicLit {
                             pos: 0,
-                            op,
-                            x: Box::new(Expression::Ident(name)),
-                            y: Some(Box::new(Expression::BasicLit(BasicLit {
-                                pos: 0,
-                                kind: LitKind::Integer,
-                                value: "1".to_string(),
-                            }))),
-                        })
-                    ],
+                            kind: LitKind::Integer,
+                            value: "1".to_string(),
+                        }))),
+                    })],
                 }))?;
             }
             Statement::Empty(_) => {}
@@ -812,10 +835,13 @@ impl Compiler {
                 let iter_sym;
 
                 // __iter__ := into_iter X
-                let iter_ident = Expression::Ident(Ident{ pos: 0, name: "__iter__".to_string() });
+                let iter_ident = Expression::Ident(Ident {
+                    pos: 0,
+                    name: "__iter__".to_string(),
+                });
                 {
                     let name = "__iter__";
-                    iter_sym = self.symbols.define(name, DefineType::Var,vec![]);
+                    iter_sym = self.symbols.define(name, DefineType::Var, vec![]);
                     self.compile_expression(&rng.expr)?;
                     self.emit_opcode(OpCode::IntoIter);
                     self.emit_opcode(OpCode::SetLocal);
@@ -825,12 +851,22 @@ impl Compiler {
                 let pos_before_condition = self.instructions.len();
 
                 // k, v := range __iter__
-                let key = rng.key.clone().unwrap_or(Expression::Ident(Ident{ pos: 0, name: "_".to_string() }));
-                let value = rng.value.clone().unwrap_or(Expression::Ident(Ident{ pos: 0, name: "_".to_string() }));
+                let key = rng.key.clone().unwrap_or(Expression::Ident(Ident {
+                    pos: 0,
+                    name: "_".to_string(),
+                }));
+                let value = rng.value.clone().unwrap_or(Expression::Ident(Ident {
+                    pos: 0,
+                    name: "_".to_string(),
+                }));
                 match (&key, &value) {
                     (Expression::Ident(key_id), Expression::Ident(value_id)) => {
-                        let key_symbol = self.symbols.define(key_id.name.as_str(), DefineType::Var, vec![]);
-                        let value_symbol = self.symbols.define(value_id.name.as_str(),DefineType::Var, vec![]);
+                        let key_symbol =
+                            self.symbols
+                                .define(key_id.name.as_str(), DefineType::Var, vec![]);
+                        let value_symbol =
+                            self.symbols
+                                .define(value_id.name.as_str(), DefineType::Var, vec![]);
 
                         self.emit_opcode(OpCode::GetLocal);
                         self.emit_u16(iter_sym.index);
@@ -839,20 +875,25 @@ impl Compiler {
                         self.emit_u16(key_symbol.index);
                         self.emit_u16(value_symbol.index);
                     }
-                    _ => panic!("invalid")
+                    _ => panic!("invalid"),
                 }
 
-                self.compile_statement(&Statement::Expr(ExprStmt{ expr: Expression::Operation(Operation{
-                    pos: 0,
-                    op: Operator::NotEqual,
-                    x: Box::new(Expression::Operation(Operation{
+                self.compile_statement(&Statement::Expr(ExprStmt {
+                    expr: Expression::Operation(Operation {
                         pos: 0,
-                        op: Operator::And,
-                        x: Box::new(key),
-                        y: None,
-                    })),
-                    y: Some(Box::new(Expression::Ident(Ident{ pos: 0, name: "nil".to_string() }))),
-                }) }))?;
+                        op: Operator::NotEqual,
+                        x: Box::new(Expression::Operation(Operation {
+                            pos: 0,
+                            op: Operator::And,
+                            x: Box::new(key),
+                            y: None,
+                        })),
+                        y: Some(Box::new(Expression::Ident(Ident {
+                            pos: 0,
+                            name: "nil".to_string(),
+                        }))),
+                    }),
+                }))?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -887,9 +928,12 @@ impl Compiler {
                     self.change_jump_operand_at(ip, self.instructions.len().try_into().unwrap());
                 }
             }
-            _ => return Err(Error::ReferenceError(format!(
-                "`{:#?}` stmt not supported:", stmt
-            ))),
+            _ => {
+                return Err(Error::ReferenceError(format!(
+                    "`{:#?}` stmt not supported:",
+                    stmt
+                )))
+            }
         }
 
         Ok(vec![])
@@ -926,7 +970,7 @@ impl Compiler {
         operator: &Operator,
     ) -> Result<Type, Error> {
         let idx_constant = self.add_constant(Object::int(const_value));
-        let symbol = self.symbols.resolve(varname).map(|a|a.0);
+        let symbol = self.symbols.resolve(varname).map(|a| a.0);
         match symbol {
             Some(symbol) => {
                 let opcode = match (operator, symbol.scope) {
@@ -951,14 +995,74 @@ impl Compiler {
                 self.emit_u16(symbol.index);
                 self.emit_u16(idx_constant);
             }
-            None => {
-                return Err(Error::ReferenceError(format!(
-                    "{varname} is not defined"
-                )))
-            }
+            None => return Err(Error::ReferenceError(format!("{varname} is not defined"))),
         }
 
         Ok(Type::Int)
+    }
+
+    fn make_type_default_val(&mut self, name: Option<String>, t: Type) -> Expression {
+        match t {
+            Type::String => Expression::BasicLit(BasicLit {
+                pos: 0,
+                kind: LitKind::String,
+                value: "".to_string(),
+            }),
+            Type::Int => Expression::BasicLit(BasicLit {
+                pos: 0,
+                kind: LitKind::Integer,
+                value: "0".to_string(),
+            }),
+            //todo interface
+            Type::Ref | Type::Function | Type::Map | Type::Null | Type::Array => {
+                Expression::Ident(Ident {
+                    pos: 0,
+                    name: "nil".to_string(),
+                })
+            }
+            Type::Bool => Expression::Ident(Ident {
+                pos: 0,
+                name: "false".to_string(),
+            }),
+            Type::Float => Expression::BasicLit(BasicLit {
+                pos: 0,
+                kind: LitKind::Float,
+                value: "0.0".to_string(),
+            }),
+            Type::Struct => {
+                let n = name.unwrap();
+
+                let (_, _, inner_types) = self.symbols.resolve(n.as_str()).unwrap();
+
+                let mut lit_val = LiteralValue {
+                    pos: (0, 0),
+                    values: vec![],
+                };
+
+                for inner_type in inner_types {
+                    let (key, _, it) = inner_type.as_named();
+                    let ex = self.make_type_default_val(Some(key.clone()), it);
+
+                    lit_val.values.push(KeyedElement {
+                        key: Some(Element::Expr(Expression::Ident(Ident {
+                            pos: 0,
+                            name: key,
+                        }))),
+                        val: Element::Expr(ex),
+                    });
+                }
+
+                let expr = Expression::CompositeLit(CompositeLit {
+                    typ: Box::new(Expression::Ident(Ident {
+                        pos: 0,
+                        name: n.clone(),
+                    })),
+                    val: lit_val,
+                });
+                expr
+            }
+            _ => unimplemented!(),
+        }
     }
 
     fn compile_expression(&mut self, expr: &Expression) -> Result<Vec<Type>, Error> {
@@ -975,9 +1079,13 @@ impl Compiler {
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {
                                     (Expression::Ident(name), Expression::BasicLit(lit))
-                                    | (Expression::BasicLit(lit), Expression::Ident(name)) if lit.kind == LitKind::Integer => {
+                                    | (Expression::BasicLit(lit), Expression::Ident(name))
+                                        if lit.kind == LitKind::Integer =>
+                                    {
                                         let value: isize = lit.value.parse().unwrap();
-                                        let res = self.compile_const_var_infix_expression(&name.name, value, &op.op);
+                                        let res = self.compile_const_var_infix_expression(
+                                            &name.name, value, &op.op,
+                                        );
                                         if res.is_ok() {
                                             return Ok(vec![res.unwrap()]);
                                         }
@@ -1021,9 +1129,13 @@ impl Compiler {
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {
                                     (Expression::Ident(name), Expression::BasicLit(lit))
-                                    | (Expression::BasicLit(lit), Expression::Ident(name)) if lit.kind == LitKind::Integer => {
+                                    | (Expression::BasicLit(lit), Expression::Ident(name))
+                                        if lit.kind == LitKind::Integer =>
+                                    {
                                         let value: isize = lit.value.parse().unwrap();
-                                        let res = self.compile_const_var_infix_expression(&name.name, value, &op.op);
+                                        let res = self.compile_const_var_infix_expression(
+                                            &name.name, value, &op.op,
+                                        );
                                         if res.is_ok() {
                                             return Ok(vec![res.unwrap()]);
                                         }
@@ -1038,7 +1150,7 @@ impl Compiler {
 
                                 return Ok(vec![Type::Int]);
                             }
-                            _ => unimplemented!()
+                            _ => unimplemented!(),
                         }
                     }
                     Operator::Add | Operator::Sub | Operator::Rem | Operator::Equal => {
@@ -1046,9 +1158,13 @@ impl Compiler {
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {
                                     (Expression::Ident(name), Expression::BasicLit(lit))
-                                    | (Expression::BasicLit(lit), Expression::Ident(name)) if lit.kind == LitKind::Integer => {
+                                    | (Expression::BasicLit(lit), Expression::Ident(name))
+                                        if lit.kind == LitKind::Integer =>
+                                    {
                                         let value: isize = lit.value.parse().unwrap();
-                                        let res = self.compile_const_var_infix_expression(&name.name, value, &op.op);
+                                        let res = self.compile_const_var_infix_expression(
+                                            &name.name, value, &op.op,
+                                        );
                                         if res.is_ok() {
                                             return Ok(vec![res.unwrap()]);
                                         }
@@ -1063,30 +1179,36 @@ impl Compiler {
 
                                 return Ok(vec![Type::Int]);
                             }
-                            None => unimplemented!()
+                            None => unimplemented!(),
                         }
                     }
                     Operator::And => {
-                    match &op.y {
-                        Some(_y) => {
-                            // a & b
-                        }
-                        //reference expression
-                        None => {
-                            let _ = self.compile_expression(&op.x)?;
-                            self.emit_opcode(OpCode::Ref);
-                            // if t != Type::Array {
-                            //     panic!("not implemented: {:#?}", op.x);
-                            // }
+                        match &op.y {
+                            Some(_y) => {
+                                // a & b
+                            }
+                            //reference expression
+                            None => {
+                                let _ = self.compile_expression(&op.x)?;
+                                self.emit_opcode(OpCode::Ref);
+                                // if t != Type::Array {
+                                //     panic!("not implemented: {:#?}", op.x);
+                                // }
+                            }
                         }
                     }
-                    }
-                    _ => panic!("unsupported op: {:#?}", op)
+                    _ => panic!("unsupported op: {:#?}", op),
                 }
                 //
             }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Ident && (lit.value == "true" || lit.value == "false") => {
-                let opcode = if lit.value == "true" { OpCode::True } else { OpCode::False };
+            Expression::BasicLit(lit)
+                if lit.kind == LitKind::Ident && (lit.value == "true" || lit.value == "false") =>
+            {
+                let opcode = if lit.value == "true" {
+                    OpCode::True
+                } else {
+                    OpCode::False
+                };
                 self.emit_opcode(opcode);
 
                 return Ok(vec![Type::Bool]);
@@ -1116,7 +1238,7 @@ impl Compiler {
                 return Ok(vec![Type::String]);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
-                let symbol = self.symbols.resolve(&lit.value).map(|a|a.0);
+                let symbol = self.symbols.resolve(&lit.value).map(|a| a.0);
                 match symbol {
                     Some(symbol) => {
                         let opcode = if symbol.scope == Scope::Global {
@@ -1129,8 +1251,9 @@ impl Compiler {
                     }
                     None => {
                         return Err(Error::ReferenceError(format!(
-                            "identifier: {} not found"
-                            , lit.value)))
+                            "identifier: {} not found",
+                            lit.value
+                        )))
                     }
                 }
             }
@@ -1152,11 +1275,14 @@ impl Compiler {
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
 
-                let (_, dt, rts) = self.symbols.resolve(call.func.as_ident().name.as_str()).unwrap();
+                let (_, dt, rts) = self
+                    .symbols
+                    .resolve(call.func.as_ident().name.as_str())
+                    .unwrap();
                 if dt != DefineType::Func {
                     panic!("tried to call not a function");
                 }
-                let r: Vec<Type> = rts.iter().map(|a|a.as_unnamed()).collect();
+                let r: Vec<Type> = rts.iter().map(|a| a.as_unnamed()).collect();
                 return Ok(r);
             }
             Expression::CompositeLit(clit) => {
@@ -1164,12 +1290,12 @@ impl Compiler {
                 if let Expression::TypeMap(mp) = clit.typ.as_ref() {
                     let inner_key_t = match mp.key.as_ref() {
                         Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!()
+                        _ => unimplemented!(),
                     };
 
                     let inner_val_t = match mp.val.as_ref() {
                         Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!()
+                        _ => unimplemented!(),
                     };
 
                     let map_key_t = Type::try_from(inner_key_t.name.as_str()).unwrap();
@@ -1210,12 +1336,17 @@ impl Compiler {
 
                     let inner_t = match ta.typ.as_ref() {
                         Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!()
+                        _ => unimplemented!(),
                     };
 
                     let slice_t = Type::try_from(inner_t.name.as_str()).unwrap();
                     let mut el_t = None;
-                    let key_required = clit.val.values.first().map(|a| a.key.is_some()).unwrap_or_default();
+                    let key_required = clit
+                        .val
+                        .values
+                        .first()
+                        .map(|a| a.key.is_some())
+                        .unwrap_or_default();
 
                     for v in &clit.val.values {
                         //todo replace this with error handling
@@ -1245,7 +1376,8 @@ impl Compiler {
                 //struct
                 if let Expression::Ident(name) = clit.typ.as_ref() {
                     let (s, dt, inner_types) = self.symbols.resolve(name.name.as_str()).unwrap();
-                    assert_eq!(DefineType::Struct, dt);
+                    assert!(dt.is_struct());
+
                     if let Some(ct) = inner_types.first() {
                         let _ = ct.as_named();
                     }
@@ -1258,50 +1390,68 @@ impl Compiler {
                     self.emit_opcode(opcode);
                     self.emit_u16(s.index);
 
-
                     //sort by order of definition
                     let mut clit_values = clit.val.values.clone();
                     clit_values.sort_by_key(|val| {
-                        inner_types.iter().map(|inner_type| inner_type.as_named()).position(|x| {
-                            let k_el = val.key.as_ref().unwrap();
-                            let k = match k_el {
-                                Element::Expr(expr) => {
-                                    expr.as_ident().clone()
-                                }
-                                _ => panic!("ident")
-                            };
+                        inner_types
+                            .iter()
+                            .map(|inner_type| inner_type.as_named())
+                            .position(|x| {
+                                let k_el = val.key.as_ref().unwrap();
+                                let k = match k_el {
+                                    Element::Expr(expr) => expr.as_ident().clone(),
+                                    _ => panic!("ident"),
+                                };
 
-                            x.0 == k.name.as_str()
-                        })
+                                x.0 == k.name.as_str()
+                            })
                     });
 
-                    let key_required = clit.val.values.first().map(|a| a.key.is_some()).unwrap_or_default();
+                    let key_required = clit
+                        .val
+                        .values
+                        .first()
+                        .map(|a| a.key.is_some())
+                        .unwrap_or_default();
 
-                    for (i, inner_type) in inner_types.iter().enumerate() {
-                        let (_, inner_type) = inner_type.as_named();
-                        match clit_values.get(i) {
+                    for inner_type in inner_types.iter().rev() {
+                        let (kk, ident, inner_type) = inner_type.as_named();
+
+                        let found = clit_values.iter().find(|a| {
+                            let k = a.key.as_ref().unwrap();
+
+                            let id = match k {
+                                Element::Expr(expr) => expr.clone(),
+                                _ => panic!("expr"),
+                            }
+                            .as_ident()
+                            .clone();
+                            id.name == kk
+                        });
+
+                        match found {
                             Some(kel) => {
                                 assert_eq!(key_required, kel.key.is_some());
 
                                 //compile values
                                 let el_expr = match &kel.val {
                                     Element::Expr(expr) => expr.clone(),
-                                    _ => panic!("expr")
+                                    _ => panic!("expr"),
                                 };
+
                                 let rt = self.compile_expression(&el_expr)?;
                                 assert_eq!(1, rt.len());
                                 assert_eq!(inner_type, rt[0]);
-
                             }
                             None => {
-                                //push to the stack default value
-                                //inner_type
+                                let def_val = self.make_type_default_val(Some(ident), inner_type);
+                                let _ = self.compile_expression(&def_val)?;
                             }
                         }
                     }
 
                     self.emit_opcode(OpCode::Struct);
-                    self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    self.emit_u16(inner_types.len().try_into().unwrap());
                     return Ok(vec![Type::Struct]);
 
                     //panic!("s: {:#?}, dt: {:#?}, types: {:#?}", s.index, dt, inner_types);
@@ -1322,7 +1472,7 @@ impl Compiler {
                     break 'Ident;
                 }
 
-                let symbol = self.symbols.resolve(&ident.name).map(|a|a.0);
+                let symbol = self.symbols.resolve(&ident.name).map(|a| a.0);
 
                 match symbol.as_ref() {
                     Some(symbol) => {
@@ -1336,14 +1486,16 @@ impl Compiler {
                     }
                     None => {
                         return Err(Error::ReferenceError(format!(
-                            "ident: `{}` is not defined", ident.name
+                            "ident: `{}` is not defined",
+                            ident.name
                         )))
                     }
                 }
             }
             _ => {
                 return Err(Error::SyntaxError(format!(
-                    "unsupported expression:  {:#?}", expr
+                    "unsupported expression:  {:#?}",
+                    expr
                 )))
             }
         }
@@ -1453,18 +1605,13 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
             }
 
             match width {
-                2 => {
-                    write!(
-                        str,
-                        "{}",
-                        (code[ip + 1] as u16) | ((code[ip + 2] as u16) << 8)
-                    )
-                        .unwrap()
-                },
-                1 => {
-
-                    write!(str, "{}", code[ip + 1]).unwrap()
-                },
+                2 => write!(
+                    str,
+                    "{}",
+                    (code[ip + 1] as u16) | ((code[ip + 2] as u16) << 8)
+                )
+                .unwrap(),
+                1 => write!(str, "{}", code[ip + 1]).unwrap(),
                 _ => panic!("invalid operand width"),
             };
             ip += width;
@@ -1630,7 +1777,8 @@ mod tests {
 
     #[test]
     fn test_call_builtin() {
-        let mut p = Parser::from(r#"
+        let mut p = Parser::from(
+            r#"
         package main
 
         func fib(n int) {
@@ -1640,7 +1788,8 @@ mod tests {
 
             return fib(n - 1) + fib(n - 2)
         }
-    "#);
+    "#,
+        );
         let mut compiler = Compiler::new();
 
         let ast = p.parse_file().unwrap();

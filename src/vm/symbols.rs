@@ -21,29 +21,38 @@ pub(crate) enum Scope {
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum ContextType {
-    Named(String, Type),
-    Unnamed(Type)
+    Named(String, String, Type),
+    Unnamed(Type),
 }
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum DefineType {
     Var,
-    Struct,
-    Func
+    Struct(String),
+    Func,
+}
+
+impl DefineType {
+    pub fn is_struct(&self) -> bool {
+        match &self {
+            Self::Struct(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl ContextType {
-    pub fn as_named(&self) -> (String, Type) {
+    pub fn as_named(&self) -> (String, String, Type) {
         match &self {
-            Self::Named(s, t) => (s.clone(), t.clone()),
-            _ => panic!()
+            Self::Named(s, s1, t) => (s.clone(), s1.clone(), t.clone()),
+            _ => panic!(),
         }
     }
 
     pub fn as_unnamed(&self) -> Type {
         match &self {
             Self::Unnamed(t) => t.clone(),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 }
@@ -95,10 +104,14 @@ impl Context {
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
             if let Some(index) = scope.iter().position(|n| n.0 == name) {
-                return Some((Symbol {
-                    index: (abs_index + index).try_into().unwrap(),
-                    scope: self.scope,
-                }, scope[index].1.clone(), scope[index].2.clone()));
+                return Some((
+                    Symbol {
+                        index: (abs_index + index).try_into().unwrap(),
+                        scope: self.scope,
+                    },
+                    scope[index].1.clone(),
+                    scope[index].2.clone(),
+                ));
             }
         }
 

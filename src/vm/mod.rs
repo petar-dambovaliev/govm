@@ -1,12 +1,12 @@
-mod symbols;
-pub mod compiler;
 mod builtin;
-pub mod object;
+pub mod compiler;
 mod gc;
+pub mod object;
+mod symbols;
 
 use std::collections::BTreeMap;
 //use std::default::Default;
-use std::fmt::{Debug};
+use std::fmt::Debug;
 
 #[cfg(feature = "debug")]
 use std::io::Write;
@@ -14,9 +14,9 @@ use std::ptr;
 
 #[cfg(feature = "debug")]
 use crate::compiler::bytecode_to_human;
-use crate::vm::compiler::{Bytecode, bytecode_to_human, OpCode};
+use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{Array, FromString, FromVec, Map, ObjIter, Object, Type, IterType, Struct};
+use crate::vm::object::{Array, FromString, FromVec, IterType, Map, ObjIter, Object, Struct, Type};
 use std::io::Write;
 
 #[derive(Copy, Clone, Debug)]
@@ -256,11 +256,11 @@ impl VM {
         }
 
         //#[cfg(feature = "debug")]
-            //let mut debug_pause = 0;
+        //let mut debug_pause = 0;
 
         //#[cfg(feature = "debug")]
-            // Buffer used to capture input from stdin during stepped debugging
-            //let mut buffer = String::new();
+        // Buffer used to capture input from stdin during stepped debugging
+        //let mut buffer = String::new();
         loop {
             //#[cfg(feature = "debug")]
             // {
@@ -348,7 +348,10 @@ impl VM {
                 OpCode::JumpIfFalse => {
                     let condition = self.pop();
                     if condition.tag() != Type::Bool {
-                        return Err(Error::TypeError(format!("expected a bool type got: {:#?}", condition.tag())));
+                        return Err(Error::TypeError(format!(
+                            "expected a bool type got: {:#?}",
+                            condition.tag()
+                        )));
                     }
 
                     let pos = self.read_u16();
@@ -384,7 +387,7 @@ impl VM {
                     let left = self.pop();
                     let result = left.and(right, gc)?;
                     self.push(result);
-                },
+                }
                 OpCode::Or => impl_binary_op_method!(or),
                 OpCode::Not => {
                     let left = self.pop();
@@ -543,10 +546,8 @@ impl VM {
 
 fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
     let let_obj = match left.tag() {
-        Type::Ref => {
-            left.as_ref().value
-        }
-        _ => left
+        Type::Ref => left.as_ref().value,
+        _ => left,
     };
 
     let result = match let_obj.tag() {
@@ -558,7 +559,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                 )));
             }
             index_get_array(let_obj, index.as_int())
-        },
+        }
         Type::String => {
             if index.tag() != Type::Int {
                 return Err(Error::TypeError(format!(
@@ -568,7 +569,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
             }
 
             index_get_string(let_obj, index.as_int(), gc)
-        },
+        }
         Type::Map => index_get_map(let_obj, index, gc),
         _ => {
             return Err(Error::TypeError(format!(
@@ -603,9 +604,7 @@ fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
     }
     let index = index as usize;
     if index >= array.len() {
-        return Err(Error::IndexError(
-            "out of bounds".to_string(),
-        ));
+        return Err(Error::IndexError("out of bounds".to_string()));
     }
 
     Ok(array[index])
@@ -614,16 +613,12 @@ fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
 fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Error> {
     let str = obj.as_str();
     if index < 0 {
-        return Err(Error::IndexError(
-            "i: out of bounds".to_string(),
-        ));
+        return Err(Error::IndexError("i: out of bounds".to_string()));
     }
 
     let i = index as usize + 1;
     if i >= str.len() - 1 {
-        return Err(Error::IndexError(
-            "out of bounds".to_string(),
-        ));
+        return Err(Error::IndexError("out of bounds".to_string()));
     }
 
     let ch = str.chars().nth(i).unwrap();
@@ -676,15 +671,11 @@ fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Res
     }
     let index = index as usize;
     if index >= strlen {
-        return Err(Error::IndexError(
-            "out of bounds".to_string(),
-        ));
+        return Err(Error::IndexError("out of bounds".to_string()));
     }
 
     if value.tag() != Type::String {
-        return Err(Error::TypeError(
-            "expected string".to_string(),
-        ));
+        return Err(Error::TypeError("expected string".to_string()));
     }
 
     string.replace_range(
@@ -698,8 +689,6 @@ fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Res
 
     Ok(())
 }
-
-
 
 #[derive(Debug, PartialEq)]
 pub enum Error {

@@ -1,10 +1,10 @@
-pub mod vm;
 pub mod parser;
+pub mod vm;
 
-use std::time::Instant;
 use crate::parser::Parser;
 use crate::vm::compiler::{bytecode_to_human, Compiler};
 use crate::vm::VM;
+use std::time::Instant;
 
 fn main() {
     //todo definition order matters and it shouldn't
@@ -16,11 +16,12 @@ fn main() {
         package main
 
         type Foo struct {
-            i int
+            a int
             b int
+            c int
         }
         func main() {
-            f := Foo{b: 2, i: 1}
+            f := Foo{b: 1, c:2}
             print(f)
         }
     "#,

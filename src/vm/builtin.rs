@@ -1,6 +1,6 @@
+use super::{Error, Object};
 use crate::vm::gc::GC;
 use crate::vm::object::Type;
-use super::{Error, Object};
 
 #[repr(u8)]
 pub enum Builtin {
@@ -11,7 +11,7 @@ pub enum Builtin {
     Int,
     String,
     Length,
-    Iter
+    Iter,
 }
 
 impl From<u8> for Builtin {
@@ -25,7 +25,7 @@ impl From<u8> for Builtin {
             5 => Self::String,
             6 => Self::Length,
             7 => Self::Iter,
-            _ => panic!("Builtin::from: invalid byte")
+            _ => panic!("Builtin::from: invalid byte"),
         }
     }
 }
@@ -55,13 +55,12 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
         // Builtin::Int => call_int(args),
         Builtin::Length => call_length(args),
         Builtin::Iter => call_iter(args),
-        _ => unimplemented!()
+        _ => unimplemented!(),
     }
 }
 
 fn call_iter(args: &[Object]) -> Result<Object, Error> {
     assert_eq!(1, args.len());
-
 
     println!();
     Ok(Object::null())
@@ -95,10 +94,8 @@ fn call_length(args: &[Object]) -> Result<Object, Error> {
     }
 
     let obj = match args[0].tag() {
-        Type::Ref => {
-            args[0].as_ref().value
-        }
-        _ => args[0]
+        Type::Ref => args[0].as_ref().value,
+        _ => args[0],
     };
 
     let length = match obj.tag() {

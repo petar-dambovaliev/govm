@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use gno_rs::parser::Parser;
-use gno_rs::vm::compiler::{Compiler};
+use gno_rs::vm::compiler::Compiler;
 use gno_rs::vm::VM;
 
 fn fibonacci() {
@@ -36,17 +36,9 @@ fn fibonacci() {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("fib", |b| {
-        b.iter(|| {
-            fibonacci()
-        })
-    });
+    c.bench_function("fib", |b| b.iter(|| fibonacci()));
 
-    c.bench_function("fib_rust", |b| {
-        b.iter(|| {
-            fibonacci_rust(black_box(30))
-        })
-    });
+    c.bench_function("fib_rust", |b| b.iter(|| fibonacci_rust(black_box(30))));
 }
 
 fn fibonacci_rust(n: u32) -> u32 {

@@ -244,7 +244,7 @@ impl Expression {
     pub fn as_ident(&self) -> &Ident {
         match self {
             Expression::Ident(id) => id,
-            _ => panic!("{:#?} is not an identifier", self)
+            _ => panic!("{:#?} is not an identifier", self),
         }
     }
 }
@@ -252,7 +252,10 @@ impl Expression {
 // ================ Declaration Definition ================
 
 #[derive(Debug, Clone)]
-pub struct Decl<T> where T: Clone {
+pub struct Decl<T>
+where
+    T: Clone,
+{
     pub docs: Vec<Rc<Comment>>,
     pub pos0: usize,                  // pos of var | const | type
     pub pos1: Option<(usize, usize)>, // pos of '(' and ')'
@@ -520,7 +523,10 @@ impl From<Ident> for Field {
 impl From<BasicLit> for StringLit {
     fn from(lit: BasicLit) -> StringLit {
         assert_eq!(lit.kind, LitKind::String);
-        StringLit { pos: lit.pos, value: lit.value }
+        StringLit {
+            pos: lit.pos,
+            value: lit.value,
+        }
     }
 }
 

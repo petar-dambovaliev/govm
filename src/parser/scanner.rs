@@ -362,16 +362,16 @@ impl Scanner {
             'x' | 'u' | 'U' => Some((16, &es_sequence[2..])),
             _ => Some((8, &es_sequence[1..])), // here must be octal_digit
         }
-            .and_then(|(radix, sequence)| {
-                // a valid rust char must be a valid go rune
-                // hence we do not check char ranges
-                // see comment for `is_unicode_char`
-                char::from_u32(
-                    u32::from_str_radix(&String::from_iter(sequence), radix)
-                        .expect("here must be a valid u32"),
-                )
-            })
-            .ok_or_else(|| self.error("invalid Unicode code point"))?;
+        .and_then(|(radix, sequence)| {
+            // a valid rust char must be a valid go rune
+            // hence we do not check char ranges
+            // see comment for `is_unicode_char`
+            char::from_u32(
+                u32::from_str_radix(&String::from_iter(sequence), radix)
+                    .expect("here must be a valid u32"),
+            )
+        })
+        .ok_or_else(|| self.error("invalid Unicode code point"))?;
 
         Ok(es_sequence)
     }
@@ -602,8 +602,8 @@ fn is_escaped_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::token::{Operator, Token};
     use super::Scanner;
+    use crate::parser::token::{Operator, Token};
 
     #[test]
     fn line_ended() {

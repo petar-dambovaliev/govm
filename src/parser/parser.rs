@@ -45,8 +45,8 @@ impl Parser {
 
 impl Parser {
     fn unexpected<K>(&self, expect: &[K], actual: Option<(usize, Token)>) -> Error
-        where
-            K: Into<TokenKind> + Copy,
+    where
+        K: Into<TokenKind> + Copy,
     {
         let (pos, actual) = actual
             .map(|(pos, tok)| (pos, Some(tok)))
@@ -74,8 +74,8 @@ impl Parser {
     }
 
     fn expect<K>(&mut self, expect: K) -> Result<usize>
-        where
-            K: Into<TokenKind> + Copy,
+    where
+        K: Into<TokenKind> + Copy,
     {
         let current = self.current.take();
         if let Some((pos, tok)) = &current {
@@ -90,8 +90,8 @@ impl Parser {
 
     /// skip while current equal to expect
     fn skipped<K>(&mut self, expect: K) -> Result<bool>
-        where
-            K: Into<TokenKind>,
+    where
+        K: Into<TokenKind>,
     {
         Ok(match &self.current {
             Some((_, tok)) if tok.is(expect) => {
@@ -103,8 +103,8 @@ impl Parser {
     }
 
     fn current_is<K>(&self, expect: K) -> bool
-        where
-            K: Into<TokenKind>,
+    where
+        K: Into<TokenKind>,
     {
         match &self.current {
             Some((_, tok)) => tok.is(expect),
@@ -113,8 +113,8 @@ impl Parser {
     }
 
     fn current_not<K>(&self, expect: K) -> bool
-        where
-            K: Into<TokenKind>,
+    where
+        K: Into<TokenKind>,
     {
         !self.current_is(expect)
     }
@@ -344,7 +344,12 @@ impl Parser {
         let result = self.parse_result()?;
         let result = self.check_field_list(result, false)?;
 
-        let typ = ast::FuncType { pos, typ_params, params, result };
+        let typ = ast::FuncType {
+            pos,
+            typ_params,
+            params,
+            result,
+        };
 
         let body = self
             .current_is(Operator::BraceLeft)
@@ -352,7 +357,13 @@ impl Parser {
             .map_or(Ok(None), |x| x.map(Some))?;
 
         self.skipped(Operator::SemiColon)?;
-        Ok(ast::FuncDecl { docs, name, typ, recv, body })
+        Ok(ast::FuncDecl {
+            docs,
+            name,
+            typ,
+            recv,
+            body,
+        })
     }
 
     fn parse_decl<S: ast::Spec + Clone, F: FnMut(&mut Parser, usize) -> Result<S>>(
@@ -376,13 +387,23 @@ impl Parser {
             let right = self.expect(Operator::ParenRight)?;
             let pos1 = Some((left, right));
             self.skipped(Operator::SemiColon)?;
-            return Ok(ast::Decl { docs, pos0, specs, pos1 });
+            return Ok(ast::Decl {
+                docs,
+                pos0,
+                specs,
+                pos1,
+            });
         }
 
         let pos1 = None;
         specs.push(parse_spec(self, 0)?.with_docs(docs));
         self.skipped(Operator::SemiColon)?;
-        Ok(ast::Decl { docs: vec![], pos0, specs, pos1 })
+        Ok(ast::Decl {
+            docs: vec![],
+            pos0,
+            specs,
+            pos1,
+        })
     }
 
     fn parse_type_spec(&mut self, _: usize) -> Result<ast::TypeSpec> {
@@ -395,7 +416,13 @@ impl Parser {
             let alias = self.skipped(Operator::Assign)?;
             let typ = self.type_()?;
             let params = ast::FieldList::default();
-            return Ok(ast::TypeSpec { docs, alias, name, typ, params });
+            return Ok(ast::TypeSpec {
+                docs,
+                alias,
+                name,
+                typ,
+                params,
+            });
         }
 
         match self.current_kind() {
@@ -416,18 +443,34 @@ impl Parser {
                     let params = self.type_parameters()?;
                     let alias = self.skipped(Operator::Assign)?;
                     let typ = self.type_()?;
-                    return Ok(ast::TypeSpec { docs, alias, name, typ, params });
+                    return Ok(ast::TypeSpec {
+                        docs,
+                        alias,
+                        name,
+                        typ,
+                        params,
+                    });
                 }
 
                 self.goback(start2); // TODO: how to avoid this
                 let len = Box::new(self.parse_next_level_expr()?);
                 let pos1 = self.expect(Operator::BarackRight)?;
                 let typ = Box::new(self.type_()?);
-                let arr = ast::ArrayType { pos: (pos0, pos1), len, typ };
+                let arr = ast::ArrayType {
+                    pos: (pos0, pos1),
+                    len,
+                    typ,
+                };
                 let typ = ast::Expression::TypeArray(arr);
                 let alias = false;
                 let params = ast::FieldList::default();
-                Ok(ast::TypeSpec { docs, alias, name, typ, params })
+                Ok(ast::TypeSpec {
+                    docs,
+                    alias,
+                    name,
+                    typ,
+                    params,
+                })
             }
             TokenKind::Operator(Operator::BarackRight) => {
                 let pos1 = self.expect(Operator::BarackRight)?;
@@ -438,18 +481,34 @@ impl Parser {
                 let alias = false;
                 let params = ast::FieldList::default();
                 let typ = ast::Expression::TypeSlice(slice);
-                Ok(ast::TypeSpec { docs, alias, name, typ, params })
+                Ok(ast::TypeSpec {
+                    docs,
+                    alias,
+                    name,
+                    typ,
+                    params,
+                })
             }
             _ => {
                 // array type
                 let len = Box::new(self.array_len()?);
                 let pos1 = self.expect(Operator::BarackRight)?;
                 let typ = Box::new(self.type_()?);
-                let arr = ast::ArrayType { pos: (pos0, pos1), len, typ };
+                let arr = ast::ArrayType {
+                    pos: (pos0, pos1),
+                    len,
+                    typ,
+                };
                 let typ = ast::Expression::TypeArray(arr);
                 let alias = false;
                 let params = ast::FieldList::default();
-                Ok(ast::TypeSpec { docs, alias, name, typ, params })
+                Ok(ast::TypeSpec {
+                    docs,
+                    alias,
+                    name,
+                    typ,
+                    params,
+                })
             }
         }
     }
@@ -686,7 +745,12 @@ impl Parser {
         let result = self.check_field_list(result, false)?;
         let typ_params = ast::FieldList::default();
 
-        Ok(ast::FuncType { pos, typ_params, params, result })
+        Ok(ast::FuncType {
+            pos,
+            typ_params,
+            params,
+            result,
+        })
     }
 
     fn struct_type(&mut self) -> Result<ast::StructType> {
@@ -700,7 +764,10 @@ impl Parser {
         }
 
         let pos1 = self.expect(Operator::BraceRight)?;
-        Ok(ast::StructType { pos: (pos0, pos1), fields })
+        Ok(ast::StructType {
+            pos: (pos0, pos1),
+            fields,
+        })
     }
 
     fn field_decl(&mut self) -> Result<ast::Field> {
@@ -709,13 +776,17 @@ impl Parser {
                 let name = self.identifier()?;
                 match &self.current {
                     Some((
-                             _,
-                             Token::Operator(Operator::Dot | Operator::SemiColon | Operator::BraceRight)
-                             | Token::Literal(LitKind::String, ..),
-                         )) => {
+                        _,
+                        Token::Operator(Operator::Dot | Operator::SemiColon | Operator::BraceRight)
+                        | Token::Literal(LitKind::String, ..),
+                    )) => {
                         let typ = self.qualified_ident(Some(name))?;
                         let tag = self.string_literal_or_none()?;
-                        Ok(ast::Field { name: vec![], typ, tag })
+                        Ok(ast::Field {
+                            name: vec![],
+                            typ,
+                            tag,
+                        })
                     }
                     _ => {
                         let mut name = self.identifier_list(Some(name))?;
@@ -727,7 +798,11 @@ impl Parser {
                                 typ.left = Box::new(ast::Expression::Ident(name));
                                 let tag = self.string_literal_or_none()?;
                                 let typ = ast::Expression::Index(typ);
-                                return Ok(ast::Field { name: vec![], typ, tag });
+                                return Ok(ast::Field {
+                                    name: vec![],
+                                    typ,
+                                    tag,
+                                });
                             }
                             typ
                         } else {
@@ -744,7 +819,11 @@ impl Parser {
                 self.next()?;
                 let typ = self.qualified_ident(None)?;
                 let tag = self.string_literal_or_none()?;
-                Ok(ast::Field { name: vec![], typ, tag })
+                Ok(ast::Field {
+                    name: vec![],
+                    typ,
+                    tag,
+                })
             }
 
             _ => Err(self.else_error("expect field name or embeded field")),
@@ -838,7 +917,12 @@ impl Parser {
             true => {
                 let op = Operator::Tiled;
                 let x = Box::new(typ);
-                let opt = ast::Operation { pos, op, x, y: None };
+                let opt = ast::Operation {
+                    pos,
+                    op,
+                    x,
+                    y: None,
+                };
                 ast::Expression::Operation(opt)
             }
         })
@@ -908,26 +992,36 @@ impl Parser {
     fn unray_expression(&mut self) -> Result<ast::Expression> {
         match self.current {
             Some((
-                     pos,
-                     Token::Operator(
-                         op @ (Operator::Star
-                         | Operator::Add
-                         | Operator::Sub
-                         | Operator::Not
-                         | Operator::Xor
-                         | Operator::Tiled),
-                     ),
-                 )) => {
+                pos,
+                Token::Operator(
+                    op @ (Operator::Star
+                    | Operator::Add
+                    | Operator::Sub
+                    | Operator::Not
+                    | Operator::Xor
+                    | Operator::Tiled),
+                ),
+            )) => {
                 self.next()?;
                 let x = Box::new(self.unray_expression()?);
-                let opt = ast::Operation { pos, op, x, y: None };
+                let opt = ast::Operation {
+                    pos,
+                    op,
+                    x,
+                    y: None,
+                };
                 Ok(ast::Expression::Operation(opt))
             }
 
             Some((pos, Token::Operator(op @ Operator::And))) => {
                 self.next()?;
                 let x = Box::new(unparen(self.unray_expression()?));
-                let opt = ast::Operation { pos, op, x, y: None };
+                let opt = ast::Operation {
+                    pos,
+                    op,
+                    x,
+                    y: None,
+                };
                 Ok(ast::Expression::Operation(opt))
             }
 
@@ -942,7 +1036,12 @@ impl Parser {
                     // receive message
                     x => {
                         let x = Box::new(x);
-                        let opt = ast::Operation { pos, op, x, y: None };
+                        let opt = ast::Operation {
+                            pos,
+                            op,
+                            x,
+                            y: None,
+                        };
                         Ok(ast::Expression::Operation(opt))
                     }
                 }
@@ -1053,7 +1152,12 @@ impl Parser {
                     self.skipped(Operator::Comma)?; // (a, b...,)
 
                     let pos = (pos, self.expect(Operator::ParenRight)?);
-                    let call = ast::Call { pos, args, func, dots };
+                    let call = ast::Call {
+                        pos,
+                        args,
+                        func,
+                        dots,
+                    };
                     x = ast::Expression::Call(call);
                 }
 
@@ -1114,10 +1218,10 @@ impl Parser {
             }
 
             Some((
-                     _,
-                     Token::Operator(Operator::BarackLeft)
-                     | Token::Keyword(Keyword::Chan | Keyword::Map | Keyword::Struct | Keyword::Interface),
-                 )) => self.type_(),
+                _,
+                Token::Operator(Operator::BarackLeft)
+                | Token::Keyword(Keyword::Chan | Keyword::Map | Keyword::Struct | Keyword::Interface),
+            )) => self.type_(),
 
             _ => Err(self.else_error("expect expression")),
         }
@@ -1264,7 +1368,10 @@ impl Parser {
                 let val = self.parse_element_value()?;
                 Ok(ast::KeyedElement { key, val })
             }
-            false => Ok(ast::KeyedElement { key: None, val: key }),
+            false => Ok(ast::KeyedElement {
+                key: None,
+                val: key,
+            }),
         }
     }
 
@@ -1364,7 +1471,11 @@ impl Parser {
                         typ => {
                             // a, b [N]T
                             let name = id_list;
-                            return Ok(vec![ast::Field { name, typ, tag: None }]);
+                            return Ok(vec![ast::Field {
+                                name,
+                                typ,
+                                tag: None,
+                            }]);
                         }
                     }
                 }
@@ -1390,7 +1501,11 @@ impl Parser {
                     let elt = Some(Box::new(self.type_()?));
                     let typ = ast::Ellipsis { pos, elt };
                     let typ = ast::Expression::Ellipsis(typ);
-                    return Ok(vec![ast::Field { name, typ, tag: None }]);
+                    return Ok(vec![ast::Field {
+                        name,
+                        typ,
+                        tag: None,
+                    }]);
                 }
                 TokenKind::Operator(Operator::Dot) => {
                     if end_with_comma {
@@ -1420,7 +1535,11 @@ impl Parser {
                     // a, b Type
                     let typ = self.parse_type_elem()?;
                     let name = id_list;
-                    return Ok(vec![ast::Field { name, typ, tag: None }]);
+                    return Ok(vec![ast::Field {
+                        name,
+                        typ,
+                        tag: None,
+                    }]);
                 }
             }
         }
@@ -1635,7 +1754,12 @@ impl Parser {
                     self.check_assign_stmt(&left)?;
                 }
 
-                let assign = ast::AssignStmt { op, pos, left, right };
+                let assign = ast::AssignStmt {
+                    op,
+                    pos,
+                    left,
+                    right,
+                };
                 return Ok(ast::Statement::Assign(assign));
             }
             _ => {
@@ -1652,7 +1776,11 @@ impl Parser {
                     Some((_, Token::Operator(Operator::Arrow))) => {
                         self.next()?;
                         let value = self.expression()?;
-                        ast::Statement::Send(ast::SendStmt { pos, chan: expr, value })
+                        ast::Statement::Send(ast::SendStmt {
+                            pos,
+                            chan: expr,
+                            value,
+                        })
                     }
                     Some((_, Token::Operator(op @ (Operator::Inc | Operator::Dec)))) => {
                         self.next()?;
@@ -1788,7 +1916,13 @@ impl Parser {
             self.skipped(Operator::SemiColon)?;
         }
 
-        Ok(ast::IfStmt { pos, init, cond, body, else_ })
+        Ok(ast::IfStmt {
+            pos,
+            init,
+            cond,
+            body,
+            else_,
+        })
     }
 
     fn parse_if_header(&mut self) -> Result<(Option<Box<ast::Statement>>, ast::Expression)> {
@@ -1862,7 +1996,12 @@ impl Parser {
         Ok(match type_assert {
             true => {
                 let tag = tag.map(Box::new);
-                ast::Statement::TypeSwitch(ast::TypeSwitchStmt { pos, init, tag, block })
+                ast::Statement::TypeSwitch(ast::TypeSwitchStmt {
+                    pos,
+                    init,
+                    tag,
+                    block,
+                })
             }
             false => {
                 let tag = match tag {
@@ -1871,7 +2010,12 @@ impl Parser {
                     _ => return Err(self.else_error("switch tag must be an expression")),
                 };
 
-                ast::Statement::Switch(ast::SwitchStmt { pos, init, tag, block })
+                ast::Statement::Switch(ast::SwitchStmt {
+                    pos,
+                    init,
+                    tag,
+                    block,
+                })
             }
         })
     }
@@ -1893,7 +2037,12 @@ impl Parser {
 
             let pos = (pos, self.expect(Operator::Colon)?);
             let body_ = Box::new(self.parse_stmt_list()?);
-            body.push(ast::CaseClause { tok, pos, list, body: body_ });
+            body.push(ast::CaseClause {
+                tok,
+                pos,
+                list,
+                body: body_,
+            });
         }
 
         let pos = (pos, self.expect(Operator::BraceRight)?);
@@ -1903,19 +2052,19 @@ impl Parser {
     fn check_switch_type_assert(&mut self, tag: &Option<ast::Statement>) -> Result<bool> {
         Ok(match tag {
             Some(ast::Statement::Expr(ast::ExprStmt {
-                                          expr: ast::Expression::TypeAssert(..),
-                                      })) => true,
+                expr: ast::Expression::TypeAssert(..),
+            })) => true,
             Some(ast::Statement::Assign(assign)) => {
                 assign.left.len() == 1
                     && assign.right.len() == 1
                     && matches!(assign.right.first(), Some(ast::Expression::TypeAssert(..)))
                     && match assign.op {
-                    Operator::Define => true,
-                    Operator::Assign => {
-                        return Err(self.else_error_at(assign.pos, "expect := found ="))
+                        Operator::Define => true,
+                        Operator::Assign => {
+                            return Err(self.else_error_at(assign.pos, "expect := found ="))
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
-                }
             }
             _ => false,
         })
@@ -1952,7 +2101,12 @@ impl Parser {
                 }
 
                 let right = vec![self.expression()?];
-                ast::Statement::Assign(ast::AssignStmt { pos, op, left, right })
+                ast::Statement::Assign(ast::AssignStmt {
+                    pos,
+                    op,
+                    left,
+                    right,
+                })
             }
             _ => {
                 let expr = self.check_single_expr(list)?;
@@ -1980,7 +2134,12 @@ impl Parser {
 
             let pos = (pos, self.expect(Operator::Colon)?);
             let body_ = Box::new(self.parse_stmt_list()?);
-            body.push(ast::CommClause { pos, tok, comm, body: body_ });
+            body.push(ast::CommClause {
+                pos,
+                tok,
+                comm,
+                body: body_,
+            });
         }
 
         let pos = (pos, self.expect(Operator::BraceRight)?);
@@ -2193,7 +2352,10 @@ fn is_type_elem(expr: &ast::Expression) -> bool {
         | ast::Expression::TypeChannel(..) => true,
         ast::Expression::Paren(p) => is_type_elem(&p.expr),
         ast::Expression::Operation(opt) => match opt {
-            ast::Operation { op: Operator::Tiled, .. } => true,
+            ast::Operation {
+                op: Operator::Tiled,
+                ..
+            } => true,
             ast::Operation { y: Some(opty), .. } => is_type_elem(opty),
             ast::Operation { x: optx, .. } => is_type_elem(optx),
         },
@@ -2204,8 +2366,8 @@ fn is_type_elem(expr: &ast::Expression) -> bool {
 #[cfg(test)]
 mod test {
     use super::ast::Declaration;
-    use crate::parser::Parser;
     use super::Result;
+    use crate::parser::Parser;
 
     #[test]
     fn parse_package() -> Result<()> {
