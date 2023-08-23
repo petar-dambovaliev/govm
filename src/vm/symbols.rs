@@ -46,6 +46,21 @@ pub enum DefineType {
 }
 
 impl DefineType {
+    //nil for interfaces, slices, channels, maps, pointers and functions.
+
+    pub fn is_nil(&self) -> bool {
+        match &self {
+            Self::Ref(r) => r.is_nil(),
+            Self::Null => true,
+            _ => false,
+        }
+    }
+    pub fn is_nullable(&self) -> bool {
+        match &self {
+            Self::Ref(_) | Self::Func(_, _, _) | Self::Map(_, _) | Self::Array(_) => true,
+            _ => false,
+        }
+    }
     pub fn is_struct(&self) -> bool {
         match &self {
             Self::Struct(_, _) => true,
@@ -69,7 +84,7 @@ impl DefineType {
     pub fn as_type(&self) -> (DefineType, Type) {
         match &self {
             Self::Type(df, t) => (*df.clone(), t.clone()),
-            _ => panic!("expected Self::Type"),
+            _ => panic!("expected Self::Type, got {:#?}", self),
         }
     }
 }

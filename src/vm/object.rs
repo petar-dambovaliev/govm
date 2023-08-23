@@ -649,7 +649,7 @@ impl Array {
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
-            Type::Null => (),
+            Type::Null => f.write_str("nil")?,
             Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
             Type::Float => unsafe { f.write_str(&self.as_f64_unchecked().to_string())? },
             Type::Int => f.write_str(&self.as_int().to_string())?,
@@ -668,7 +668,8 @@ impl Display for Object {
             Type::Struct => {
                 let strct = unsafe { self.as_struct() };
 
-                f.write_str("Struct{")?;
+                f.write_str(strct.name.as_str())?;
+                f.write_char('{')?;
                 for (i, obj) in strct.values.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -697,6 +698,7 @@ impl Display for Object {
 #[repr(C)]
 pub struct Struct {
     header: Header,
+    name: RString,
     pub values: Vec<Object>,
 }
 
@@ -709,11 +711,12 @@ impl Struct {
         ptr.get_mut::<Self>()
     }
 
-    pub fn object(values: Vec<Object>) -> Object {
+    pub fn object(name: RString, values: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         init!(obj.values => values);
+        init!(obj.name => name);
         ptr
     }
 }

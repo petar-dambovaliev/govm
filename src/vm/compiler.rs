@@ -451,20 +451,32 @@ impl Compiler {
             Declaration::Type(t) => {
                 for spec in &t.specs {
                     if !spec.alias {
+                        let t = spec.name.clone();
+
                         let mut field_types = vec![];
                         if let Expression::TypeStruct(ta) = &spec.typ {
                             //todo tags
                             for field in &ta.fields {
-                                //todo won't work for refs
-                                let inner_t = field.typ.as_ident();
+                                let (inner_t, is_ref) = match &field.typ {
+                                    Expression::TypePointer(p) => (p.typ.as_ident(), true),
+                                    _ => (field.typ.as_ident(), false),
+                                };
 
-                                let (_, t) = self.symbols.resolve(inner_t.name.as_str()).unwrap();
+                                if !is_ref && t.name == inner_t.name {
+                                    panic!("recursive definition");
+                                }
+
+                                let dt = if is_ref {
+                                    DefineType::Ref(Box::new(DefineType::Null))
+                                } else {
+                                    DefineType::Null
+                                };
 
                                 for name in &field.name {
                                     field_types.push(ContextType::Named(
                                         name.name.as_str().to_string(),
                                         inner_t.name.as_str().to_string(),
-                                        t.clone(),
+                                        dt.clone(),
                                     ));
                                 }
                             }
@@ -479,11 +491,30 @@ impl Compiler {
                         }
 
                         let name = spec.name.name.as_str();
-                        let symbol = self
-                            .symbols
-                            .define(name, DefineType::Struct(name.to_string(), field_types));
+                        let symbol = self.symbols.define(
+                            name,
+                            DefineType::Struct(name.to_string(), field_types.clone()),
+                        );
 
-                        let obj = Struct::object(field_values);
+                        for field_type in &mut field_types {
+                            let (s, tt, dt) = field_type.as_named();
+                            let (_, t) = self.symbols.resolve(tt.as_str()).unwrap();
+                            let resolved = match dt {
+                                DefineType::Ref(_) => DefineType::Ref(Box::new(t)),
+                                _ => t,
+                            };
+
+                            *field_type = ContextType::Named(s, tt, resolved);
+                        }
+
+                        let updated = self
+                            .symbols
+                            .update_dt(name, DefineType::Struct(name.to_string(), field_types));
+
+                        assert!(updated);
+
+                        //todo add struct name
+                        let obj = Struct::object(name.to_string(), field_values);
                         let idx = self.add_constant(obj);
                         self.emit_opcode(OpCode::Const);
                         self.emit_u16(idx);
@@ -1490,9 +1521,16 @@ impl Compiler {
                                     _ => panic!("expr"),
                                 };
 
-                                //println!("{:#?}", el_expr);
                                 let rt = self.compile_expression(&el_expr)?;
-                                assert_eq!(inner_type.as_type().0, rt);
+
+                                let in_t = match inner_type {
+                                    DefineType::Type(a, _b) => *a,
+                                    _ => inner_type.clone(),
+                                };
+
+                                if !(in_t.is_nullable() && rt.is_nil()) {
+                                    assert_eq!(in_t, rt, "{:#?}", el_expr);
+                                }
                             }
                             None => {
                                 let def_val = self.make_type_default_val(Some(ident), inner_type);
@@ -1500,6 +1538,11 @@ impl Compiler {
                             }
                         }
                     }
+
+                    let obj = Object::string(name.clone(), &mut self.gc);
+                    let idx = self.add_constant(obj);
+                    self.emit_opcode(OpCode::Const);
+                    self.emit_u16(idx);
 
                     self.emit_opcode(OpCode::Struct);
                     self.emit_u16(inner_types.len().try_into().unwrap());

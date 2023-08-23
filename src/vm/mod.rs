@@ -506,6 +506,7 @@ impl VM {
                     self.push(obj);
                 }
                 OpCode::Struct => {
+                    let struct_name = self.pop();
                     let length = self.read_u16();
 
                     let mut fields = Vec::with_capacity(length as usize);
@@ -514,7 +515,7 @@ impl VM {
                         fields.push(value);
                     }
 
-                    let obj = Struct::object(fields);
+                    let obj = Struct::object(struct_name.to_string(), fields);
                     self.push(obj);
                 }
                 OpCode::IndexGet => {

@@ -17,13 +17,12 @@ fn main() {
 
         type Foo struct {
             a int
-            b int
-            c int
+            f *Foo
         }
 
         func main() {
-            f := Foo{c: 2, b: 1}
-            print(f.c)
+            f := Foo{f: &Foo{}}
+            print(f)
         }
     "#,
     );
