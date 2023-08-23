@@ -571,6 +571,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
             index_get_string(let_obj, index.as_int(), gc)
         }
         Type::Map => index_get_map(let_obj, index, gc),
+        Type::Struct => index_get_struct(let_obj, index, gc),
         _ => {
             return Err(Error::TypeError(format!(
                 "object cannot be indexed: {}",
@@ -580,6 +581,17 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
     }?;
 
     Ok(result)
+}
+
+fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
+    let strct = obj.as_struct();
+    let i = key.as_int();
+
+    if i < 0 {
+        panic!("impossible");
+    }
+
+    Ok(strct.values[i as usize].clone())
 }
 
 fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {

@@ -48,6 +48,7 @@ pub enum Type {
     // The types below are all heap-allocated
     Float,
     String,
+    Rune,
     Array,
     Map,
     Iter,
@@ -406,7 +407,8 @@ impl PartialEq for Object {
             Type::Null | Type::Bool | Type::Int | Type::Function => self.0 == other.0,
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
-            Type::Array | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
+            //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
+            Type::Array | Type::Ref | Type::Map | Type::Iter | Type::Struct | Type::Rune => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     self.tag(),
@@ -427,7 +429,13 @@ impl PartialOrd for Object {
             Type::Null | Type::Bool | Type::Int => self.0.partial_cmp(&other.0),
             Type::Float => unsafe { self.as_f64_unchecked().partial_cmp(&other.as_f64()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
-            Type::Array | Type::Function | Type::Ref | Type::Map | Type::Iter | Type::Struct => {
+            Type::Array
+            | Type::Function
+            | Type::Ref
+            | Type::Map
+            | Type::Iter
+            | Type::Struct
+            | Type::Rune => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -669,6 +677,7 @@ impl Display for Object {
                 }
                 f.write_char('}')?;
             }
+            Type::Rune => unimplemented!(),
             Type::Map => {
                 unimplemented!()
             }
@@ -688,7 +697,7 @@ impl Display for Object {
 #[repr(C)]
 pub struct Struct {
     header: Header,
-    values: Vec<Object>,
+    pub values: Vec<Object>,
 }
 
 impl Struct {
@@ -781,6 +790,7 @@ impl Display for Type {
             Type::Iter => "iter",
             Type::Ref => "&",
             Type::Struct => "struct",
+            Type::Rune => "rune",
         };
         f.write_str(str)
     }

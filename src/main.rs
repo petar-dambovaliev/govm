@@ -20,9 +20,10 @@ fn main() {
             b int
             c int
         }
+
         func main() {
-            f := Foo{b: 1, c:2}
-            print(f)
+            f := Foo{c: 2, b: 1}
+            print(f.c)
         }
     "#,
     );

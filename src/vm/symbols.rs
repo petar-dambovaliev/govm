@@ -21,35 +21,68 @@ pub(crate) enum Scope {
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum ContextType {
-    Named(String, String, Type),
-    Unnamed(Type),
+    //    key,    identifier,  type
+    Named(String, String, DefineType),
+    Unnamed(DefineType),
 }
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum DefineType {
-    Var,
-    Struct(String),
-    Func,
+    Null,
+    Var(Box<Self>),
+    Struct(String, Vec<ContextType>),
+    Func(String, Vec<ContextType>, Vec<ContextType>),
+    Int,
+    Bool,
+    Float,
+    String,
+    Rune,
+    Array(Box<Self>),
+    Map(Box<Self>, Box<Self>),
+    Iter(Box<Self>),
+    Ref(Box<Self>),
+    Tuple(Vec<Self>),
+    Type(Box<Self>, Type),
 }
 
 impl DefineType {
     pub fn is_struct(&self) -> bool {
         match &self {
-            Self::Struct(_) => true,
+            Self::Struct(_, _) => true,
             _ => false,
+        }
+    }
+    pub fn is_var(&self) -> bool {
+        match &self {
+            Self::Var(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_func(&self) -> bool {
+        match &self {
+            Self::Func(_, _, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn as_type(&self) -> (DefineType, Type) {
+        match &self {
+            Self::Type(df, t) => (*df.clone(), t.clone()),
+            _ => panic!("expected Self::Type"),
         }
     }
 }
 
 impl ContextType {
-    pub fn as_named(&self) -> (String, String, Type) {
+    pub fn as_named(&self) -> (String, String, DefineType) {
         match &self {
             Self::Named(s, s1, t) => (s.clone(), s1.clone(), t.clone()),
             _ => panic!(),
         }
     }
 
-    pub fn as_unnamed(&self) -> Type {
+    pub fn as_unnamed(&self) -> DefineType {
         match &self {
             Self::Unnamed(t) => t.clone(),
             _ => panic!(),
@@ -61,7 +94,7 @@ impl ContextType {
 pub(crate) struct Context {
     scope: Scope,
     max_size: usize,
-    symbols: Vec<Vec<(String, DefineType, Vec<ContextType>)>>,
+    pub symbols: Vec<Vec<(String, DefineType)>>,
 }
 
 impl Context {
@@ -86,9 +119,9 @@ impl Context {
     }
 
     /// Defines a new symbol in the current context its inner-most scope.
-    fn define(&mut self, name: &str, dt: DefineType, types: Vec<ContextType>) -> Symbol {
+    fn define(&mut self, name: &str, dt: DefineType) -> Symbol {
         let current_scope = self.symbols.last_mut().unwrap();
-        current_scope.push((name.to_string(), dt, types));
+        current_scope.push((name.to_string(), dt));
         self.max_size += 1;
 
         Symbol {
@@ -99,10 +132,12 @@ impl Context {
 
     /// Resolves a symbol in this context along with its absolute index (relative to the context its top scope)
     #[inline]
-    fn resolve(&self, name: &str) -> Option<(Symbol, DefineType, Vec<ContextType>)> {
+    fn resolve(&self, name: &str) -> Option<(Symbol, DefineType)> {
         let mut abs_index = self.total_len();
+
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
+
             if let Some(index) = scope.iter().position(|n| n.0 == name) {
                 return Some((
                     Symbol {
@@ -110,12 +145,24 @@ impl Context {
                         scope: self.scope,
                     },
                     scope[index].1.clone(),
-                    scope[index].2.clone(),
                 ));
             }
         }
-
         None
+    }
+
+    pub fn update_dt(&mut self, name: &str, dt: DefineType) -> bool {
+        let mut abs_index = self.total_len();
+
+        for scope in self.symbols.iter_mut().rev() {
+            abs_index -= scope.len();
+
+            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+                scope[index].1 = dt.clone();
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -128,7 +175,7 @@ impl SymbolTable {
     }
 
     /// Returns a mutable reference to the current context
-    fn current_context(&mut self) -> &mut Context {
+    pub fn current_context(&mut self) -> &mut Context {
         self.contexts.last_mut().unwrap()
     }
 
@@ -156,12 +203,12 @@ impl SymbolTable {
     }
 
     /// Define a symbol in the current context (and current scope within that context).
-    pub fn define(&mut self, name: &str, dt: DefineType, types: Vec<ContextType>) -> Symbol {
-        self.current_context().define(name, dt, types)
+    pub fn define(&mut self, name: &str, dt: DefineType) -> Symbol {
+        self.current_context().define(name, dt)
     }
 
     /// Resolve a symbol in either the current context or the global context if no local was found.
-    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, DefineType, Vec<ContextType>)> {
+    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, DefineType)> {
         let symbol = self.current_context().resolve(name);
         if symbol.is_some() {
             return symbol;
@@ -171,6 +218,21 @@ impl SymbolTable {
             self.contexts[0].resolve(name)
         } else {
             None
+        }
+    }
+
+    pub fn update_dt(&mut self, name: &str, dt: DefineType) -> bool {
+        let len = self.contexts.len();
+
+        // Try getting a mutable reference from the current context
+        if self.current_context().update_dt(name, dt.clone()) {
+            return true;
+        }
+
+        if len > 1 {
+            self.contexts[0].update_dt(name, dt)
+        } else {
+            false
         }
     }
 }
