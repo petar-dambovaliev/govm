@@ -207,15 +207,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        {
-            println!("Bytecode (raw)= \n{:?}", &code.instructions);
-            print!(
-                "Bytecode (human)= {}\n",
-                bytecode_to_human(&code.instructions, true)
-            );
-            println!("{:16}= {:?}", "Constants", code.constants);
-            println!("{:16}= {:?}", "Frames", self.frames);
-        }
+        // {
+        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
+        //     print!(
+        //         "Bytecode (human)= {}\n",
+        //         bytecode_to_human(&code.instructions, true)
+        //     );
+        //     println!("{:16}= {:?}", "Constants", code.constants);
+        //     println!("{:16}= {:?}", "Frames", self.frames);
+        // }
 
         // reset some state
         self.instructions = code.instructions;

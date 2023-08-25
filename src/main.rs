@@ -14,12 +14,12 @@ fn main() {
     let mut parser = Parser::from(
         r#"
         package main
-
+        
         type Foo struct {
             a int
             f *Foo
         }
-
+        
         func main() {
             f := Foo{f: &Foo{}}
             print(f)

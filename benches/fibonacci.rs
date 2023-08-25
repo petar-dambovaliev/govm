@@ -6,24 +6,18 @@ use gno_rs::vm::VM;
 fn fibonacci() {
     let mut parser = Parser::from(
         r#"
-       package main
+        package main
 
-        func fibonacci(n int) int {
-            if n <= 1 {
+       func FibonacciRecursion(n int) int {
+            if n < 2 {
                 return n
             }
-
-            a, b := 0, 1
-            for i := 2; i <= n; i++ {
-                c := a + b
-                a, b = b, c
-            }
-
-            return b
-        }
+            return FibonacciRecursion(n-1) + FibonacciRecursion(n-2)
+       }
 
         func main() {
-            fibonacci(30)
+            var a = FibonacciRecursion(30);
+            //print("{}", a);
         }
     "#,
     );
@@ -38,7 +32,7 @@ fn fibonacci() {
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib", |b| b.iter(|| fibonacci()));
 
-    c.bench_function("fib_rust", |b| b.iter(|| fibonacci_rust(black_box(30))));
+    //c.bench_function("fib_rust", |b| b.iter(|| fibonacci_rust(black_box(30))));
 }
 
 fn fibonacci_rust(n: u32) -> u32 {

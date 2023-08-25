@@ -35,6 +35,8 @@ const MAX_INT: isize = isize::MAX >> VALUE_SHIFT_BITS;
 /// The minimum integer value we can store in a value object
 const MIN_INT: isize = isize::MIN >> VALUE_SHIFT_BITS;
 
+// ARM uses 49 bits and x86-64 uses 48 bits
+// we have at least 15 bits to work with
 // this is 4 bits and it supports up to 16 variants
 #[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
 #[repr(u8)]

@@ -10,6 +10,7 @@ use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
 use std::fmt::Display;
 use std::fmt::Write;
+use std::ops::Neg;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -325,7 +326,7 @@ impl Compiler {
                 let symbol = if !f.name.name.is_empty() {
                     Some(self.symbols.define(
                         &f.name.name,
-                        DefineType::Func(f.name.name.clone(), vec![], vec![]),
+                        DefineType::Func(f.name.name.clone(), vec![], Box::new(DefineType::Null)),
                     ))
                 } else {
                     None
@@ -359,34 +360,73 @@ impl Compiler {
                         .symbols
                         .resolve(el.typ.as_ident().name.as_str())
                         .unwrap();
-                    decl_r_types.push(ContextType::Unnamed(t));
+
+                    decl_r_types.push(t);
                 }
+
+                let r_t = if decl_r_types.is_empty() {
+                    DefineType::Null
+                } else if decl_r_types.len() == 1 {
+                    decl_r_types[0].clone()
+                } else {
+                    DefineType::Tuple(decl_r_types.clone())
+                };
 
                 if symbol.is_some() {
                     let updated = self.symbols.update_dt(
                         f.name.name.as_str(),
-                        DefineType::Func(f.name.name.clone(), decl_arg_types, decl_r_types.clone()),
+                        DefineType::Func(f.name.name.clone(), decl_arg_types, Box::new(r_t)),
                     );
                     assert!(updated);
                 }
 
                 let pos_start_function = self.instructions.len();
 
+                //todo ugly
+
+                // type checking if all returns are correct types
                 let mut rts = None;
                 if let Some(body) = &f.body {
+                    //println!("body");
                     rts = Some(self.compile_block_statement(body)?);
+                    //println!("end body: {:#?}", rts);
                 }
 
                 if !decl_r_types.is_empty() {
                     decl_r_types.sort();
-                    let a: Vec<DefineType> = decl_r_types.iter().map(|b| b.as_unnamed()).collect();
-                    let mut rts = match rts.unwrap() {
-                        DefineType::Tuple(types) => types,
-                        _ => panic!("expected tuple"),
+                    let sorted_decl_r_types: Vec<DefineType> = decl_r_types
+                        .iter()
+                        .map(|b| {
+                            if let DefineType::Type(inner, _) = b.clone() {
+                                return *inner;
+                            }
+
+                            b.clone()
+                        })
+                        .collect();
+
+                    let un_rts = rts.unwrap().strip_ret();
+
+                    let expected_t = if sorted_decl_r_types.is_empty() {
+                        DefineType::Null
+                    } else if sorted_decl_r_types.len() == 1 {
+                        sorted_decl_r_types[0].clone()
+                    } else {
+                        DefineType::Tuple(sorted_decl_r_types)
                     };
-                    rts.sort();
-                    assert_eq!(a, rts);
+
+                    match un_rts {
+                        DefineType::Either(types) => {
+                            for t in types {
+                                assert_eq!(expected_t, t, "{:#?}", f.name.name);
+                            }
+                        }
+                        t => {
+                            assert_eq!(expected_t, t, "{:#?}", f.name.name);
+                        }
+                    }
                 }
+                // end type checking on return types
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -426,8 +466,6 @@ impl Compiler {
                     self.emit_opcode(OpCode::Const);
                     self.emit_u16(idx);
                 }
-
-                println!("{:#?}", self.symbols.resolve("main").is_some());
             }
             Declaration::Const(c) => {
                 for spec in &c.specs {
@@ -545,11 +583,24 @@ impl Compiler {
         }
 
         self.symbols.enter_scope();
+        let mut dt = vec![];
+
         for s in &block.list {
-            let _ = self.compile_statement(s)?;
+            let rt = self.compile_statement(s)?;
+            //println!("statement: {:#?}", s);
+            //println!("rt: {:#?}", rt);
+            dt.push(rt);
         }
+
         self.symbols.leave_scope();
-        Ok(DefineType::Null)
+
+        if dt.is_empty() {
+            Ok(DefineType::Null)
+        } else if dt.len() == 1 {
+            Ok(dt[0].clone())
+        } else {
+            Ok(DefineType::Either(dt))
+        }
     }
 
     fn compile_statement(&mut self, stmt: &Statement) -> Result<DefineType, Error> {
@@ -618,7 +669,14 @@ impl Compiler {
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
 
-                self.compile_block_statement(&ifstmt.body)?;
+                let dt = self.compile_block_statement(&ifstmt.body)?;
+                let mut rts = vec![];
+
+                if dt.is_return() || dt.is_either() {
+                    rts.push(dt);
+                } else {
+                    panic!("Statement::If: {:#?}", dt);
+                }
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -636,7 +694,10 @@ impl Compiler {
                 if let Some(alternative) = &ifstmt.else_ {
                     match alternative.as_ref() {
                         Statement::Block(bl) => {
-                            self.compile_block_statement(bl)?;
+                            let dt = self.compile_block_statement(bl)?;
+                            if dt.is_return() || dt.is_either() {
+                                rts.push(dt);
+                            }
                         }
                         _ => panic!("else should be a block"),
                     }
@@ -650,6 +711,12 @@ impl Compiler {
 
                 // Change operand of last JumpIfFalse opcode to where we're currently at
                 self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
+
+                if rts.is_empty() {
+                    return Ok(DefineType::Null);
+                }
+
+                return Ok(DefineType::Either(rts));
             }
             Statement::Assign(assign) => {
                 // a, err := call()
@@ -660,9 +727,10 @@ impl Compiler {
                         _ => panic!("expected a func"),
                     };
 
-                    assert_eq!(assign.left.len(), ret.len());
+                    let tuple = ret.as_tuple();
+                    assert_eq!(assign.left.len(), tuple.len());
 
-                    for (left, ct) in assign.left.iter().zip(ret).rev() {
+                    for (left, ct) in assign.left.iter().zip(tuple).rev() {
                         match &assign.op {
                             Operator::Define => {
                                 let name = match left {
@@ -670,10 +738,9 @@ impl Compiler {
                                     _ => panic!("only identifiers can be defined: {:#?}", left),
                                 };
 
-                                let symbol = self.symbols.define(
-                                    name.as_str(),
-                                    DefineType::Var(Box::new(ct.as_unnamed())),
-                                );
+                                let symbol = self
+                                    .symbols
+                                    .define(name.as_str(), DefineType::Var(Box::new(ct)));
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
                                 } else {
@@ -839,15 +906,30 @@ impl Compiler {
             },
             Statement::Return(expr) => {
                 let mut rts = Vec::with_capacity(expr.ret.len());
+
                 for r in &expr.ret {
                     let t = self.compile_expression(&r)?;
-                    rts.push(t);
+                    if t != DefineType::Null {
+                        rts.push(t);
+                    }
                 }
 
                 assert!(rts.len() < u16::MAX as usize);
                 self.emit_opcode(OpCode::ReturnValue);
                 self.emit_u16(rts.len() as u16);
-                return Ok(DefineType::Tuple(rts));
+
+                return if rts.is_empty() {
+                    Ok(DefineType::Return(Box::new(DefineType::Null)))
+                } else if rts.len() == 1 {
+                    let a = rts[0].clone();
+                    if a.is_return() || a.is_either() {
+                        Ok(a)
+                    } else {
+                        Ok(DefineType::Return(Box::new(a)))
+                    }
+                } else {
+                    Ok(DefineType::Return(Box::new(DefineType::Tuple(rts))))
+                };
             }
             Statement::Branch(branch) => match branch.key {
                 Keyword::Break => {
@@ -1336,6 +1418,7 @@ impl Compiler {
             }
 
             Expression::Call(call) => 'compile_call: {
+                //todo type check the arguments
                 for a in &call.args {
                     self.compile_expression(a)?;
                 }
@@ -1361,7 +1444,12 @@ impl Compiler {
                     panic!("tried to call not a function");
                 }
 
-                return Ok(dt);
+                let rt = match dt {
+                    DefineType::Func(_, _, rts) => rts.type_to_val_t(),
+                    _ => unreachable!(),
+                };
+
+                return Ok(rt);
             }
             Expression::CompositeLit(clit) => {
                 //map
@@ -1555,19 +1643,17 @@ impl Compiler {
                 self.compile_expression(&ind.index)?;
                 self.emit_opcode(OpCode::IndexGet);
             }
-            Expression::Ident(ident) => 'Ident: {
+            Expression::Ident(ident) => {
                 if &ident.name == "true" {
                     self.emit_opcode(OpCode::True);
-                    break 'Ident;
+                    return Ok(DefineType::Bool);
                 } else if &ident.name == "false" {
                     self.emit_opcode(OpCode::False);
-                    break 'Ident;
+                    return Ok(DefineType::Bool);
                 }
 
-                let symbol = self.symbols.resolve(&ident.name).map(|a| a.0);
-
-                match symbol.as_ref() {
-                    Some(symbol) => {
+                match self.symbols.resolve(&ident.name) {
+                    Some((symbol, dt)) => {
                         let opcode = if symbol.scope == Scope::Global {
                             OpCode::GetGlobal
                         } else {
@@ -1575,6 +1661,8 @@ impl Compiler {
                         };
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
+
+                        return Ok(dt);
                     }
                     None => {
                         return Err(Error::ReferenceError(format!(
@@ -1917,7 +2005,7 @@ mod tests {
 
         let ast = p.parse_file().unwrap();
         let code = compiler.compile_ast(&ast).unwrap();
-        println!("{}", bytecode_to_human(&code.instructions, false))
+        //println!("{}", bytecode_to_human(&code.instructions, false))
         // assert_eq!(
         //     run(r#"
         //         package main

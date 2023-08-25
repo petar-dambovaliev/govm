@@ -31,7 +31,7 @@ pub enum DefineType {
     Null,
     Var(Box<Self>),
     Struct(String, Vec<ContextType>),
-    Func(String, Vec<ContextType>, Vec<ContextType>),
+    Func(String, Vec<ContextType>, Box<Self>),
     Int,
     Bool,
     Float,
@@ -43,11 +43,54 @@ pub enum DefineType {
     Ref(Box<Self>),
     Tuple(Vec<Self>),
     Type(Box<Self>, Type),
+    Return(Box<Self>),
+    Either(Vec<Self>),
 }
 
 impl DefineType {
-    //nil for interfaces, slices, channels, maps, pointers and functions.
+    pub fn strip_ret(&self) -> DefineType {
+        match &self {
+            DefineType::Type(r, _) => r.clone().strip_ret(),
+            DefineType::Return(r) => *r.clone(),
+            DefineType::Tuple(v) => {
+                let mut new_v = Vec::with_capacity(v.len());
+                for rt in v {
+                    new_v.push(rt.strip_ret());
+                }
+                DefineType::Tuple(new_v)
+            }
+            DefineType::Either(v) => {
+                let mut new_v = Vec::with_capacity(v.len());
+                for rt in v {
+                    new_v.push(rt.strip_ret());
+                }
+                DefineType::Either(new_v)
+            }
+            &r => r.clone(),
+        }
+    }
+    pub fn type_to_val_t(&self) -> DefineType {
+        match &self {
+            DefineType::Type(r, _) => *r.clone(),
+            DefineType::Tuple(v) => {
+                let mut new_v = Vec::with_capacity(v.len());
+                for rt in v {
+                    new_v.push(rt.type_to_val_t());
+                }
+                DefineType::Tuple(new_v)
+            }
+            DefineType::Either(v) => {
+                let mut new_v = Vec::with_capacity(v.len());
+                for rt in v {
+                    new_v.push(rt.type_to_val_t());
+                }
+                DefineType::Either(new_v)
+            }
+            &r => r.clone(),
+        }
+    }
 
+    //nil for interfaces, slices, channels, maps, pointers and functions.
     pub fn is_nil(&self) -> bool {
         match &self {
             Self::Ref(r) => r.is_nil(),
@@ -67,6 +110,21 @@ impl DefineType {
             _ => false,
         }
     }
+
+    pub fn is_return(&self) -> bool {
+        match &self {
+            Self::Return(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_either(&self) -> bool {
+        match &self {
+            Self::Either(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_var(&self) -> bool {
         match &self {
             Self::Var(_) => true,
@@ -85,6 +143,27 @@ impl DefineType {
         match &self {
             Self::Type(df, t) => (*df.clone(), t.clone()),
             _ => panic!("expected Self::Type, got {:#?}", self),
+        }
+    }
+
+    // pub fn as_func_rt(&self) -> DefineType {
+    //     match &self {
+    //         Self::Func(_, _, t) => (*df.clone(), t.clone()),
+    //         _ => panic!("expected Self::Type, got {:#?}", self),
+    //     }
+    // }
+
+    pub fn as_return(&self) -> DefineType {
+        match &self {
+            Self::Return(t) => *t.clone(),
+            _ => panic!("expected Self::Type, got {:#?}", self),
+        }
+    }
+
+    pub fn as_tuple(&self) -> Vec<DefineType> {
+        match &self {
+            Self::Tuple(t) => t.clone(),
+            _ => panic!("expected Self::Tuple, got {:#?}", self),
         }
     }
 }
