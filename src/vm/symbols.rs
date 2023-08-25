@@ -160,6 +160,27 @@ impl DefineType {
         }
     }
 
+    pub fn as_either(&self) -> Vec<DefineType> {
+        match &self {
+            Self::Either(t) => t.clone(),
+            _ => panic!("expected Self::Either, got {:#?}", self),
+        }
+    }
+
+    pub fn merge_either(&self, other: &Self) -> DefineType {
+        if !self.is_either() && !other.is_either() {
+            panic!("expected either");
+        }
+        match (self, other) {
+            (Self::Either(v1), Self::Either(v2)) => {
+                let mut r = v1.clone();
+                r.extend(v2.clone());
+                Self::Either(r)
+            }
+            _ => unimplemented!(),
+        }
+    }
+
     pub fn as_tuple(&self) -> Vec<DefineType> {
         match &self {
             Self::Tuple(t) => t.clone(),

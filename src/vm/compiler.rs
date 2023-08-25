@@ -418,7 +418,15 @@ impl Compiler {
                     match un_rts {
                         DefineType::Either(types) => {
                             for t in types {
-                                assert_eq!(expected_t, t, "{:#?}", f.name.name);
+                                if t.is_either() {
+                                    let ei = t.as_either();
+
+                                    for e in ei {
+                                        assert_eq!(expected_t, e, "{:#?}", f.name.name);
+                                    }
+                                } else {
+                                    assert_eq!(expected_t, t, "{:#?}", f.name.name);
+                                }
                             }
                         }
                         t => {
@@ -672,8 +680,10 @@ impl Compiler {
                 let dt = self.compile_block_statement(&ifstmt.body)?;
                 let mut rts = vec![];
 
-                if dt.is_return() || dt.is_either() {
+                if dt.is_return() {
                     rts.push(dt);
+                } else if dt.is_either() {
+                    rts.extend(dt.as_either());
                 } else {
                     panic!("Statement::If: {:#?}", dt);
                 }
@@ -695,8 +705,10 @@ impl Compiler {
                     match alternative.as_ref() {
                         Statement::Block(bl) => {
                             let dt = self.compile_block_statement(bl)?;
-                            if dt.is_return() || dt.is_either() {
+                            if dt.is_return() {
                                 rts.push(dt);
+                            } else if dt.is_either() {
+                                rts.extend(dt.as_either());
                             }
                         }
                         _ => panic!("else should be a block"),
@@ -712,11 +724,13 @@ impl Compiler {
                 // Change operand of last JumpIfFalse opcode to where we're currently at
                 self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
 
-                if rts.is_empty() {
-                    return Ok(DefineType::Null);
-                }
-
-                return Ok(DefineType::Either(rts));
+                return if rts.is_empty() {
+                    Ok(DefineType::Null)
+                } else if rts.len() == 1 {
+                    Ok(rts[0].clone())
+                } else {
+                    Ok(DefineType::Either(rts))
+                };
             }
             Statement::Assign(assign) => {
                 // a, err := call()

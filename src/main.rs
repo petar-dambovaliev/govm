@@ -15,6 +15,33 @@ fn main() {
         r#"
         package main
         
+        func asd1() (int, string) {
+            return 1, ""
+        }
+        
+        func asd() int {
+            return 1
+        }
+        
+        func foo(a, b, c bool) (int, string) {
+            if a {
+                if b {
+                    if c {
+                        if a {
+                            return asd(), ""
+                        } else {
+                            return asd1()
+                        }
+                    } else {
+                        return asd(), ""
+                    }
+                } else {
+                        return 5, ""
+                    }
+            }
+            return asd(), ""
+        }
+        
         type Foo struct {
             a int
             f *Foo
