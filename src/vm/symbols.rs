@@ -19,6 +19,22 @@ pub(crate) enum Scope {
     Global,
 }
 
+// a stmt is terminating if
+// `for`
+//      1. there are no "break" statements referring to the "for" statement, and
+//      2. the loop condition is absent, and
+//      3. the "for" statement does not use a range clause.
+// `if`
+//      1. the "else" branch is present, and
+//      2. both branches are terminating statements.
+// `switch`
+//      1. there are no "break" statements referring to the "switch" statement,
+//      2. there is a default case, and
+//      3. the statement lists in each case, including the default, end in a terminating statement, or a possibly labeled "fallthrough" statement.
+//
+//  `label`
+//      1. A labeled statement labeling a terminating statement
+
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum ContextType {
     //    key,    identifier,  type
