@@ -1,11 +1,12 @@
 use crate::vm::object::Type;
 
+#[derive(Debug)]
 pub(crate) struct SymbolTable {
     /// A vector of contexts
     /// The context at index 0 will always be the global context,
     /// any context that follows is a local (to a function) context.
     /// There can be more than one local context as functions can be nested inside other functions.
-    contexts: Vec<Context>,
+    pub contexts: Vec<Context>,
 }
 
 pub(crate) struct Symbol {
@@ -13,7 +14,7 @@ pub(crate) struct Symbol {
     pub index: u16,
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub(crate) enum Scope {
     Local,
     Global,
@@ -156,6 +157,7 @@ impl ContextType {
 }
 
 /// A context is a type of environment to store values in. This can be either a global context or a local (to a function) context.
+#[derive(Debug)]
 pub(crate) struct Context {
     scope: Scope,
     max_size: usize,

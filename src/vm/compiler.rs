@@ -1,6 +1,6 @@
 use crate::parser::ast::{
     AssignStmt, BasicLit, BlockStmt, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
-    Expression, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
+    Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
@@ -265,6 +265,7 @@ impl Compiler {
 
         let entry = Parser::from("main()").expression().unwrap();
         self.compile_expression(&entry)?;
+
         self.emit_opcode(OpCode::Halt);
         self.instructions.shrink_to_fit();
         self.constants.shrink_to_fit();
@@ -319,6 +320,55 @@ impl Compiler {
         debug_assert_eq!(self.last_instruction.unwrap().operands().len(), 0);
         self.instructions.pop();
         self.last_instruction = None;
+    }
+
+    fn define_type_to_context_type(&self, dts: &[DefineType]) -> Vec<ContextType> {
+        let mut decl_arg_types = Vec::with_capacity(dts.len());
+        for dt in dts {
+            decl_arg_types.push(ContextType::Unnamed(dt.clone()));
+        }
+        decl_arg_types
+    }
+
+    fn field_list_to_define_type(&mut self, fl: &FieldList) -> (DefineType, Vec<DefineType>) {
+        let mut decl_r_types = Vec::with_capacity(fl.list.len());
+
+        for el in &fl.list {
+            let t = match &el.typ {
+                Expression::Ident(id) => {
+                    let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                    t
+                }
+                Expression::TypePointer(pt) => {
+                    let id = pt.typ.as_ident().unwrap();
+                    let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                    DefineType::Ref(Box::new(t))
+                }
+                Expression::TypeFunction(f) => {
+                    let (_, t_vec) = self.field_list_to_define_type(&f.params);
+                    let (dt, _) = self.field_list_to_define_type(&f.result);
+
+                    DefineType::Func(
+                        "".to_string(),
+                        self.define_type_to_context_type(t_vec.as_ref()),
+                        Box::new(dt),
+                    )
+                }
+                _ => panic!("function: unsupported parameter expression: {:#?}", el.typ),
+            };
+
+            decl_r_types.push(t);
+        }
+
+        let r_t = if decl_r_types.is_empty() {
+            DefineType::Null
+        } else if decl_r_types.len() == 1 {
+            decl_r_types[0].clone()
+        } else {
+            DefineType::Tuple(decl_r_types.clone())
+        };
+
+        (r_t, decl_r_types)
     }
 
     fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
@@ -393,7 +443,17 @@ impl Compiler {
                             let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
                             DefineType::Ref(Box::new(t))
                         }
-                        _ => panic!("unsupported parameter expression: {:#?}", el.typ),
+                        Expression::TypeFunction(f) => {
+                            let (_, args_c) = self.field_list_to_define_type(&f.params);
+                            let (dt_r, _) = self.field_list_to_define_type(&f.result);
+
+                            DefineType::Func(
+                                "".to_string(),
+                                self.define_type_to_context_type(args_c.as_ref()),
+                                Box::new(dt_r),
+                            )
+                        }
+                        _ => panic!("function: unsupported parameter expression: {:#?}", el.typ),
                     };
 
                     decl_r_types.push(t);
@@ -943,6 +1003,7 @@ impl Compiler {
                         _ => unimplemented!(),
                     }
                 }
+                return Ok(None);
             }
             Statement::Expr(expr) => {
                 self.compile_expression(&expr.expr)?;
@@ -1484,17 +1545,24 @@ impl Compiler {
                         break 'compile_call;
                     }
                 }
+
                 self.compile_expression(call.func.as_ref())?;
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
 
-                let (_, dt) = self
+                let (_, mut dt) = self
                     .symbols
                     .resolve(call.func.as_ident().unwrap().name.as_str())
                     .unwrap();
 
+                if let DefineType::Var(inner) = &dt {
+                    if inner.is_func() {
+                        dt = *inner.clone();
+                    }
+                }
+
                 if !dt.is_func() {
-                    panic!("tried to call not a function");
+                    panic!("tried to call not a function: {:#?}", dt);
                 }
 
                 let rt = match dt {
@@ -1756,6 +1824,150 @@ impl Compiler {
                 }
 
                 panic!("cannot find field");
+            }
+            Expression::FuncLit(f) => {
+                let pos_jump = self.instructions.len();
+
+                self.func_contexts.push(FuncContext::new(pos_jump));
+
+                self.emit_opcode(OpCode::Jump);
+                self.emit_u16(JUMP_PLACEHOLDER);
+
+                let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
+
+                //self.symbols.new_context();
+                for p in &f.typ.params.list {
+                    let (_, t) = self
+                        .symbols
+                        .resolve(p.typ.as_ident().unwrap().name.as_str())
+                        .unwrap();
+                    for name in &p.name {
+                        decl_arg_types.push(ContextType::Named(
+                            name.name.clone(),
+                            p.typ.as_ident().unwrap().name.clone(),
+                            t.clone(),
+                        ));
+
+                        self.symbols
+                            .define(&name.name, DefineType::Var(Box::new(t.clone())));
+                    }
+                }
+
+                let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
+
+                for el in &f.typ.result.list {
+                    let t = match &el.typ {
+                        Expression::Ident(id) => {
+                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                            t
+                        }
+                        Expression::TypePointer(pt) => {
+                            let id = pt.typ.as_ident().unwrap();
+                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                            DefineType::Ref(Box::new(t))
+                        }
+                        _ => panic!("funclit: unsupported parameter expression: {:#?}", el.typ),
+                    };
+
+                    decl_r_types.push(t);
+                }
+
+                let r_t = if decl_r_types.is_empty() {
+                    DefineType::Null
+                } else if decl_r_types.len() == 1 {
+                    decl_r_types[0].clone()
+                } else {
+                    DefineType::Tuple(decl_r_types.clone())
+                };
+
+                let pos_start_function = self.instructions.len();
+
+                //todo ugly
+
+                // type checking if all returns are correct types
+                let mut terminates = None;
+                let mut has_top_return = false;
+
+                for stmt in &f.body.list {
+                    if let Statement::Return(_) = stmt {
+                        has_top_return = true;
+                        break;
+                    }
+                }
+                terminates = self.compile_block_statement(&f.body)?;
+
+                let ctx = self.func_contexts.pop().unwrap();
+
+                if !decl_r_types.is_empty() {
+                    decl_r_types.sort();
+                    let sorted_decl_r_types: Vec<DefineType> = decl_r_types
+                        .iter()
+                        .map(|b| {
+                            if let DefineType::Type(inner, _) = b.clone() {
+                                return *inner;
+                            }
+
+                            b.clone()
+                        })
+                        .collect();
+
+                    //todo use terminates to assert if top scope level return is needed
+
+                    let expected_t = if sorted_decl_r_types.is_empty() {
+                        DefineType::Null
+                    } else if sorted_decl_r_types.len() == 1 {
+                        sorted_decl_r_types[0].clone()
+                    } else {
+                        DefineType::Tuple(sorted_decl_r_types)
+                    };
+
+                    //println!("{:#?}", un_rts);
+                    if !terminates.unwrap_or_default()
+                        && expected_t != DefineType::Null
+                        && !has_top_return
+                    {
+                        panic!("expected return");
+                    }
+
+                    for ret_type in ctx.ret_types {
+                        if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
+                            assert_eq!(expected_t, ret_type, "{:#?}", f);
+                        }
+                    }
+                }
+                // end type checking on return types
+
+                if self.last_instruction_is(OpCode::Pop) {
+                    self.remove_last_instruction();
+                    assert!(decl_r_types.len() < u16::MAX as usize);
+                    let num_r_types = decl_r_types.len() as u16;
+
+                    self.emit_opcode(OpCode::ReturnValue);
+                    self.emit_u16(num_r_types);
+                } else if !self.last_instruction_is(OpCode::ReturnValue) {
+                    self.emit_opcode(OpCode::Return);
+                }
+
+                self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
+
+                // Switch back to previous scope again
+                //let num_locals = self.symbols.leave_context();
+                let num_locals = 1;
+
+                // Create function object and store as constant
+                let obj = Object::function(
+                    pos_start_function.try_into().unwrap(),
+                    num_locals.try_into().unwrap(),
+                );
+                let idx = self.add_constant(obj);
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
+
+                return Ok(DefineType::Func(
+                    "".to_string(),
+                    decl_arg_types,
+                    Box::new(r_t),
+                ));
             }
             _ => {
                 return Err(Error::SyntaxError(format!(
