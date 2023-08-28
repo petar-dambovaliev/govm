@@ -21,9 +21,13 @@ fn main() {
            }
         }
         
+        func foo(f func()) {
+            f()
+        }
+        
         func main() {
             ff := newClosure()
-           ff(true)
+            foo(ff)
         }
     "#,
     );

@@ -38,8 +38,8 @@ pub(crate) enum Scope {
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum ContextType {
-    //    key,    identifier,  type
-    Named(String, String, DefineType),
+    //    key,  type
+    Named(String, DefineType),
     Unnamed(DefineType),
 }
 
@@ -141,9 +141,9 @@ impl DefineType {
 }
 
 impl ContextType {
-    pub fn as_named(&self) -> (String, String, DefineType) {
+    pub fn as_named(&self) -> (String, DefineType) {
         match &self {
-            Self::Named(s, s1, t) => (s.clone(), s1.clone(), t.clone()),
+            Self::Named(s, t) => (s.clone(), t.clone()),
             _ => panic!(),
         }
     }

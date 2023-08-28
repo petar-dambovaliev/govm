@@ -371,6 +371,28 @@ impl Compiler {
         (r_t, decl_r_types)
     }
 
+    fn expression_to_define_type(&mut self, expr: &Expression) -> DefineType {
+        match expr {
+            Expression::Ident(id) => {
+                let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                t
+            }
+            Expression::TypeFunction(tf) => {
+                let (_, args) = self.field_list_to_define_type(&tf.params);
+                let (ret, _) = self.field_list_to_define_type(&tf.result);
+                DefineType::Func(
+                    "".to_string(),
+                    self.define_type_to_context_type(args.as_ref()),
+                    Box::new(ret),
+                )
+            }
+            Expression::TypePointer(tp) => {
+                DefineType::Ref(Box::new(self.expression_to_define_type(&tp.typ)))
+            }
+            _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
+        }
+    }
+
     fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
         match decl {
             Declaration::Variable(v) => {
@@ -414,16 +436,9 @@ impl Compiler {
                 // Compile function in a new scope
                 self.symbols.new_context();
                 for p in &f.typ.params.list {
-                    let (_, t) = self
-                        .symbols
-                        .resolve(p.typ.as_ident().unwrap().name.as_str())
-                        .unwrap();
+                    let t = self.expression_to_define_type(&p.typ);
                     for name in &p.name {
-                        decl_arg_types.push(ContextType::Named(
-                            name.name.clone(),
-                            p.typ.as_ident().unwrap().name.clone(),
-                            t.clone(),
-                        ));
+                        decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
                         self.symbols
                             .define(&name.name, DefineType::Var(Box::new(t.clone())));
@@ -433,29 +448,7 @@ impl Compiler {
                 let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
                 for el in &f.typ.result.list {
-                    let t = match &el.typ {
-                        Expression::Ident(id) => {
-                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                            t
-                        }
-                        Expression::TypePointer(pt) => {
-                            let id = pt.typ.as_ident().unwrap();
-                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                            DefineType::Ref(Box::new(t))
-                        }
-                        Expression::TypeFunction(f) => {
-                            let (_, args_c) = self.field_list_to_define_type(&f.params);
-                            let (dt_r, _) = self.field_list_to_define_type(&f.result);
-
-                            DefineType::Func(
-                                "".to_string(),
-                                self.define_type_to_context_type(args_c.as_ref()),
-                                Box::new(dt_r),
-                            )
-                        }
-                        _ => panic!("function: unsupported parameter expression: {:#?}", el.typ),
-                    };
-
+                    let t = self.expression_to_define_type(&el.typ);
                     decl_r_types.push(t);
                 }
 
@@ -622,7 +615,6 @@ impl Compiler {
                                 for name in &field.name {
                                     field_types.push(ContextType::Named(
                                         name.name.as_str().to_string(),
-                                        inner_t.name.as_str().to_string(),
                                         dt.clone(),
                                     ));
                                 }
@@ -644,14 +636,13 @@ impl Compiler {
                         );
 
                         for field_type in &mut field_types {
-                            let (s, tt, dt) = field_type.as_named();
-                            let (_, t) = self.symbols.resolve(tt.as_str()).unwrap();
+                            let (s, dt) = field_type.as_named();
                             let resolved = match dt {
-                                DefineType::Ref(_) => DefineType::Ref(Box::new(t)),
-                                _ => t,
+                                DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
+                                _ => dt,
                             };
 
-                            *field_type = ContextType::Named(s, tt, resolved);
+                            *field_type = ContextType::Named(s, resolved);
                         }
 
                         let updated = self
@@ -1275,9 +1266,9 @@ impl Compiler {
         Ok(DefineType::Int)
     }
 
-    fn make_type_default_val(&mut self, name: Option<String>, t: DefineType) -> Expression {
+    fn make_type_default_val(&mut self, t: DefineType) -> Expression {
         match t {
-            DefineType::Type(inner, _) => self.make_type_default_val(name, *inner),
+            DefineType::Type(inner, _) => self.make_type_default_val(*inner),
             DefineType::String => Expression::BasicLit(BasicLit {
                 pos: 0,
                 kind: LitKind::String,
@@ -1313,8 +1304,8 @@ impl Compiler {
                 };
 
                 for inner_type in inner_types {
-                    let (key, _, it) = inner_type.as_named();
-                    let ex = self.make_type_default_val(Some(key.clone()), it);
+                    let (key, it) = inner_type.as_named();
+                    let ex = self.make_type_default_val(it);
 
                     lit_val.values.push(KeyedElement {
                         key: Some(Element::Expr(Expression::Ident(Ident {
@@ -1706,7 +1697,7 @@ impl Compiler {
                         .unwrap_or_default();
 
                     for inner_type in inner_types.iter().rev() {
-                        let (kk, ident, inner_type) = inner_type.as_named();
+                        let (kk, inner_type) = inner_type.as_named();
 
                         let found = clit_values.iter().find(|a| {
                             let k = a.key.as_ref().unwrap();
@@ -1743,7 +1734,7 @@ impl Compiler {
                                 }
                             }
                             None => {
-                                let def_val = self.make_type_default_val(Some(ident), inner_type);
+                                let def_val = self.make_type_default_val(inner_type);
                                 let _ = self.compile_expression(&def_val)?;
                             }
                         }
@@ -1808,7 +1799,7 @@ impl Compiler {
                 };
 
                 for (i, inner_type) in inner_types.into_iter().enumerate() {
-                    let (key, _, dt) = inner_type.as_named();
+                    let (key, dt) = inner_type.as_named();
                     if key == sel.sel.name {
                         self.compile_expression(&Expression::Index(Index {
                             pos: (0, 0),
@@ -1842,11 +1833,7 @@ impl Compiler {
                         .resolve(p.typ.as_ident().unwrap().name.as_str())
                         .unwrap();
                     for name in &p.name {
-                        decl_arg_types.push(ContextType::Named(
-                            name.name.clone(),
-                            p.typ.as_ident().unwrap().name.clone(),
-                            t.clone(),
-                        ));
+                        decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
                         self.symbols
                             .define(&name.name, DefineType::Var(Box::new(t.clone())));
