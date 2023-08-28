@@ -366,12 +366,12 @@ impl Compiler {
                 for p in &f.typ.params.list {
                     let (_, t) = self
                         .symbols
-                        .resolve(p.typ.as_ident().name.as_str())
+                        .resolve(p.typ.as_ident().unwrap().name.as_str())
                         .unwrap();
                     for name in &p.name {
                         decl_arg_types.push(ContextType::Named(
                             name.name.clone(),
-                            p.typ.as_ident().name.clone(),
+                            p.typ.as_ident().unwrap().name.clone(),
                             t.clone(),
                         ));
 
@@ -383,10 +383,18 @@ impl Compiler {
                 let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
                 for el in &f.typ.result.list {
-                    let (_, t) = self
-                        .symbols
-                        .resolve(el.typ.as_ident().name.as_str())
-                        .unwrap();
+                    let t = match &el.typ {
+                        Expression::Ident(id) => {
+                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                            t
+                        }
+                        Expression::TypePointer(pt) => {
+                            let id = pt.typ.as_ident().unwrap();
+                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                            DefineType::Ref(Box::new(t))
+                        }
+                        _ => panic!("unsupported parameter expression: {:#?}", el.typ),
+                    };
 
                     decl_r_types.push(t);
                 }
@@ -537,8 +545,8 @@ impl Compiler {
                             //todo tags
                             for field in &ta.fields {
                                 let (inner_t, is_ref) = match &field.typ {
-                                    Expression::TypePointer(p) => (p.typ.as_ident(), true),
-                                    _ => (field.typ.as_ident(), false),
+                                    Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
+                                    _ => (field.typ.as_ident().unwrap(), false),
                                 };
 
                                 if !is_ref && t.name == inner_t.name {
@@ -1482,7 +1490,7 @@ impl Compiler {
 
                 let (_, dt) = self
                     .symbols
-                    .resolve(call.func.as_ident().name.as_str())
+                    .resolve(call.func.as_ident().unwrap().name.as_str())
                     .unwrap();
 
                 if !dt.is_func() {
@@ -1614,7 +1622,7 @@ impl Compiler {
                             .position(|x| {
                                 let k_el = val.key.as_ref().unwrap();
                                 let k = match k_el {
-                                    Element::Expr(expr) => expr.as_ident().clone(),
+                                    Element::Expr(expr) => expr.as_ident().unwrap().clone(),
                                     _ => panic!("ident"),
                                 };
 
@@ -1640,6 +1648,7 @@ impl Compiler {
                                 _ => panic!("expr"),
                             }
                             .as_ident()
+                            .unwrap()
                             .clone();
                             id.name == kk
                         });
@@ -1718,7 +1727,7 @@ impl Compiler {
                 }
             }
             Expression::Selector(sel) => {
-                let name = sel.x.as_ident();
+                let name = sel.x.as_ident().unwrap();
                 let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap();
                 let inner = match dt {
                     DefineType::Var(inner) => *inner,

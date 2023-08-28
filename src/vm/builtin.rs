@@ -11,7 +11,6 @@ pub enum Builtin {
     Int,
     String,
     Length,
-    Iter,
 }
 
 impl From<u8> for Builtin {
@@ -24,7 +23,6 @@ impl From<u8> for Builtin {
             4 => Self::Int,
             5 => Self::String,
             6 => Self::Length,
-            7 => Self::Iter,
             _ => panic!("Builtin::from: invalid byte"),
         }
     }
@@ -39,7 +37,6 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "bool" => Some(Builtin::Bool),
         "string" => Some(Builtin::String),
         "len" => Some(Builtin::Length),
-        "iter" => Some(Builtin::Iter),
         _ => None,
     }
 }
@@ -54,16 +51,8 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
         // Builtin::Float => call_float(args, gc),
         // Builtin::Int => call_int(args),
         Builtin::Length => call_length(args),
-        Builtin::Iter => call_iter(args),
         _ => unimplemented!(),
     }
-}
-
-fn call_iter(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(1, args.len());
-
-    println!();
-    Ok(Object::null())
 }
 
 /// Prints all the given arguments using a very simple format scheme

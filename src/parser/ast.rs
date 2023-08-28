@@ -241,10 +241,10 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn as_ident(&self) -> &Ident {
+    pub fn as_ident(&self) -> Result<&Ident, String> {
         match self {
-            Expression::Ident(id) => id,
-            _ => panic!("{:#?} is not an identifier", self),
+            Expression::Ident(id) => Ok(id),
+            _ => Err(format!("{:#?} is not an identifier", self)),
         }
     }
 }
