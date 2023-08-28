@@ -59,28 +59,18 @@ pub enum DefineType {
     Ref(Box<Self>),
     Tuple(Vec<Self>),
     Type(Box<Self>, Type),
-    Return(Box<Self>),
-    Either(Vec<Self>),
 }
 
 impl DefineType {
     pub fn strip_ret(&self) -> DefineType {
         match &self {
             DefineType::Type(r, _) => r.clone().strip_ret(),
-            DefineType::Return(r) => *r.clone(),
             DefineType::Tuple(v) => {
                 let mut new_v = Vec::with_capacity(v.len());
                 for rt in v {
                     new_v.push(rt.strip_ret());
                 }
                 DefineType::Tuple(new_v)
-            }
-            DefineType::Either(v) => {
-                let mut new_v = Vec::with_capacity(v.len());
-                for rt in v {
-                    new_v.push(rt.strip_ret());
-                }
-                DefineType::Either(new_v)
             }
             &r => r.clone(),
         }
@@ -94,13 +84,6 @@ impl DefineType {
                     new_v.push(rt.type_to_val_t());
                 }
                 DefineType::Tuple(new_v)
-            }
-            DefineType::Either(v) => {
-                let mut new_v = Vec::with_capacity(v.len());
-                for rt in v {
-                    new_v.push(rt.type_to_val_t());
-                }
-                DefineType::Either(new_v)
             }
             &r => r.clone(),
         }
@@ -127,20 +110,6 @@ impl DefineType {
         }
     }
 
-    pub fn is_return(&self) -> bool {
-        match &self {
-            Self::Return(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_either(&self) -> bool {
-        match &self {
-            Self::Either(_) => true,
-            _ => false,
-        }
-    }
-
     pub fn is_var(&self) -> bool {
         match &self {
             Self::Var(_) => true,
@@ -159,41 +128,6 @@ impl DefineType {
         match &self {
             Self::Type(df, t) => (*df.clone(), t.clone()),
             _ => panic!("expected Self::Type, got {:#?}", self),
-        }
-    }
-
-    // pub fn as_func_rt(&self) -> DefineType {
-    //     match &self {
-    //         Self::Func(_, _, t) => (*df.clone(), t.clone()),
-    //         _ => panic!("expected Self::Type, got {:#?}", self),
-    //     }
-    // }
-
-    pub fn as_return(&self) -> DefineType {
-        match &self {
-            Self::Return(t) => *t.clone(),
-            _ => panic!("expected Self::Type, got {:#?}", self),
-        }
-    }
-
-    pub fn as_either(&self) -> Vec<DefineType> {
-        match &self {
-            Self::Either(t) => t.clone(),
-            _ => panic!("expected Self::Either, got {:#?}", self),
-        }
-    }
-
-    pub fn merge_either(&self, other: &Self) -> DefineType {
-        if !self.is_either() && !other.is_either() {
-            panic!("expected either");
-        }
-        match (self, other) {
-            (Self::Either(v1), Self::Either(v2)) => {
-                let mut r = v1.clone();
-                r.extend(v2.clone());
-                Self::Either(r)
-            }
-            _ => unimplemented!(),
         }
     }
 
