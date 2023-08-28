@@ -17,9 +17,7 @@ fn main() {
         
 func foo(b bool) int {
 	for {
-		if b {
-			break
-		}
+		
 	}
 }
         

@@ -153,6 +153,7 @@ pub struct Compiler {
     instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
     loop_contexts: Vec<LoopContext>,
+    func_contexts: Vec<FuncContext>,
     gc: GC,
 }
 
@@ -176,6 +177,28 @@ impl LoopContext {
     }
 }
 
+/// Type to keep track of function constructs so we can emit the proper jump instructions
+struct FuncContext {
+    /// Points to the first instruction of the (current) loop condition
+    /// This is where continue statements should jump to
+    start: usize,
+
+    /// Stores the index of all JUMP instructions within the current function context that originate from a return statement
+    /// Once this function context ends, these instructions should have their operands updated to the first instruction that follows this function
+    ret_instructions: Vec<usize>,
+    ret_types: Vec<DefineType>,
+}
+
+impl FuncContext {
+    fn new(start: usize) -> Self {
+        Self {
+            start,
+            ret_instructions: Vec::new(),
+            ret_types: Vec::new(),
+        }
+    }
+}
+
 impl Compiler {
     /// Create a new compiler
     pub fn new() -> Self {
@@ -185,6 +208,7 @@ impl Compiler {
             constants: Vec::new(),
             last_instruction: None,
             loop_contexts: Vec::new(),
+            func_contexts: Vec::new(),
             gc: GC::new(),
         }
     }
@@ -320,6 +344,9 @@ impl Compiler {
             }
             Declaration::Function(f) => {
                 let pos_jump = self.instructions.len();
+
+                self.func_contexts.push(FuncContext::new(pos_jump));
+
                 self.emit_opcode(OpCode::Jump);
                 self.emit_u16(JUMP_PLACEHOLDER);
 
@@ -385,16 +412,23 @@ impl Compiler {
                 //todo ugly
 
                 // type checking if all returns are correct types
-                let mut rts = None;
+                let mut terminates = None;
+                let mut has_top_return = false;
                 if let Some(body) = &f.body {
-                    //println!("body");
-                    rts = Some(self.compile_block_statement(body)?);
-                    //println!("end body: {:#?}", rts);
+                    for stmt in &body.list {
+                        if let Statement::Return(_) = stmt {
+                            has_top_return = true;
+                            break;
+                        }
+                    }
+                    terminates = self.compile_block_statement(body)?;
                 } else {
                     //todo
                     // assert if the function is void but there is a return
                     //assert_eq!(rts.is_none());
                 }
+
+                let ctx = self.func_contexts.pop().unwrap();
 
                 if !decl_r_types.is_empty() {
                     decl_r_types.sort();
@@ -410,8 +444,6 @@ impl Compiler {
                         .collect();
 
                     //todo use terminates to assert if top scope level return is needed
-                    let (un_rts, terminates) = rts.unwrap();
-                    let un_rts = un_rts.strip_ret();
 
                     let expected_t = if sorted_decl_r_types.is_empty() {
                         DefineType::Null
@@ -422,32 +454,16 @@ impl Compiler {
                     };
 
                     //println!("{:#?}", un_rts);
-                    if !terminates.unwrap_or_default() && expected_t != DefineType::Null {
+                    if !terminates.unwrap_or_default()
+                        && expected_t != DefineType::Null
+                        && !has_top_return
+                    {
                         panic!("expected return");
                     }
 
-                    match un_rts.clone() {
-                        DefineType::Either(types) => {
-                            for t in types {
-                                if t.is_either() {
-                                    let ei = t.as_either();
-
-                                    for e in ei {
-                                        if !(terminates.unwrap_or_default()
-                                            && e == DefineType::Null)
-                                        {
-                                            assert_eq!(expected_t, e, "{:#?}", f.name.name);
-                                        }
-                                    }
-                                } else {
-                                    if !(terminates.unwrap_or_default() && t == DefineType::Null) {
-                                        assert_eq!(expected_t, t, "{:#?}", f.name.name);
-                                    }
-                                }
-                            }
-                        }
-                        t => {
-                            assert_eq!(expected_t, t, "{:#?}", f.name.name);
+                    for ret_type in ctx.ret_types {
+                        if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
+                            assert_eq!(expected_t, ret_type, "{:#?}", f.name.name);
                         }
                     }
                 }
@@ -599,45 +615,48 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_block_statement(
-        &mut self,
-        block: &BlockStmt,
-    ) -> Result<(DefineType, Option<bool>), Error> {
+    fn compile_block_statement(&mut self, block: &BlockStmt) -> Result<Option<bool>, Error> {
         // if block statement does not contain any other statements or expressions
         // simply push a NULL onto the stack
         if block.list.is_empty() {
             self.emit_opcode(OpCode::Null);
-            return Ok((DefineType::Null, Some(false)));
+            return Ok(Some(false));
         }
 
         self.symbols.enter_scope();
-        let mut dt = vec![];
         let mut terminates = true;
+        let mut last_term = false;
 
         for s in &block.list {
-            let (rt, term) = self.compile_statement(s)?;
+            let term = self.compile_statement(s)?;
+
+            let is_empty = if let Statement::Empty(_) = s {
+                true
+            } else {
+                false
+            };
+
+            if last_term && !is_empty {
+                panic!("deadcode: {:#?}", s);
+            }
+
             if let Some(te) = term {
                 if !te {
                     terminates = false;
+                } else {
+                    last_term = true;
                 }
             }
             //println!("statement: {:#?}", s);
             //println!("rt: {:#?}", rt);
-            dt.push(rt);
         }
 
         self.symbols.leave_scope();
 
-        if dt.is_empty() {
-            Ok((DefineType::Null, Some(terminates)))
-        } else if dt.len() == 1 {
-            Ok((dt[0].clone(), Some(terminates)))
-        } else {
-            Ok((DefineType::Either(dt), Some(terminates)))
-        }
+        Ok(Some(terminates))
     }
 
-    fn compile_statement(&mut self, stmt: &Statement) -> Result<(DefineType, Option<bool>), Error> {
+    fn compile_statement(&mut self, stmt: &Statement) -> Result<Option<bool>, Error> {
         match stmt {
             Statement::For(forstmt) => {
                 self.emit_opcode(OpCode::Null);
@@ -663,7 +682,7 @@ impl Compiler {
                 self.emit_u16(JUMP_PLACEHOLDER);
                 self.emit_opcode(OpCode::Pop);
 
-                let (rts, terminate) = self.compile_block_statement(&forstmt.body)?;
+                let terminate = self.compile_block_statement(&forstmt.body)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -701,7 +720,7 @@ impl Compiler {
                     && forstmt.cond.is_none()
                     && ctx.break_instructions.is_empty();
 
-                return Ok((rts, Some(loop_terminates)));
+                return Ok(Some(loop_terminates));
             }
             Statement::If(ifstmt) => {
                 self.compile_expression(&ifstmt.cond)?;
@@ -709,15 +728,7 @@ impl Compiler {
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
 
-                let (dt, terminates) = self.compile_block_statement(&ifstmt.body)?;
-
-                let mut rts = vec![];
-
-                if dt.is_return() {
-                    rts.push(dt);
-                } else if dt.is_either() {
-                    rts.extend(dt.as_either());
-                }
+                let terminates = self.compile_block_statement(&ifstmt.body)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -737,15 +748,7 @@ impl Compiler {
                 if let Some(alternative) = &ifstmt.else_ {
                     match alternative.as_ref() {
                         Statement::Block(bl) => {
-                            let (dt, ter) = self.compile_block_statement(bl)?;
-
-                            else_terminates = ter;
-
-                            if dt.is_return() {
-                                rts.push(dt);
-                            } else if dt.is_either() {
-                                rts.extend(dt.as_either());
-                            }
+                            else_terminates = self.compile_block_statement(bl)?;
                         }
                         _ => panic!("else should be a block"),
                     }
@@ -763,13 +766,7 @@ impl Compiler {
                 let terminates =
                     terminates.unwrap_or_default() && else_terminates.unwrap_or_default();
 
-                return if rts.is_empty() {
-                    Ok((DefineType::Null, Some(terminates)))
-                } else if rts.len() == 1 {
-                    Ok((rts[0].clone(), Some(terminates)))
-                } else {
-                    Ok((DefineType::Either(rts), Some(terminates)))
-                };
+                return Ok(Some(terminates));
             }
             Statement::Assign(assign) => {
                 // a, err := call()
@@ -844,7 +841,7 @@ impl Compiler {
                             _ => unimplemented!(),
                         }
                     }
-                    return Ok((DefineType::Null, None));
+                    return Ok(None);
                 }
 
                 assert_eq!(assign.left.len(), assign.right.len());
@@ -893,7 +890,7 @@ impl Compiler {
                                     self.compile_expression(ind.index.as_ref())?;
                                     self.compile_expression(right)?;
                                     self.emit_opcode(OpCode::IndexSet);
-                                    return Ok((DefineType::Null, None));
+                                    return Ok(None);
                                 }
                                 _ => {
                                     return Err(Error::TypeError(format!(
@@ -962,30 +959,21 @@ impl Compiler {
 
                 for r in &expr.ret {
                     let t = self.compile_expression(&r)?;
-                    if t != DefineType::Null {
-                        rts.push(t);
-                    }
+                    rts.push(t);
                 }
 
-                assert!(rts.len() < u16::MAX as usize);
-                self.emit_opcode(OpCode::ReturnValue);
-                self.emit_u16(rts.len() as u16);
-
-                return if rts.is_empty() {
-                    Ok((DefineType::Return(Box::new(DefineType::Null)), Some(true)))
-                } else if rts.len() == 1 {
-                    let a = rts[0].clone();
-                    if a.is_return() || a.is_either() {
-                        Ok((a, Some(true)))
-                    } else {
-                        Ok((DefineType::Return(Box::new(a)), Some(true)))
-                    }
+                let rts_len = rts.len();
+                let rt = if rts.len() == 1 {
+                    rts[0].clone()
                 } else {
-                    Ok((
-                        DefineType::Return(Box::new(DefineType::Tuple(rts))),
-                        Some(true),
-                    ))
+                    DefineType::Tuple(rts)
                 };
+
+                self.func_contexts.last_mut().unwrap().ret_types.push(rt);
+
+                assert!(rts_len < u16::MAX as usize);
+                self.emit_opcode(OpCode::ReturnValue);
+                self.emit_u16(rts_len as u16);
             }
             Statement::Branch(branch) => match branch.key {
                 Keyword::Break => {
@@ -1143,7 +1131,7 @@ impl Compiler {
                 for ip in ctx.break_instructions {
                     self.change_jump_operand_at(ip, self.instructions.len().try_into().unwrap());
                 }
-                return Ok((DefineType::Null, Some(false)));
+                return Ok(Some(false));
             }
             _ => {
                 return Err(Error::ReferenceError(format!(
@@ -1153,7 +1141,7 @@ impl Compiler {
             }
         }
 
-        Ok((DefineType::Null, None))
+        Ok(None)
     }
 
     fn compile_operator(&mut self, operator: &Operator) {
