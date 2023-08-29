@@ -16,13 +16,10 @@ fn main() {
         package main
         
         func main() {
-            outer: for {
-                print(1)
-                for {
-                    print(2)
-                    break outer
-                }
-                print(3)
+            a := 1
+            switch b:=a; a {
+            case a > 10:
+                print(a)
             }
         }
     "#,

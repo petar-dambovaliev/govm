@@ -297,6 +297,7 @@ impl VM {
             //         debug_pause -= 1;
             //     }
             // }
+            //println!("{:#?}", self.stack);
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();
@@ -349,8 +350,8 @@ impl VM {
                     let condition = self.pop();
                     if condition.tag() != Type::Bool {
                         return Err(Error::TypeError(format!(
-                            "expected a bool type got: {:#?}",
-                            condition.tag()
+                            "expected a bool type got: {:#?} stack: {:#?}",
+                            condition, self.stack
                         )));
                     }
 

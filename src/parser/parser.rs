@@ -1980,12 +1980,12 @@ impl Parser {
 
             if self.skipped(Operator::SemiColon)? {
                 init = tag;
-            }
 
-            tag = self
-                .current_not(Operator::BraceLeft)
-                .then(|| self.parse_simple_stmt())
-                .map_or(Ok(None), |r| r.map(Some))?;
+                tag = self
+                    .current_not(Operator::BraceLeft)
+                    .then(|| self.parse_simple_stmt())
+                    .map_or(Ok(None), |r| r.map(Some))?;
+            }
         };
 
         self.expr_level = prev_level;

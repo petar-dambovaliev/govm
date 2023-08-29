@@ -1,6 +1,7 @@
 use crate::parser::ast::{
     AssignStmt, BasicLit, BlockStmt, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
-    Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
+    Expression, FieldList, File, Ident, IfStmt, Index, KeyedElement, LiteralValue, Operation,
+    Statement,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
@@ -553,7 +554,7 @@ impl Compiler {
                             break;
                         }
                     }
-                    terminates = self.compile_block_statement(body)?;
+                    terminates = self.compile_block_statement(&body.list)?;
                 } else {
                     //todo
                     // assert if the function is void but there is a return
@@ -749,10 +750,10 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_block_statement(&mut self, block: &BlockStmt) -> Result<Option<bool>, Error> {
+    fn compile_block_statement(&mut self, block: &[Statement]) -> Result<Option<bool>, Error> {
         // if block statement does not contain any other statements or expressions
         // simply push a NULL onto the stack
-        if block.list.is_empty() {
+        if block.is_empty() {
             self.emit_opcode(OpCode::Null);
             return Ok(Some(false));
         }
@@ -761,7 +762,7 @@ impl Compiler {
         let mut terminates = true;
         let mut last_term = false;
 
-        for s in &block.list {
+        for s in block {
             let term = self.compile_statement(s)?;
             //println!("{:#?}", term);
 
@@ -829,7 +830,7 @@ impl Compiler {
                 self.emit_u16(JUMP_PLACEHOLDER);
                 self.emit_opcode(OpCode::Pop);
 
-                let terminate = self.compile_block_statement(&forstmt.body)?;
+                let terminate = self.compile_block_statement(&forstmt.body.list)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -875,7 +876,7 @@ impl Compiler {
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
 
-                let terminates = self.compile_block_statement(&ifstmt.body)?;
+                let terminates = self.compile_block_statement(&ifstmt.body.list)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -895,7 +896,7 @@ impl Compiler {
                 if let Some(alternative) = &ifstmt.else_ {
                     match alternative.as_ref() {
                         Statement::Block(bl) => {
-                            else_terminates = self.compile_block_statement(bl)?;
+                            else_terminates = self.compile_block_statement(&bl.list)?;
                         }
                         _ => panic!("else should be a block"),
                     }
@@ -1089,7 +1090,7 @@ impl Compiler {
                 self.emit_opcode(OpCode::Pop);
             }
             Statement::Block(stmts) => {
-                return self.compile_block_statement(stmts);
+                return self.compile_block_statement(&stmts.list);
             }
             Statement::Declaration(declr) => match declr {
                 DeclStmt::Type(t) => {
@@ -1290,7 +1291,7 @@ impl Compiler {
                 self.emit_u16(JUMP_PLACEHOLDER);
                 self.emit_opcode(OpCode::Pop);
 
-                self.compile_block_statement(&rng.body)?;
+                self.compile_block_statement(&rng.body.list)?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -1332,6 +1333,98 @@ impl Compiler {
                 self.label_contexts.remove(&(pos, 0));
 
                 return r;
+            }
+            Statement::Switch(switch) => {
+                //panic!("{:#?}", switch);
+                let label = self.label_contexts.get(&(switch.pos, 0)).cloned();
+                self.contexts.push(Context::Switch(SwitchContext::new(
+                    self.instructions.len(),
+                    label,
+                )));
+
+                if let Some(init) = &switch.init {
+                    self.compile_statement(&init)?;
+                }
+                let internal_tag = Ident {
+                    pos: 0,
+                    name: "__tag__".to_string(),
+                };
+                let tag = switch.tag.clone().unwrap_or(Expression::Ident(Ident {
+                    pos: 0,
+                    name: "nil".to_string(),
+                }));
+
+                self.compile_statement(&Statement::Assign(AssignStmt {
+                    pos: 0,
+                    op: Operator::Define,
+                    left: vec![Expression::Ident(internal_tag.clone())],
+                    right: vec![tag.clone()],
+                }))?;
+
+                let mut terminates = true;
+
+                for clause in &switch.block.body {
+                    for expr in &clause.list {
+                        let cond = match expr {
+                            Expression::Ident(id) => Expression::Operation(Operation {
+                                pos: 0,
+                                op: Operator::Equal,
+                                x: Box::new(Expression::Ident(internal_tag.clone())),
+                                y: Some(Box::new(Expression::Ident(id.clone()))),
+                            }),
+                            Expression::BasicLit(bl) => Expression::Operation(Operation {
+                                pos: 0,
+                                op: Operator::Equal,
+                                x: Box::new(Expression::Ident(internal_tag.clone())),
+                                y: Some(Box::new(Expression::BasicLit(bl.clone()))),
+                            }),
+                            _ => expr.clone(),
+                        };
+                        //println!("{:#?}", cond);
+                        self.compile_expression(&cond)?;
+
+                        if self.last_instruction_is(OpCode::Pop) {
+                            self.remove_last_instruction();
+                        }
+
+                        let pos_jump_if_false = self.instructions.len();
+                        self.emit_opcode(OpCode::JumpIfFalse);
+                        self.emit_u16(JUMP_PLACEHOLDER);
+
+                        terminates = terminates
+                            && self
+                                .compile_block_statement(&clause.body)?
+                                .unwrap_or_default();
+
+                        if self.last_instruction_is(OpCode::Pop) {
+                            self.remove_last_instruction();
+                        } else {
+                            self.emit_opcode(OpCode::Null);
+                        }
+
+                        let pos_jump = self.instructions.len();
+                        self.emit_opcode(OpCode::Jump);
+                        self.emit_u16(JUMP_PLACEHOLDER);
+
+                        self.change_jump_operand_at(
+                            pos_jump_if_false,
+                            self.instructions.len().try_into().unwrap(),
+                        );
+
+                        self.change_jump_operand_at(
+                            pos_jump,
+                            self.instructions.len().try_into().unwrap(),
+                        );
+                    }
+                }
+
+                let ctx = self.contexts.pop().unwrap().to_switch();
+
+                for ip in &ctx.break_instructions {
+                    self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
+                }
+
+                return Ok(Some(terminates));
             }
             _ => {
                 return Err(Error::ReferenceError(format!(
@@ -1573,7 +1666,7 @@ impl Compiler {
                                             return Ok(res.unwrap());
                                         }
                                     }
-                                    _ => {}
+                                    _ => panic!("op not supported {:#?}", op),
                                 }
 
                                 // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
@@ -2006,7 +2099,7 @@ impl Compiler {
                     }
                 }
 
-                let terminates = self.compile_block_statement(&f.body)?;
+                let terminates = self.compile_block_statement(&f.body.list)?;
 
                 let ctx = self.func_contexts.pop().unwrap();
 
