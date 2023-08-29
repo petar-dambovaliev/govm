@@ -8,6 +8,7 @@ use crate::vm::gc::GC;
 use crate::vm::object::{FromString, Struct, Type};
 use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
+use ahash::{AHashMap, HashMap};
 use std::fmt::Display;
 use std::fmt::Write;
 use std::ops::Neg;
@@ -152,9 +153,75 @@ pub struct Compiler {
     constants: Vec<Object>,
     instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
-    loop_contexts: Vec<LoopContext>,
+    contexts: Vec<Context>,
     func_contexts: Vec<FuncContext>,
+    label_contexts: AHashMap<(usize, usize), String>,
     gc: GC,
+}
+
+enum Context {
+    Switch(SwitchContext),
+    For(LoopContext),
+}
+
+impl Context {
+    fn to_switch(self) -> SwitchContext {
+        match self {
+            Self::Switch(sw) => sw,
+            _ => panic!("expected switch"),
+        }
+    }
+
+    fn to_for(self) -> LoopContext {
+        match self {
+            Self::For(sw) => sw,
+            _ => panic!("expected switch"),
+        }
+    }
+
+    fn push_break(&mut self, pos: usize) {
+        match self {
+            Self::Switch(sw) => sw.break_instructions.push(pos),
+            Self::For(f) => f.break_instructions.push(pos),
+        }
+    }
+
+    fn start(&self) -> usize {
+        match self {
+            Self::Switch(sw) => sw.start,
+            Self::For(f) => f.start,
+        }
+    }
+
+    fn label(&self) -> Option<&String> {
+        match self {
+            Self::Switch(sw) => sw.label.as_ref(),
+            Self::For(f) => f.label.as_ref(),
+        }
+    }
+}
+
+/// Type to keep track of switch constructs so we can emit the proper jump instructions
+struct SwitchContext {
+    /// Points to the first instruction of the (current) loop condition
+    /// This is where continue statements should jump to
+    start: usize,
+
+    /// Stores the index of all JUMP instructions within the current switch context that originate from a break statement
+    /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this switch
+    break_instructions: Vec<usize>,
+
+    label: Option<String>,
+}
+
+impl SwitchContext {
+    fn new(start: usize, label: Option<String>) -> Self {
+        Self {
+            start,
+            break_instructions: Vec::new(),
+            label,
+        }
+    }
 }
 
 /// Type to keep track of loop constructs so we can emit the proper jump instructions
@@ -166,13 +233,16 @@ struct LoopContext {
     /// Stores the index of all JUMP instructions within the current loop context that originate from a break statement
     /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this loop
     break_instructions: Vec<usize>,
+
+    label: Option<String>,
 }
 
 impl LoopContext {
-    fn new(start: usize) -> Self {
+    fn new(start: usize, label: Option<String>) -> Self {
         Self {
             start,
             break_instructions: Vec::new(),
+            label,
         }
     }
 }
@@ -207,8 +277,9 @@ impl Compiler {
             instructions: Vec::new(),
             constants: Vec::new(),
             last_instruction: None,
-            loop_contexts: Vec::new(),
+            contexts: Vec::new(),
             func_contexts: Vec::new(),
+            label_contexts: AHashMap::new(),
             gc: GC::new(),
         }
     }
@@ -692,6 +763,7 @@ impl Compiler {
 
         for s in &block.list {
             let term = self.compile_statement(s)?;
+            //println!("{:#?}", term);
 
             let is_empty = if let Statement::Empty(_) = s {
                 true
@@ -723,8 +795,11 @@ impl Compiler {
         match stmt {
             Statement::For(forstmt) => {
                 self.emit_opcode(OpCode::Null);
-                self.loop_contexts
-                    .push(LoopContext::new(self.instructions.len()));
+                let label = self.label_contexts.get(&(forstmt.pos, 0)).cloned();
+                self.contexts.push(Context::For(LoopContext::new(
+                    self.instructions.len(),
+                    label,
+                )));
 
                 if let Some(init) = &forstmt.init {
                     self.compile_statement(init.as_ref())?;
@@ -732,9 +807,18 @@ impl Compiler {
 
                 let pos_before_condition = self.instructions.len();
 
-                if let Some(cond) = &forstmt.cond {
-                    self.compile_statement(cond.as_ref())?;
-                }
+                let cond = forstmt
+                    .cond
+                    .clone()
+                    .unwrap_or(Box::from(Statement::Expr(ExprStmt {
+                        expr: Expression::BasicLit(BasicLit {
+                            pos: 0,
+                            kind: LitKind::Ident,
+                            value: "true".to_string(),
+                        }),
+                    })));
+
+                self.compile_statement(cond.as_ref())?;
 
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
@@ -773,7 +857,7 @@ impl Compiler {
                 );
 
                 // Update jump statements for every break statement inside this loop
-                let ctx = self.loop_contexts.pop().unwrap();
+                let ctx = self.contexts.pop().unwrap().to_for();
                 for ip in &ctx.break_instructions {
                     self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
                 }
@@ -1049,21 +1133,47 @@ impl Compiler {
                     let pos = self.instructions.len();
                     self.emit_opcode(OpCode::Jump);
                     self.emit_u16(JUMP_PLACEHOLDER);
-                    let ctx = match self.loop_contexts.last_mut() {
-                        Some(ctx) => ctx,
-                        None => return Err(Error::SyntaxError("bad call 1".to_string())),
-                    };
-                    ctx.break_instructions.push(pos);
+
+                    if let Some(l) = branch.ident.clone() {
+                        for ctx in self.contexts.iter_mut().rev() {
+                            if let Some(label) = ctx.label() {
+                                if &l.name == label {
+                                    ctx.push_break(pos);
+                                    return Ok(Some(false));
+                                }
+                            }
+                        }
+                        panic!("label not found: {:#?}", branch.ident);
+                    } else {
+                        let ctx = match self.contexts.last_mut() {
+                            Some(ctx) => ctx,
+                            None => return Err(Error::SyntaxError("bad call 1".to_string())),
+                        };
+                        ctx.push_break(pos);
+                    }
                 }
                 Keyword::Continue => {
                     self.emit_opcode(OpCode::Null);
 
-                    let pos = match self.loop_contexts.iter().last() {
-                        Some(ctx) => Ok(ctx.start),
-                        None => Err(Error::SyntaxError("bad call 2".to_string())),
-                    }?;
+                    let mut pos = None;
+                    if let Some(l) = branch.ident.clone() {
+                        for ctx in self.contexts.iter().rev() {
+                            if let Some(label) = ctx.label() {
+                                if &l.name == label {
+                                    pos = Some(ctx.start());
+                                }
+                            }
+                        }
+                        panic!("label not found: {:#?}", branch.ident);
+                    } else {
+                        pos = Some(match self.contexts.iter().last() {
+                            Some(ctx) => Ok(ctx.start()),
+                            None => Err(Error::SyntaxError("bad call 2".to_string())),
+                        }?);
+                    };
+
                     self.emit_opcode(OpCode::Jump);
-                    self.emit_u16(pos.try_into().unwrap());
+                    self.emit_u16(pos.unwrap().try_into().unwrap());
                 }
                 _ => panic!("key: {:#?}", branch.key),
             },
@@ -1098,8 +1208,12 @@ impl Compiler {
             Statement::Empty(_) => {}
             Statement::Range(rng) => {
                 self.emit_opcode(OpCode::Null);
-                self.loop_contexts
-                    .push(LoopContext::new(self.instructions.len()));
+
+                let label = self.label_contexts.get(&rng.pos).cloned();
+                self.contexts.push(Context::For(LoopContext::new(
+                    self.instructions.len(),
+                    label,
+                )));
                 let iter_sym;
 
                 // __iter__ := into_iter X
@@ -1195,15 +1309,33 @@ impl Compiler {
                 );
 
                 // Update jump statements for every break statement inside this loop
-                let ctx = self.loop_contexts.pop().unwrap();
+                let ctx = self.contexts.pop().unwrap().to_for();
                 for ip in ctx.break_instructions {
                     self.change_jump_operand_at(ip, self.instructions.len().try_into().unwrap());
                 }
                 return Ok(Some(false));
             }
+            Statement::Label(lstmt) => {
+                if self.symbols.resolve(lstmt.name.name.as_str()).is_some() {
+                    panic!("label already defined: {:#?}", lstmt.name.name);
+                }
+
+                let pos = match lstmt.stmt.as_ref() {
+                    Statement::For(f) => f.pos,
+                    Statement::Switch(sw) => sw.pos,
+                    _ => panic!("expected for or switch statement"),
+                };
+
+                self.label_contexts
+                    .insert((pos, 0), lstmt.name.name.clone());
+                let r = self.compile_statement(lstmt.stmt.as_ref());
+                self.label_contexts.remove(&(pos, 0));
+
+                return r;
+            }
             _ => {
                 return Err(Error::ReferenceError(format!(
-                    "`{:#?}` stmt not supported:",
+                    "stmt not supported: {:#?}",
                     stmt
                 )))
             }

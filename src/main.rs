@@ -15,16 +15,15 @@ fn main() {
         r#"
         package main
         
-        func newClosure() func() {
-           return func() {
-                return
-                //print(123)
-           }
-           //print(123)
-        }
-        
         func main() {
-        
+            outer: for {
+                print(1)
+                for {
+                    print(2)
+                    break outer
+                }
+                print(3)
+            }
         }
     "#,
     );
