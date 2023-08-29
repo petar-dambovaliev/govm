@@ -527,6 +527,10 @@ impl Compiler {
                             assert_eq!(expected_t, ret_type, "{:#?}", f.name.name);
                         }
                     }
+                } else {
+                    for ret_type in &ctx.ret_types {
+                        assert_eq!(ret_type, &DefineType::Null);
+                    }
                 }
                 // end type checking on return types
 
@@ -1023,7 +1027,9 @@ impl Compiler {
                 }
 
                 let rts_len = rts.len();
-                let rt = if rts.len() == 1 {
+                let rt = if rts_len == 0 {
+                    DefineType::Null
+                } else if rts_len == 1 {
                     rts[0].clone()
                 } else {
                     DefineType::Tuple(rts)
@@ -1034,6 +1040,8 @@ impl Compiler {
                 assert!(rts_len < u16::MAX as usize);
                 self.emit_opcode(OpCode::ReturnValue);
                 self.emit_u16(rts_len as u16);
+
+                return Ok(Some(true));
             }
             Statement::Branch(branch) => match branch.key {
                 Keyword::Break => {
@@ -1828,10 +1836,7 @@ impl Compiler {
 
                 //self.symbols.new_context();
                 for p in &f.typ.params.list {
-                    let (_, t) = self
-                        .symbols
-                        .resolve(p.typ.as_ident().unwrap().name.as_str())
-                        .unwrap();
+                    let t = self.expression_to_define_type(&p.typ);
                     for name in &p.name {
                         decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
@@ -1843,19 +1848,7 @@ impl Compiler {
                 let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
                 for el in &f.typ.result.list {
-                    let t = match &el.typ {
-                        Expression::Ident(id) => {
-                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                            t
-                        }
-                        Expression::TypePointer(pt) => {
-                            let id = pt.typ.as_ident().unwrap();
-                            let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                            DefineType::Ref(Box::new(t))
-                        }
-                        _ => panic!("funclit: unsupported parameter expression: {:#?}", el.typ),
-                    };
-
+                    let t = self.expression_to_define_type(&el.typ);
                     decl_r_types.push(t);
                 }
 
@@ -1872,7 +1865,6 @@ impl Compiler {
                 //todo ugly
 
                 // type checking if all returns are correct types
-                let mut terminates = None;
                 let mut has_top_return = false;
 
                 for stmt in &f.body.list {
@@ -1881,7 +1873,8 @@ impl Compiler {
                         break;
                     }
                 }
-                terminates = self.compile_block_statement(&f.body)?;
+
+                let terminates = self.compile_block_statement(&f.body)?;
 
                 let ctx = self.func_contexts.pop().unwrap();
 
@@ -1920,6 +1913,10 @@ impl Compiler {
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
                             assert_eq!(expected_t, ret_type, "{:#?}", f);
                         }
+                    }
+                } else {
+                    for ret_type in &ctx.ret_types {
+                        assert_eq!(ret_type, &DefineType::Null);
                     }
                 }
                 // end type checking on return types

@@ -16,18 +16,15 @@ fn main() {
         package main
         
         func newClosure() func() {
-           return func(){
-                print(123)
+           return func() {
+                return
+                //print(123)
            }
-        }
-        
-        func foo(f func()) {
-            f()
+           //print(123)
         }
         
         func main() {
-            ff := newClosure()
-            foo(ff)
+        
         }
     "#,
     );
