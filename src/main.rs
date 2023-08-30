@@ -14,16 +14,59 @@ fn main() {
     let mut parser = Parser::from(
         r#"
         package main
+
+        // func newClosure() func() {
+        //     a := false
+        //    return func() {
+        //         switch a {
+        //         case true:
+        //             print(true)
+        //         case false:
+        //             print(false)   
+        //         }
+        //    }
+        // }
         
-        func main() {
-            a := 1
-            switch b:=a; a {
-            case a > 10:
+        // func foo(f func()) {
+        //     f()
+        // }
+        
+        func newClosure()  {
+           f := func() {
+           a := false
                 print(a)
-            }
+           }
+           
+           f()
+        }
+     
+        func main() {
+        newClosure()
+            //ff := newClosure()
+            //foo(ff)
         }
     "#,
     );
+
+    // print("closure: switch")
+    // switch b:=a; b {
+    // case true:
+    //     print(5)
+    // case false:
+    //     print(5)
+    // }
+
+    // func main() {
+    //     a := 1
+    //     switch b:=a; a {
+    //     // case 4:
+    //     //     print(4)
+    //     case 1:
+    //         print(1)
+    //     case 1:
+    //         print("default")
+    //     }
+    // }
 
     // let opts = Opts {
     //     gogc: 100.0,

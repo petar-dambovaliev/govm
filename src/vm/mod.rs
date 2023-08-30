@@ -135,6 +135,14 @@ impl VM {
         OpCode::from(byte)
     }
 
+    #[inline(always)]
+    fn peek_next(&self) -> OpCode {
+        // Safety: if compiler did its job correctly, IP will always be in bounds
+        // Performance: skipping the bounds check yields a 22% performance improvement
+        let byte = unsafe { *self.instructions.get_unchecked(self.ip) };
+        OpCode::from(byte)
+    }
+
     fn peak_instruction(&self) -> Option<OpCode> {
         self.instructions.get(self.ip + 1).map(|a| OpCode::from(*a))
     }
@@ -297,7 +305,7 @@ impl VM {
             //         debug_pause -= 1;
             //     }
             // }
-            //println!("{:#?}", self.stack);
+            //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();

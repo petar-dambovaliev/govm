@@ -682,7 +682,15 @@ impl Display for Object {
             }
             Type::Rune => unimplemented!(),
             Type::Map => {
-                unimplemented!()
+                let strct = unsafe { self.as_map() };
+
+                f.write_char('{')?;
+                for (i, obj) in strct.iter() {
+                    std::fmt::Display::fmt(&i, f)?;
+                    f.write_str(":")?;
+                    std::fmt::Display::fmt(&obj, f)?;
+                }
+                f.write_char('}')?;
             }
             Type::Iter => {
                 unimplemented!()

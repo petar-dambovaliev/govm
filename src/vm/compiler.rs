@@ -1,7 +1,6 @@
 use crate::parser::ast::{
-    AssignStmt, BasicLit, BlockStmt, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
-    Expression, FieldList, File, Ident, IfStmt, Index, KeyedElement, LiteralValue, Operation,
-    Statement,
+    AssignStmt, BasicLit, CompositeLit, DeclStmt, Declaration, Element, ExprStmt, Expression,
+    FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
@@ -9,10 +8,9 @@ use crate::vm::gc::GC;
 use crate::vm::object::{FromString, Struct, Type};
 use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
-use ahash::{AHashMap, HashMap};
+use ahash::AHashMap;
 use std::fmt::Display;
 use std::fmt::Write;
-use std::ops::Neg;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -1335,7 +1333,6 @@ impl Compiler {
                 return r;
             }
             Statement::Switch(switch) => {
-                //panic!("{:#?}", switch);
                 let label = self.label_contexts.get(&(switch.pos, 0)).cloned();
                 self.contexts.push(Context::Switch(SwitchContext::new(
                     self.instructions.len(),
@@ -1362,59 +1359,120 @@ impl Compiler {
                 }))?;
 
                 let mut terminates = true;
+                let mut has_default = false;
 
                 for clause in &switch.block.body {
-                    for expr in &clause.list {
-                        let cond = match expr {
-                            Expression::Ident(id) => Expression::Operation(Operation {
+                    match clause.tok {
+                        Keyword::Default => {
+                            if has_default {
+                                panic!("only one default allowed within a switch");
+                            }
+                            has_default = true;
+                            let cond = Expression::BasicLit(BasicLit {
                                 pos: 0,
-                                op: Operator::Equal,
-                                x: Box::new(Expression::Ident(internal_tag.clone())),
-                                y: Some(Box::new(Expression::Ident(id.clone()))),
-                            }),
-                            Expression::BasicLit(bl) => Expression::Operation(Operation {
-                                pos: 0,
-                                op: Operator::Equal,
-                                x: Box::new(Expression::Ident(internal_tag.clone())),
-                                y: Some(Box::new(Expression::BasicLit(bl.clone()))),
-                            }),
-                            _ => expr.clone(),
-                        };
-                        //println!("{:#?}", cond);
-                        self.compile_expression(&cond)?;
+                                kind: LitKind::Ident,
+                                value: "true".to_string(),
+                            });
 
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
+                            self.compile_expression(&cond)?;
+
+                            if self.last_instruction_is(OpCode::Pop) {
+                                self.remove_last_instruction();
+                            }
+
+                            let pos_jump_if_false = self.instructions.len();
+                            self.emit_opcode(OpCode::JumpIfFalse);
+                            self.emit_u16(JUMP_PLACEHOLDER);
+
+                            terminates = terminates
+                                && self
+                                    .compile_block_statement(&clause.body)?
+                                    .unwrap_or_default();
+
+                            if self.last_instruction_is(OpCode::Pop) {
+                                self.remove_last_instruction();
+                            } else {
+                                self.emit_opcode(OpCode::Null);
+                            }
+
+                            let pos_jump = self.instructions.len();
+                            self.emit_opcode(OpCode::Jump);
+                            self.emit_u16(JUMP_PLACEHOLDER);
+
+                            self.change_jump_operand_at(
+                                pos_jump_if_false,
+                                self.instructions.len().try_into().unwrap(),
+                            );
+
+                            self.change_jump_operand_at(
+                                pos_jump,
+                                self.instructions.len().try_into().unwrap(),
+                            );
                         }
+                        Keyword::Case => {
+                            for expr in &clause.list {
+                                let cond = match expr {
+                                    Expression::Ident(id) => {
+                                        assert!(switch.tag.is_some());
+                                        Expression::Operation(Operation {
+                                            pos: 0,
+                                            op: Operator::Equal,
+                                            x: Box::new(Expression::Ident(internal_tag.clone())),
+                                            y: Some(Box::new(Expression::Ident(id.clone()))),
+                                        })
+                                    }
+                                    Expression::BasicLit(bl) => {
+                                        assert!(switch.tag.is_some());
+                                        Expression::Operation(Operation {
+                                            pos: 0,
+                                            op: Operator::Equal,
+                                            x: Box::new(Expression::Ident(internal_tag.clone())),
+                                            y: Some(Box::new(Expression::BasicLit(bl.clone()))),
+                                        })
+                                    }
+                                    _ => {
+                                        assert!(switch.tag.is_none());
+                                        expr.clone()
+                                    }
+                                };
+                                //println!("{:#?}", cond);
+                                self.compile_expression(&cond)?;
 
-                        let pos_jump_if_false = self.instructions.len();
-                        self.emit_opcode(OpCode::JumpIfFalse);
-                        self.emit_u16(JUMP_PLACEHOLDER);
+                                if self.last_instruction_is(OpCode::Pop) {
+                                    self.remove_last_instruction();
+                                }
 
-                        terminates = terminates
-                            && self
-                                .compile_block_statement(&clause.body)?
-                                .unwrap_or_default();
+                                let pos_jump_if_false = self.instructions.len();
+                                self.emit_opcode(OpCode::JumpIfFalse);
+                                self.emit_u16(JUMP_PLACEHOLDER);
 
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
-                        } else {
-                            self.emit_opcode(OpCode::Null);
+                                terminates = terminates
+                                    && self
+                                        .compile_block_statement(&clause.body)?
+                                        .unwrap_or_default();
+
+                                if self.last_instruction_is(OpCode::Pop) {
+                                    self.remove_last_instruction();
+                                } else {
+                                    self.emit_opcode(OpCode::Null);
+                                }
+
+                                let pos_jump = self.instructions.len();
+                                self.emit_opcode(OpCode::Jump);
+                                self.emit_u16(JUMP_PLACEHOLDER);
+
+                                self.change_jump_operand_at(
+                                    pos_jump_if_false,
+                                    self.instructions.len().try_into().unwrap(),
+                                );
+
+                                self.change_jump_operand_at(
+                                    pos_jump,
+                                    self.instructions.len().try_into().unwrap(),
+                                );
+                            }
                         }
-
-                        let pos_jump = self.instructions.len();
-                        self.emit_opcode(OpCode::Jump);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-
-                        self.change_jump_operand_at(
-                            pos_jump_if_false,
-                            self.instructions.len().try_into().unwrap(),
-                        );
-
-                        self.change_jump_operand_at(
-                            pos_jump,
-                            self.instructions.len().try_into().unwrap(),
-                        );
+                        _ => unimplemented!(),
                     }
                 }
 
@@ -1666,7 +1724,7 @@ impl Compiler {
                                             return Ok(res.unwrap());
                                         }
                                     }
-                                    _ => panic!("op not supported {:#?}", op),
+                                    _ => {}
                                 }
 
                                 // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
@@ -1810,7 +1868,10 @@ impl Compiler {
                     };
 
                     let (_, map_key_t) = self.symbols.resolve(inner_key_t.name.as_str()).unwrap();
+                    let (map_key_t, _) = map_key_t.as_type();
+
                     let (_, map_val_t) = self.symbols.resolve(inner_val_t.name.as_str()).unwrap();
+                    let (map_val_t, _) = map_val_t.as_type();
 
                     for v in &clit.val.values {
                         if let Some(key) = &v.key {
