@@ -56,6 +56,7 @@ pub enum Type {
     Iter,
     Struct,
     Ref,
+    Closure,
 }
 
 impl TryFrom<&str> for Type {
@@ -243,6 +244,18 @@ impl Object {
         unsafe { Struct::read_mut(self) }
     }
 
+    #[inline]
+    pub fn as_closure(&mut self) -> &Closure {
+        assert_eq!(self.tag(), Type::Closure);
+        unsafe { Closure::read(self) }
+    }
+
+    #[inline]
+    pub fn as_closure_mut(&mut self) -> &mut Closure {
+        assert_eq!(self.tag(), Type::Closure);
+        unsafe { Closure::read_mut(self) }
+    }
+
     /// Returns a reference to the Vec<Object> value this pointer points to
     ///
     /// # Safety
@@ -410,7 +423,13 @@ impl PartialEq for Object {
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
-            Type::Array | Type::Ref | Type::Map | Type::Iter | Type::Struct | Type::Rune => {
+            Type::Array
+            | Type::Ref
+            | Type::Map
+            | Type::Iter
+            | Type::Struct
+            | Type::Rune
+            | Type::Closure => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     self.tag(),
@@ -437,7 +456,8 @@ impl PartialOrd for Object {
             | Type::Map
             | Type::Iter
             | Type::Struct
-            | Type::Rune => {
+            | Type::Rune
+            | Type::Closure => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -535,6 +555,35 @@ impl Header {
     #[inline]
     pub unsafe fn read(obj: &mut Object) -> &mut Header {
         obj.get_mut::<Self>()
+    }
+}
+
+#[repr(C)]
+pub struct Closure {
+    header: Header,
+    pub ip: u32,
+    pub num_locals: u16,
+    pub enclosed_objects: Vec<Object>,
+}
+
+impl Closure {
+    pub unsafe fn read(ptr: &Object) -> &Self {
+        ptr.get::<Self>()
+    }
+
+    pub unsafe fn read_mut(ptr: &Object) -> &mut Self {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn object(ip: u32, num_locals: u16, enclosed_objects: Vec<Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Closure);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        obj.ip = ip;
+        obj.num_locals = num_locals;
+
+        init!(obj.enclosed_objects => enclosed_objects);
+        ptr
     }
 }
 
@@ -692,6 +741,9 @@ impl Display for Object {
                 }
                 f.write_char('}')?;
             }
+            Type::Closure => {
+                f.write_str("func(){}").expect("");
+            }
             Type::Iter => {
                 unimplemented!()
             }
@@ -804,6 +856,7 @@ impl Display for Type {
             Type::Ref => "&",
             Type::Struct => "struct",
             Type::Rune => "rune",
+            Type::Closure => "closure",
         };
         f.write_str(str)
     }

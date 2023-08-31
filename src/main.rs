@@ -14,39 +14,45 @@ fn main() {
     let mut parser = Parser::from(
         r#"
         package main
-
-        // func newClosure() func() {
-        //     a := false
-        //    return func() {
-        //         switch a {
-        //         case true:
-        //             print(true)
-        //         case false:
-        //             print(false)   
-        //         }
-        //    }
-        // }
         
-        // func foo(f func()) {
-        //     f()
-        // }
+        func newClosure() func()  {
+            a := 5
+            
+            b := func() {
+                switch {
+                case a >= 5:
+                    print(true)
+                case a <= 5:
+                    print(false)    
+                }
+            }
         
-        func newClosure()  {
-           f := func() {
-           a := false
-                print(a)
-           }
-           
-           f()
+           return b 
         }
      
         func main() {
-        newClosure()
-            //ff := newClosure()
-            //foo(ff)
+            b := newClosure()
+
+            b()
         }
     "#,
     );
+
+    // func newClosure() func() {
+    //     a := false
+    //    return func() {
+    //         switch a {
+    //         case true:
+    //             print(true)
+    //         case false:
+    //             print(false)
+    //         }
+    //    }
+    // }
+
+    // func foo(f func()) {
+    //     f()
+    // }
 
     // print("closure: switch")
     // switch b:=a; b {

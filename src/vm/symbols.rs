@@ -9,13 +9,14 @@ pub(crate) struct SymbolTable {
     pub contexts: Vec<Context>,
 }
 
-pub(crate) struct Symbol {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Symbol {
     pub scope: Scope,
     pub index: u16,
 }
 
-#[derive(PartialEq, Copy, Clone, Debug)]
-pub(crate) enum Scope {
+#[derive(PartialEq, Copy, Clone, Debug, Eq)]
+pub enum Scope {
     Local,
     Global,
 }
@@ -138,6 +139,13 @@ impl DefineType {
             _ => panic!("expected Self::Tuple, got {:#?}", self),
         }
     }
+
+    pub fn as_var(&self) -> DefineType {
+        match &self {
+            Self::Var(t) => *t.clone(),
+            _ => panic!("expected Self::Var, got {:#?}", self),
+        }
+    }
 }
 
 impl ContextType {
@@ -162,20 +170,24 @@ pub(crate) struct Context {
     scope: Scope,
     max_size: usize,
     pub symbols: Vec<Vec<(String, DefineType)>>,
+    pub is_closure: bool,
+    pub enclosed_symbols: Vec<Symbol>,
 }
 
 impl Context {
-    fn new(scope: Scope) -> Self {
+    fn new(scope: Scope, is_closure: bool) -> Self {
         Context {
             scope,
             max_size: 0,
             symbols: vec![Vec::new()],
+            is_closure,
+            enclosed_symbols: Vec::new(),
         }
     }
 
     /// The maximum number of symbols defined in this context.
     /// Not all of these symbols may still be in scope once this context is destroyed.
-    fn max_size(&self) -> usize {
+    pub(crate) fn max_size(&self) -> usize {
         self.max_size
     }
 
@@ -233,11 +245,32 @@ impl Context {
     }
 }
 
+pub enum Resolved {
+    Enclosed((Symbol, DefineType)),
+    Local((Symbol, DefineType)),
+}
+
+impl Resolved {
+    pub fn get_type(&self) -> DefineType {
+        match &self {
+            Self::Enclosed((_, t)) => t.clone(),
+            Self::Local((_, t)) => t.clone(),
+        }
+    }
+
+    pub fn as_local(&self) -> (Symbol, DefineType) {
+        match &self {
+            Self::Enclosed((_, _)) => panic!(""),
+            Self::Local(s) => s.clone(),
+        }
+    }
+}
+
 impl SymbolTable {
     /// Creates a new symbol table with a globally scoped context
     pub fn new() -> Self {
         SymbolTable {
-            contexts: vec![Context::new(Scope::Global)],
+            contexts: vec![Context::new(Scope::Global, false)],
         }
     }
 
@@ -248,13 +281,13 @@ impl SymbolTable {
 
     /// Create a new context to define symbols in.
     /// This will always be a local context (as there is only one global context).
-    pub fn new_context(&mut self) {
-        self.contexts.push(Context::new(Scope::Local));
+    pub fn new_context(&mut self, is_closure: bool) {
+        self.contexts.push(Context::new(Scope::Local, is_closure));
     }
 
     /// Destroys the current context and returns the maximum number of symbols it had at some point in time.
-    pub fn leave_context(&mut self) -> usize {
-        self.contexts.pop().unwrap().max_size()
+    pub fn leave_context(&mut self) -> Context {
+        self.contexts.pop().unwrap()
     }
 
     /// Enter a new scope in the current context
@@ -274,15 +307,44 @@ impl SymbolTable {
         self.current_context().define(name, dt)
     }
 
-    /// Resolve a symbol in either the current context or the global context if no local was found.
-    pub fn resolve(&mut self, name: &str) -> Option<(Symbol, DefineType)> {
-        let symbol = self.current_context().resolve(name);
-        if symbol.is_some() {
-            return symbol;
+    ///Resolve a symbol in either the current context or the global context if no local was found.
+    /// For closures, keep looking in outer scopes (not global) and return if the symbol is from the outer scope
+    pub fn resolve(&mut self, name: &str) -> Option<Resolved> {
+        for (i, ctx) in self.contexts.iter().rev().enumerate() {
+            let symbol = ctx.resolve(name);
+            if let Some(s) = symbol {
+                //if its not in the current scope and not already inserted
+                // put it in the enclosed symbols
+
+                if i != 0 {
+                    let ind = self
+                        .current_context()
+                        .enclosed_symbols
+                        .iter()
+                        .find(|&a| a == &s.0)
+                        .cloned();
+
+                    let enclosed_symbol = if let Some(i) = ind {
+                        i
+                    } else {
+                        self.current_context().enclosed_symbols.push(s.0.clone());
+                        Symbol {
+                            scope: Scope::Local,
+                            index: (self.current_context().enclosed_symbols.len() - 1) as u16,
+                        }
+                    };
+                    return Some(Resolved::Enclosed((enclosed_symbol, s.1)));
+                }
+                return Some(Resolved::Local(s));
+            }
+
+            if !ctx.is_closure {
+                break;
+            }
         }
 
         if self.contexts.len() > 1 {
-            self.contexts[0].resolve(name)
+            self.contexts[0].resolve(name).map(|a| Resolved::Local(a))
         } else {
             None
         }

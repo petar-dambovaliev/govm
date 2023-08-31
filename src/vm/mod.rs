@@ -16,8 +16,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{Array, FromString, FromVec, IterType, Map, ObjIter, Object, Struct, Type};
-use std::io::Write;
+use crate::vm::object::{FromString, FromVec, Map, ObjIter, Object, Struct, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -43,6 +42,7 @@ pub struct VM {
     instructions: Vec<u8>,
     ip: usize,
     bp: u16,
+    function_ctx: Option<Object>,
 }
 
 impl VM {
@@ -83,6 +83,7 @@ impl VM {
             instructions: Vec::new(),
             ip: 0,
             bp: 0,
+            function_ctx: None,
         }
     }
 
@@ -99,6 +100,19 @@ impl VM {
     #[inline(always)]
     fn set_local(&mut self, rel_idx: u16, value: Object) {
         self.stack[self.bp as usize + rel_idx as usize] = value;
+    }
+
+    fn get_enclosed(&self, rel_idx: u16) -> Object {
+        let mut obj = self.function_ctx.unwrap();
+        let closure = obj.as_closure();
+
+        closure.enclosed_objects[rel_idx as usize]
+    }
+    #[inline(always)]
+    fn set_local_enclosed(&mut self, rel_idx: u16, value: Object) {
+        let mut obj = self.function_ctx.unwrap();
+        let closure = obj.as_closure_mut();
+        closure.enclosed_objects[self.bp as usize + rel_idx as usize] = value;
     }
 
     /// Reads a u16 value from the current position in the instructions array
@@ -306,6 +320,7 @@ impl VM {
             //     }
             // }
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
+            //println!("{:#?}", self.stack);
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();
@@ -328,7 +343,23 @@ impl VM {
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
                     let value = self.pop();
+                    //println!("{:#?}-{:#?}-{:#?}", idx, value, self.stack);
                     self.set_local(idx, value);
+                }
+                OpCode::GetLocal => {
+                    let idx = self.read_u16();
+                    let value = self.get_local(idx);
+                    self.push(value);
+                }
+                OpCode::SetEnclosed => {
+                    let idx = self.read_u16();
+                    let value = self.pop();
+                    self.set_local_enclosed(idx, value);
+                }
+                OpCode::GetEnclosed => {
+                    let idx = self.read_u16();
+                    let value = self.get_enclosed(idx);
+                    self.push(value);
                 }
                 OpCode::Range => {
                     let key_idx = self.read_u16();
@@ -341,11 +372,6 @@ impl VM {
 
                     self.set_local(key_idx, k);
                     self.set_local(value_idx, v);
-                }
-                OpCode::GetLocal => {
-                    let idx = self.read_u16();
-                    let value = self.get_local(idx);
-                    self.push(value);
                 }
                 OpCode::Jump => {
                     let pos = self.read_u16();
@@ -426,14 +452,31 @@ impl VM {
                 OpCode::Call => {
                     let num_args = self.read_u8();
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
-                    let obj = self.pop();
-                    if obj.tag() != Type::Function {
-                        return Err(Error::TypeError(format!(
-                            "expected a function, got: {:#?}",
-                            obj.tag()
-                        )));
-                    }
-                    let [ip, num_locals] = obj.as_function();
+                    let mut obj = self.pop();
+                    let mut num_enclosed = 0;
+
+                    let (ip, num_locals) = match obj.tag() {
+                        Type::Function => {
+                            let [ip, num_locals] = obj.as_function();
+                            (ip, num_locals)
+                        }
+                        Type::Closure => {
+                            self.function_ctx = Some(obj);
+                            let closure = obj.as_closure();
+                            (
+                                closure.ip,
+                                (closure.num_locals as usize + closure.enclosed_objects.len())
+                                    as u32,
+                            )
+                        }
+                        _ => {
+                            panic!("ins: {:#?} - {:#?}", self.peek_next(), self.stack);
+                            return Err(Error::TypeError(format!(
+                                "expected a function|closure, got: {:#?}",
+                                obj.tag()
+                            )));
+                        }
+                    };
 
                     // Make room on the stack for any local variables defined inside this function
                     for _ in 0..num_locals - num_args as u32 {
@@ -461,12 +504,17 @@ impl VM {
                 }
                 OpCode::ReturnValue => {
                     let num_r = self.read_u16();
+
                     let mut res = Vec::with_capacity(num_r as usize);
 
                     for _ in 0..num_r {
                         res.push(self.pop());
                     }
+                    //println!("before popframe: {:#?}", self.stack);
+
                     self.popframe();
+
+                    //println!("after popframe: {:#?}", self.stack);
 
                     for re in res {
                         self.push(re);
@@ -548,6 +596,21 @@ impl VM {
                 OpCode::Halt => {
                     gc.untrace(final_result);
                     return Ok(final_result);
+                }
+                OpCode::CopyEnclosed => {
+                    let length = self.read_u16();
+
+                    let mut enclosed = Vec::with_capacity(length as usize);
+
+                    for _ in 0..length {
+                        enclosed.push(self.pop());
+                    }
+
+                    let mut obj = self.pop();
+                    let closure = obj.as_closure_mut();
+                    closure.enclosed_objects = enclosed;
+
+                    self.push(obj);
                 }
             }
         }

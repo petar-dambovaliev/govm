@@ -5,7 +5,7 @@ use crate::parser::ast::{
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::gc::GC;
-use crate::vm::object::{FromString, Struct, Type};
+use crate::vm::object::{Closure, FromString, Struct, Type};
 use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
 use ahash::AHashMap;
@@ -42,6 +42,8 @@ pub(crate) enum OpCode {
     ReturnValue,
     Call,
     CallBuiltin,
+    GetEnclosed,
+    SetEnclosed,
     GetLocal,
     SetLocal,
     GetGlobal,
@@ -65,6 +67,7 @@ pub(crate) enum OpCode {
     Range,
     IntoIter,
     Struct,
+    CopyEnclosed,
     Halt,
 }
 
@@ -109,7 +112,13 @@ impl OpCode {
             // OpCodes with 1 operand op 1 byte:
             OpCode::Call => &[1],
 
-            OpCode::SetLocal | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::GetLocal => &[2],
+            OpCode::SetLocal
+            | OpCode::GetGlobal
+            | OpCode::SetGlobal
+            | OpCode::GetLocal
+            | OpCode::GetEnclosed
+            | OpCode::SetEnclosed
+            | OpCode::CopyEnclosed => &[2],
 
             // OpCodes with no operands
             OpCode::Pop
@@ -405,13 +414,10 @@ impl Compiler {
 
         for el in &fl.list {
             let t = match &el.typ {
-                Expression::Ident(id) => {
-                    let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                    t
-                }
+                Expression::Ident(id) => self.symbols.resolve(id.name.as_str()).unwrap().get_type(),
                 Expression::TypePointer(pt) => {
                     let id = pt.typ.as_ident().unwrap();
-                    let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
+                    let t = self.symbols.resolve(id.name.as_str()).unwrap().get_type();
                     DefineType::Ref(Box::new(t))
                 }
                 Expression::TypeFunction(f) => {
@@ -443,10 +449,7 @@ impl Compiler {
 
     fn expression_to_define_type(&mut self, expr: &Expression) -> DefineType {
         match expr {
-            Expression::Ident(id) => {
-                let (_, t) = self.symbols.resolve(id.name.as_str()).unwrap();
-                t
-            }
+            Expression::Ident(id) => self.symbols.resolve(id.name.as_str()).unwrap().get_type(),
             Expression::TypeFunction(tf) => {
                 let (_, args) = self.field_list_to_define_type(&tf.params);
                 let (ret, _) = self.field_list_to_define_type(&tf.result);
@@ -504,7 +507,7 @@ impl Compiler {
                 let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
                 // Compile function in a new scope
-                self.symbols.new_context();
+                self.symbols.new_context(false);
                 for p in &f.typ.params.list {
                     let t = self.expression_to_define_type(&p.typ);
                     for name in &p.name {
@@ -592,7 +595,10 @@ impl Compiler {
                         panic!("expected return");
                     }
 
-                    for ret_type in ctx.ret_types {
+                    for mut ret_type in ctx.ret_types {
+                        if ret_type.is_var() {
+                            ret_type = ret_type.as_var();
+                        }
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
                             assert_eq!(expected_t, ret_type, "{:#?}", f.name.name);
                         }
@@ -604,13 +610,16 @@ impl Compiler {
                 }
                 // end type checking on return types
 
-                if self.last_instruction_is(OpCode::Pop) {
+                if self.last_instruction_is(OpCode::Pop) && !decl_r_types.is_empty() {
                     self.remove_last_instruction();
                     assert!(decl_r_types.len() < u16::MAX as usize);
                     let num_r_types = decl_r_types.len() as u16;
 
                     self.emit_opcode(OpCode::ReturnValue);
                     self.emit_u16(num_r_types);
+                } else if self.last_instruction_is(OpCode::Pop) && decl_r_types.is_empty() {
+                    self.remove_last_instruction();
+                    self.emit_opcode(OpCode::Return);
                 } else if !self.last_instruction_is(OpCode::ReturnValue) {
                     self.emit_opcode(OpCode::Return);
                 }
@@ -618,12 +627,12 @@ impl Compiler {
                 self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
 
                 // Switch back to previous scope again
-                let num_locals = self.symbols.leave_context();
+                let ctx = self.symbols.leave_context();
 
                 // Create function object and store as constant
                 let obj = Object::function(
                     pos_start_function.try_into().unwrap(),
-                    num_locals.try_into().unwrap(),
+                    ctx.max_size().try_into().unwrap(),
                 );
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
@@ -960,29 +969,29 @@ impl Compiler {
                                     break 'assign;
                                 }
 
-                                let symbol = self.symbols.resolve(name).map(|a| a.0);
-                                match symbol {
-                                    Some(symbol) => match symbol.scope {
-                                        Scope::Global => {
-                                            self.emit_opcode(OpCode::SetGlobal);
-                                            self.emit_u16(symbol.index);
-                                            self.emit_opcode(OpCode::GetGlobal);
-                                            self.emit_u16(symbol.index);
-                                        }
+                                let resolved =
+                                    self.symbols.resolve(name).ok_or(Error::ReferenceError(
+                                        format!("assign: `{name}` is not defined"),
+                                    ))?;
 
+                                let (symbol, getop, setop) = match resolved {
+                                    Resolved::Enclosed((symbol, _)) => {
+                                        (symbol, OpCode::GetEnclosed, OpCode::SetEnclosed)
+                                    }
+                                    Resolved::Local((symbol, _)) => match symbol.scope {
                                         Scope::Local => {
-                                            self.emit_opcode(OpCode::SetLocal);
-                                            self.emit_u16(symbol.index);
-                                            self.emit_opcode(OpCode::GetLocal);
-                                            self.emit_u16(symbol.index);
+                                            (symbol, OpCode::GetLocal, OpCode::SetLocal)
+                                        }
+                                        Scope::Global => {
+                                            (symbol, OpCode::GetGlobal, OpCode::GetLocal)
                                         }
                                     },
-                                    None => {
-                                        return Err(Error::ReferenceError(format!(
-                                            "assign: `{name}` is not defined"
-                                        )))
-                                    }
-                                }
+                                };
+
+                                self.emit_opcode(setop);
+                                self.emit_u16(symbol.index);
+                                self.emit_opcode(getop);
+                                self.emit_u16(symbol.index);
                             }
                             _ => unimplemented!(),
                         }
@@ -1050,33 +1059,24 @@ impl Compiler {
                                 break 'assign;
                             }
 
-                            let symbol = self.symbols.resolve(name).map(|a| a.0);
-                            match symbol {
-                                Some(symbol) => {
-                                    self.compile_expression(right)?;
+                            let resolved = self.symbols.resolve(name).ok_or(
+                                Error::ReferenceError(format!("assign: `{name}` is not defined")),
+                            )?;
 
-                                    match symbol.scope {
-                                        Scope::Global => {
-                                            self.emit_opcode(OpCode::SetGlobal);
-                                            self.emit_u16(symbol.index);
-                                            self.emit_opcode(OpCode::GetGlobal);
-                                            self.emit_u16(symbol.index);
-                                        }
+                            let (symbol, getop, setop) = match resolved {
+                                Resolved::Enclosed((symbol, _)) => {
+                                    (symbol, OpCode::GetEnclosed, OpCode::SetEnclosed)
+                                }
+                                Resolved::Local((symbol, _)) => match symbol.scope {
+                                    Scope::Local => (symbol, OpCode::GetLocal, OpCode::SetLocal),
+                                    Scope::Global => (symbol, OpCode::GetGlobal, OpCode::SetGlobal),
+                                },
+                            };
 
-                                        Scope::Local => {
-                                            self.emit_opcode(OpCode::SetLocal);
-                                            self.emit_u16(symbol.index);
-                                            self.emit_opcode(OpCode::GetLocal);
-                                            self.emit_u16(symbol.index);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    return Err(Error::ReferenceError(format!(
-                                        "assign: `{name}` is not defined"
-                                    )))
-                                }
-                            }
+                            self.emit_opcode(setop);
+                            self.emit_u16(symbol.index);
+                            self.emit_opcode(getop);
+                            self.emit_u16(symbol.index);
                         }
                         _ => unimplemented!(),
                     }
@@ -1526,33 +1526,36 @@ impl Compiler {
         operator: &Operator,
     ) -> Result<DefineType, Error> {
         let idx_constant = self.add_constant(Object::int(const_value));
-        let symbol = self.symbols.resolve(varname).map(|a| a.0);
-        match symbol {
-            Some(symbol) => {
-                let opcode = match (operator, symbol.scope) {
-                    (Operator::Add, Scope::Local) => OpCode::AddLocalConst,
-                    (Operator::Sub, Scope::Local) => OpCode::SubtractLocalConst,
-                    (Operator::Less, Scope::Local) => OpCode::LtLocalConst,
-                    (Operator::LessEqual, Scope::Local) => OpCode::LteLocalConst,
-                    (Operator::Greater, Scope::Local) => OpCode::GtLocalConst,
-                    (Operator::GreaterEqual, Scope::Local) => OpCode::GteLocalConst,
-                    (Operator::Equal, Scope::Local) => OpCode::EqLocalConst,
-                    (Operator::NotEqual, Scope::Local) => OpCode::NeqLocalConst,
-                    // (Operator::Multiply, Scope::Local) => OpCode::MultiplyLocalConst,
-                    // (Operator::Divide, Scope::Local) => OpCode::DivideLocalConst,
-                    // (Operator::Modulo, Scope::Local) => OpCode::ModuloLocalConst,
-                    _ => {
-                        // This is just for other part of compiler to signal it should emit a normal instruction sequence
-                        return Err(Error::ReferenceError("Optimized variant of this operator & scope type is not yet implemented.".to_string()));
-                    }
-                };
+        let (symbol, _) = self
+            .symbols
+            .resolve(varname)
+            .ok_or(Error::ReferenceError(format!("{varname} is not defined")))?
+            .as_local();
 
-                self.emit_opcode(opcode);
-                self.emit_u16(symbol.index);
-                self.emit_u16(idx_constant);
+        let opcode = match (operator, symbol.scope) {
+            (Operator::Add, Scope::Local) => OpCode::AddLocalConst,
+            (Operator::Sub, Scope::Local) => OpCode::SubtractLocalConst,
+            (Operator::Less, Scope::Local) => OpCode::LtLocalConst,
+            (Operator::LessEqual, Scope::Local) => OpCode::LteLocalConst,
+            (Operator::Greater, Scope::Local) => OpCode::GtLocalConst,
+            (Operator::GreaterEqual, Scope::Local) => OpCode::GteLocalConst,
+            (Operator::Equal, Scope::Local) => OpCode::EqLocalConst,
+            (Operator::NotEqual, Scope::Local) => OpCode::NeqLocalConst,
+            // (Operator::Multiply, Scope::Local) => OpCode::MultiplyLocalConst,
+            // (Operator::Divide, Scope::Local) => OpCode::DivideLocalConst,
+            // (Operator::Modulo, Scope::Local) => OpCode::ModuloLocalConst,
+            _ => {
+                // This is just for other part of compiler to signal it should emit a normal instruction sequence
+                return Err(Error::ReferenceError(
+                    "Optimized variant of this operator & scope type is not yet implemented."
+                        .to_string(),
+                ));
             }
-            None => return Err(Error::ReferenceError(format!("{varname} is not defined"))),
-        }
+        };
+
+        self.emit_opcode(opcode);
+        self.emit_u16(symbol.index);
+        self.emit_u16(idx_constant);
 
         Ok(DefineType::Int)
     }
@@ -1678,7 +1681,11 @@ impl Compiler {
                             }
                         }
                     }
-                    Operator::Less | Operator::LessEqual | Operator::NotEqual => {
+                    Operator::Less
+                    | Operator::LessEqual
+                    | Operator::NotEqual
+                    | Operator::Greater
+                    | Operator::GreaterEqual => {
                         match &op.y {
                             // a * b // multiplication
                             Some(y) => {
@@ -1793,24 +1800,24 @@ impl Compiler {
                 return Ok(DefineType::String);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
-                let symbol = self.symbols.resolve(&lit.value).map(|a| a.0);
-                match symbol {
-                    Some(symbol) => {
-                        let opcode = if symbol.scope == Scope::Global {
-                            OpCode::GetGlobal
-                        } else {
-                            OpCode::GetLocal
-                        };
-                        self.emit_opcode(opcode);
-                        self.emit_u16(symbol.index);
-                    }
-                    None => {
-                        return Err(Error::ReferenceError(format!(
-                            "identifier: {} not found",
-                            lit.value
-                        )))
-                    }
-                }
+                let resolved = self
+                    .symbols
+                    .resolve(&lit.value)
+                    .ok_or(Error::ReferenceError(format!(
+                        "identifier: {} not found",
+                        lit.value
+                    )))?;
+
+                let (symbol, getop) = match resolved {
+                    Resolved::Enclosed((symbol, _)) => (symbol, OpCode::GetEnclosed),
+                    Resolved::Local((symbol, _)) => match symbol.scope {
+                        Scope::Local => (symbol, OpCode::GetLocal),
+                        Scope::Global => (symbol, OpCode::GetGlobal),
+                    },
+                };
+
+                self.emit_opcode(getop);
+                self.emit_u16(symbol.index);
             }
 
             Expression::Call(call) => 'compile_call: {
@@ -1832,10 +1839,12 @@ impl Compiler {
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
 
-                let (_, mut dt) = self
+                // todo this can be a closure
+                let mut dt = self
                     .symbols
                     .resolve(call.func.as_ident().unwrap().name.as_str())
-                    .unwrap();
+                    .unwrap()
+                    .get_type();
 
                 if let DefineType::Var(inner) = &dt {
                     if inner.is_func() {
@@ -1867,10 +1876,18 @@ impl Compiler {
                         _ => unimplemented!(),
                     };
 
-                    let (_, map_key_t) = self.symbols.resolve(inner_key_t.name.as_str()).unwrap();
+                    let (_, map_key_t) = self
+                        .symbols
+                        .resolve(inner_key_t.name.as_str())
+                        .unwrap()
+                        .as_local();
                     let (map_key_t, _) = map_key_t.as_type();
 
-                    let (_, map_val_t) = self.symbols.resolve(inner_val_t.name.as_str()).unwrap();
+                    let (_, map_val_t) = self
+                        .symbols
+                        .resolve(inner_val_t.name.as_str())
+                        .unwrap()
+                        .as_local();
                     let (map_val_t, _) = map_val_t.as_type();
 
                     for v in &clit.val.values {
@@ -1911,7 +1928,12 @@ impl Compiler {
                         _ => unimplemented!(),
                     };
 
-                    let (_, slice_t) = self.symbols.resolve(inner_t.name.as_str()).unwrap();
+                    let slice_t = self
+                        .symbols
+                        .resolve(inner_t.name.as_str())
+                        .unwrap()
+                        .as_local()
+                        .1;
                     let mut el_t = None;
                     let key_required = clit
                         .val
@@ -1947,7 +1969,8 @@ impl Compiler {
 
                 //struct
                 if let Expression::Ident(name) = clit.typ.as_ref() {
-                    let (s, dt) = self.symbols.resolve(name.name.as_str()).unwrap();
+                    //todo this can be locally defined type
+                    let (s, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
 
                     let (name, inner_types) = match dt {
                         DefineType::Struct(name, fields) => (name, fields),
@@ -2060,13 +2083,20 @@ impl Compiler {
                 }
 
                 match self.symbols.resolve(&ident.name) {
-                    Some((symbol, dt)) => {
+                    Some(Resolved::Local((symbol, dt))) => {
                         let opcode = if symbol.scope == Scope::Global {
                             OpCode::GetGlobal
                         } else {
                             OpCode::GetLocal
                         };
                         self.emit_opcode(opcode);
+                        self.emit_u16(symbol.index);
+
+                        return Ok(dt);
+                    }
+                    Some(Resolved::Enclosed((symbol, dt))) => {
+                        // enclosed symbols cannot be global
+                        self.emit_opcode(OpCode::GetEnclosed);
                         self.emit_u16(symbol.index);
 
                         return Ok(dt);
@@ -2081,7 +2111,7 @@ impl Compiler {
             }
             Expression::Selector(sel) => {
                 let name = sel.x.as_ident().unwrap();
-                let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap();
+                let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
                 let inner = match dt {
                     DefineType::Var(inner) => *inner,
                     _ => panic!(),
@@ -2120,7 +2150,8 @@ impl Compiler {
 
                 let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
-                //self.symbols.new_context();
+                // Compile function in a new scope
+                self.symbols.new_context(true);
                 for p in &f.typ.params.list {
                     let t = self.expression_to_define_type(&p.typ);
                     for name in &p.name {
@@ -2151,16 +2182,15 @@ impl Compiler {
                 //todo ugly
 
                 // type checking if all returns are correct types
+                let mut terminates = None;
                 let mut has_top_return = false;
-
                 for stmt in &f.body.list {
                     if let Statement::Return(_) = stmt {
                         has_top_return = true;
                         break;
                     }
                 }
-
-                let terminates = self.compile_block_statement(&f.body.list)?;
+                terminates = self.compile_block_statement(&f.body.list)?;
 
                 let ctx = self.func_contexts.pop().unwrap();
 
@@ -2187,7 +2217,6 @@ impl Compiler {
                         DefineType::Tuple(sorted_decl_r_types)
                     };
 
-                    //println!("{:#?}", un_rts);
                     if !terminates.unwrap_or_default()
                         && expected_t != DefineType::Null
                         && !has_top_return
@@ -2195,9 +2224,12 @@ impl Compiler {
                         panic!("expected return");
                     }
 
-                    for ret_type in ctx.ret_types {
+                    for mut ret_type in ctx.ret_types {
+                        if ret_type.is_var() {
+                            ret_type = ret_type.as_var();
+                        }
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                            assert_eq!(expected_t, ret_type, "{:#?}", f);
+                            assert_eq!(expected_t, ret_type);
                         }
                     }
                 } else {
@@ -2207,13 +2239,16 @@ impl Compiler {
                 }
                 // end type checking on return types
 
-                if self.last_instruction_is(OpCode::Pop) {
+                if self.last_instruction_is(OpCode::Pop) && !decl_r_types.is_empty() {
                     self.remove_last_instruction();
                     assert!(decl_r_types.len() < u16::MAX as usize);
                     let num_r_types = decl_r_types.len() as u16;
 
                     self.emit_opcode(OpCode::ReturnValue);
                     self.emit_u16(num_r_types);
+                } else if self.last_instruction_is(OpCode::Pop) && decl_r_types.is_empty() {
+                    self.remove_last_instruction();
+                    self.emit_opcode(OpCode::Return);
                 } else if !self.last_instruction_is(OpCode::ReturnValue) {
                     self.emit_opcode(OpCode::Return);
                 }
@@ -2221,17 +2256,27 @@ impl Compiler {
                 self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
 
                 // Switch back to previous scope again
-                //let num_locals = self.symbols.leave_context();
-                let num_locals = 1;
+                let ctx = self.symbols.leave_context();
+                let num_locals = ctx.max_size();
 
                 // Create function object and store as constant
-                let obj = Object::function(
+                let obj = Closure::object(
                     pos_start_function.try_into().unwrap(),
                     num_locals.try_into().unwrap(),
+                    vec![],
                 );
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
+
+                for enclosed_symbol in &ctx.enclosed_symbols {
+                    //enclosed symbols can only be local
+                    self.emit_opcode(OpCode::GetLocal);
+                    self.emit_u16(enclosed_symbol.index);
+                }
+
+                self.emit_opcode(OpCode::CopyEnclosed);
+                self.emit_u16(ctx.enclosed_symbols.len() as u16);
 
                 return Ok(DefineType::Func(
                     "".to_string(),
@@ -2299,6 +2344,8 @@ impl Display for OpCode {
             CallBuiltin => "CallBuiltin",
             GetLocal => "GetLocal",
             SetLocal => "SetLocal",
+            GetEnclosed => "GetEnclosed",
+            SetEnclosed => "SetEnclosed",
             GetGlobal => "GetGlobal",
             SetGlobal => "SetGlobal",
             GtLocalConst => "GtLocalConst",
@@ -2320,6 +2367,7 @@ impl Display for OpCode {
             Range => "Range",
             IntoIter => "IntoIter",
             Struct => "Struct",
+            CopyEnclosed => "CopyEnclosed",
             Halt => "Halt",
         };
         f.write_str(s)
