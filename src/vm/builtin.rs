@@ -13,6 +13,15 @@ pub enum Builtin {
     Length,
 }
 
+impl Builtin {
+    pub fn is_void(&self) -> bool {
+        match &self {
+            Self::Print => true,
+            _ => false,
+        }
+    }
+}
+
 impl From<u8> for Builtin {
     fn from(value: u8) -> Self {
         match value {

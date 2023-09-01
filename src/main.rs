@@ -8,33 +8,32 @@ use std::time::Instant;
 
 fn main() {
     //todo definition order matters and it shouldn't
-    let _i = Instant::now();
+    let i = Instant::now();
     //todo
     // this seems to make the vm crazy &[]int{1,2,3}
     let mut parser = Parser::from(
         r#"
         package main
-        
-        func newClosure() func()  {
-            a := 5
-            
-            b := func() {
-                switch {
-                case a >= 5:
-                    print(true)
-                case a <= 5:
-                    print(false)    
-                }
-            }
-        
-           return b 
-        }
-     
-        func main() {
-            b := newClosure()
 
-            b()
-        }
+func fibonacciGo(n int) int {
+	if n <= 1 {
+		return n
+	}
+
+	a, b := 0, 1
+	for i := 2; i <= n; i++ {
+		c := a + b
+		a, b = b, c
+	}
+
+	return b
+}
+
+func main() {
+   for i:=0;i<2;i++ {
+        print(fibonacciGo(70))
+   }
+}
     "#,
     );
 
@@ -92,5 +91,5 @@ fn main() {
     //  let i = Instant::now();
     // vm.run();
     // println!("{:#?}", vm);
-    // println!("{:#?}", i.elapsed());
+    println!("{:#?}", i.elapsed());
 }

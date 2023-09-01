@@ -599,6 +599,11 @@ impl Compiler {
                         if ret_type.is_var() {
                             ret_type = ret_type.as_var();
                         }
+
+                        if ret_type.is_type() {
+                            ret_type = ret_type.as_type().0;
+                        }
+
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
                             assert_eq!(expected_t, ret_type, "{:#?}", f.name.name);
                         }
@@ -845,6 +850,7 @@ impl Compiler {
                     // need to propagate info to add the post condition
                     // to places where there are breaks/continues
                     if let Some(post) = &forstmt.post {
+                        //panic!("{:#?}", post);
                         self.compile_statement(post.as_ref())?;
                     }
                 } else {
@@ -965,6 +971,7 @@ impl Compiler {
                                     }
                                 };
 
+                                //todo emit pop for the right expr
                                 if name == "_" {
                                     break 'assign;
                                 }
@@ -974,23 +981,17 @@ impl Compiler {
                                         format!("assign: `{name}` is not defined"),
                                     ))?;
 
-                                let (symbol, getop, setop) = match resolved {
+                                let (symbol, setop) = match resolved {
                                     Resolved::Enclosed((symbol, _)) => {
-                                        (symbol, OpCode::GetEnclosed, OpCode::SetEnclosed)
+                                        (symbol, OpCode::SetEnclosed)
                                     }
                                     Resolved::Local((symbol, _)) => match symbol.scope {
-                                        Scope::Local => {
-                                            (symbol, OpCode::GetLocal, OpCode::SetLocal)
-                                        }
-                                        Scope::Global => {
-                                            (symbol, OpCode::GetGlobal, OpCode::GetLocal)
-                                        }
+                                        Scope::Local => (symbol, OpCode::SetLocal),
+                                        Scope::Global => (symbol, OpCode::SetGlobal),
                                     },
                                 };
 
                                 self.emit_opcode(setop);
-                                self.emit_u16(symbol.index);
-                                self.emit_opcode(getop);
                                 self.emit_u16(symbol.index);
                             }
                             _ => unimplemented!(),
@@ -1063,19 +1064,16 @@ impl Compiler {
                                 Error::ReferenceError(format!("assign: `{name}` is not defined")),
                             )?;
 
-                            let (symbol, getop, setop) = match resolved {
-                                Resolved::Enclosed((symbol, _)) => {
-                                    (symbol, OpCode::GetEnclosed, OpCode::SetEnclosed)
-                                }
+                            let (symbol, setop) = match resolved {
+                                Resolved::Enclosed((symbol, _)) => (symbol, OpCode::SetEnclosed),
                                 Resolved::Local((symbol, _)) => match symbol.scope {
-                                    Scope::Local => (symbol, OpCode::GetLocal, OpCode::SetLocal),
-                                    Scope::Global => (symbol, OpCode::GetGlobal, OpCode::SetGlobal),
+                                    Scope::Local => (symbol, OpCode::SetLocal),
+                                    Scope::Global => (symbol, OpCode::SetGlobal),
                                 },
                             };
 
+                            self.compile_expression(right)?;
                             self.emit_opcode(setop);
-                            self.emit_u16(symbol.index);
-                            self.emit_opcode(getop);
                             self.emit_u16(symbol.index);
                         }
                         _ => unimplemented!(),
@@ -1828,9 +1826,15 @@ impl Compiler {
 
                 if let Expression::Ident(name) = call.func.as_ref() {
                     if let Some(builtin) = builtin::resolve(&name.name) {
+                        let is_void = builtin.is_void();
                         self.emit_opcode(OpCode::CallBuiltin);
                         self.emit_u8(builtin as u8);
                         self.emit_u8(call.args.len().try_into().unwrap());
+
+                        if is_void {
+                            self.emit_opcode(OpCode::Pop);
+                        }
+
                         break 'compile_call;
                     }
                 }
@@ -2424,6 +2428,7 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::ast::Ident;
     use crate::parser::Parser;
 
     fn run(program: &str) -> String {
@@ -2446,6 +2451,39 @@ mod tests {
     }
 
     #[test]
+    fn test_add_assignment_expression() {
+        let left = "a";
+        let expr = Statement::Assign(AssignStmt {
+            pos: 0,
+            op: Operator::Assign,
+            left: vec![Expression::Ident(Ident {
+                pos: 0,
+                name: left.to_string(),
+            })],
+            right: vec![Expression::Operation(Operation {
+                pos: 0,
+                op: Operator::Add,
+                x: Box::new(Expression::Ident(Ident {
+                    pos: 0,
+                    name: left.to_string(),
+                })),
+                y: Some(Box::new(Expression::BasicLit(BasicLit {
+                    pos: 0,
+                    kind: LitKind::Integer,
+                    value: "1".to_string(),
+                }))),
+            })],
+        });
+
+        let mut c = Compiler::new();
+        c.symbols
+            .define(left, DefineType::Var(Box::new(DefineType::Int)));
+        let r = c.compile_statement(&expr).unwrap();
+
+        println!("{}", bytecode_to_human(&c.instructions, true));
+    }
+
+    #[test]
     fn test_int_expression() {
         assert_eq!(run("5"), "Const(0) Pop Halt");
         assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
@@ -2457,9 +2495,9 @@ mod tests {
 
     #[test]
     fn test_bool_expression() {
-        assert_eq!(run("ja"), "True Pop Halt");
-        assert_eq!(run("ja; ja"), "True Pop True Pop Halt");
-        assert_eq!(run("nee"), "False Pop Halt");
+        assert_eq!(run("false"), "True Pop Halt");
+        assert_eq!(run("true; true"), "True Pop True Pop Halt");
+        assert_eq!(run("false"), "False Pop Halt");
     }
 
     #[test]

@@ -119,6 +119,13 @@ impl DefineType {
         }
     }
 
+    pub fn is_type(&self) -> bool {
+        match &self {
+            Self::Type(_, _) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_func(&self) -> bool {
         match &self {
             Self::Func(_, _, _) => true,

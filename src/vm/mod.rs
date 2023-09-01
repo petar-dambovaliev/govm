@@ -272,6 +272,7 @@ impl VM {
                 let left = self.get_local(local_idx);
                 let constant_idx = self.read_u16();
                 let right = constants[constant_idx as usize];
+                //println!("local: {:#?} const: {:#?}", local_idx, constant_idx);
                 let result = left.$op(right, gc)?;
                 self.push(result);
             }};
@@ -319,37 +320,45 @@ impl VM {
             //         debug_pause -= 1;
             //     }
             // }
-            //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
+            println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
             match self.next() {
                 OpCode::Const => {
                     let idx = self.read_u16();
                     let value = constants[idx as usize];
+                    //println!("const: {:#?}", value);
                     self.push(value);
                 }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
+                    //println!("SetGlobal-before: {:#?}", self.stack);
                     let value = self.pop();
                     while self.globals.len() <= idx {
                         self.globals.push(Object::null());
                     }
                     self.globals[idx] = value;
+                    //println!("SetGlobal-after: {:#?}", self.stack);
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
+                    //println!("GetGlobal-before: {:#?}", self.stack);
                     let value = self.globals[idx as usize];
                     self.push(value);
+                    //println!("GetGlobal-after: {:#?}", self.stack);
                 }
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
+                    //println!("SetLocal-before: {:#?}", self.stack);
                     let value = self.pop();
-                    //println!("{:#?}-{:#?}-{:#?}", idx, value, self.stack);
                     self.set_local(idx, value);
+                    //println!("SetLocal-after: {:#?}", self.stack);
                 }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
+                    //println!("GetLocal-before: {:#?}", self.stack);
                     let value = self.get_local(idx);
                     self.push(value);
+                    //println!("GetLocal-after: {:#?}", self.stack);
                 }
                 OpCode::SetEnclosed => {
                     let idx = self.read_u16();
@@ -396,6 +405,7 @@ impl VM {
                 }
                 OpCode::Pop => {
                     final_result = self.pop();
+                    //println!("pop: {:#?}", final_result);
                 }
                 OpCode::Null => {
                     self.push(Object::null());
@@ -451,9 +461,9 @@ impl VM {
                 }
                 OpCode::Call => {
                     let num_args = self.read_u8();
+                    //println!("{:#?}", self.stack);
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
                     let mut obj = self.pop();
-                    let mut num_enclosed = 0;
 
                     let (ip, num_locals) = match obj.tag() {
                         Type::Function => {
@@ -470,7 +480,7 @@ impl VM {
                             )
                         }
                         _ => {
-                            panic!("ins: {:#?} - {:#?}", self.peek_next(), self.stack);
+                            //panic!("ins: {:#?} - {:#?}", self.peek_next(), self.stack);
                             return Err(Error::TypeError(format!(
                                 "expected a function|closure, got: {:#?}",
                                 obj.tag()
@@ -510,6 +520,7 @@ impl VM {
                     for _ in 0..num_r {
                         res.push(self.pop());
                     }
+                    //println!("{:#?}", res);
                     //println!("before popframe: {:#?}", self.stack);
 
                     self.popframe();
