@@ -19,7 +19,7 @@ func fibonacciGo(n int) int {
 	if n <= 1 {
 		return n
 	}
-
+    
 	a, b := 0, 1
 	for i := 2; i <= n; i++ {
 		c := a + b
@@ -30,8 +30,8 @@ func fibonacciGo(n int) int {
 }
 
 func main() {
-   for i:=0;i<2;i++ {
-        print(fibonacciGo(70))
+   for i:=0;i<9999;i++ {
+        fibonacciGo(70)
    }
 }
     "#,

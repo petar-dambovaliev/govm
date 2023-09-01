@@ -840,7 +840,7 @@ impl Compiler {
                 let pos_jump_if_false = self.instructions.len();
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
-                self.emit_opcode(OpCode::Pop);
+                //self.emit_opcode(OpCode::Pop);
 
                 let terminate = self.compile_block_statement(&forstmt.body.list)?;
 
