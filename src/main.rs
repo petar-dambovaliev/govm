@@ -15,23 +15,21 @@ fn main() {
         r#"
         package main
 
-func fibonacciGo(n int) int {
-	if n <= 1 {
-		return n
-	}
-    
-	a, b := 0, 1
-	for i := 2; i <= n; i++ {
-		c := a + b
-		a, b = b, c
-	}
-
-	return b
+func new_map() map[string]int {
+	return map[string]int{"a":1, "b":2}
 }
 
 func main() {
-   for i:=0;i<9999;i++ {
-        fibonacciGo(70)
+
+    m := new_map()
+    
+   for i:=0;i<2;i++ {
+        m := new_map()
+        print(m)
+        for k, v := range m {
+            print(k)
+            print(v)
+        }   
    }
 }
     "#,

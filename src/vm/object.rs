@@ -745,7 +745,7 @@ impl Display for Object {
                 f.write_str("func(){}").expect("");
             }
             Type::Iter => {
-                unimplemented!()
+                f.write_str("iter<k, v>").expect("");
             }
             Type::Function => f.write_str("func")?,
             Type::Ref => {

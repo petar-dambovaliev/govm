@@ -462,6 +462,20 @@ impl Compiler {
             Expression::TypePointer(tp) => {
                 DefineType::Ref(Box::new(self.expression_to_define_type(&tp.typ)))
             }
+            Expression::TypeMap(map) => {
+                let mut k = self.expression_to_define_type(map.key.as_ref());
+                let mut v = self.expression_to_define_type(map.val.as_ref());
+
+                if k.is_type() {
+                    k = k.as_type().0;
+                }
+
+                if v.is_type() {
+                    v = v.as_type().0;
+                }
+
+                DefineType::Map(Box::new(k), Box::new(v))
+            }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
     }
@@ -808,6 +822,7 @@ impl Compiler {
         match stmt {
             Statement::For(forstmt) => {
                 self.emit_opcode(OpCode::Null);
+
                 let label = self.label_contexts.get(&(forstmt.pos, 0)).cloned();
                 self.contexts.push(Context::For(LoopContext::new(
                     self.instructions.len(),
@@ -1083,7 +1098,9 @@ impl Compiler {
             }
             Statement::Expr(expr) => {
                 self.compile_expression(&expr.expr)?;
-                self.emit_opcode(OpCode::Pop);
+                if !self.last_instruction_is(OpCode::Pop) {
+                    self.emit_opcode(OpCode::Pop);
+                }
             }
             Statement::Block(stmts) => {
                 return self.compile_block_statement(&stmts.list);
@@ -1285,7 +1302,7 @@ impl Compiler {
                 let pos_jump_if_false = self.instructions.len();
                 self.emit_opcode(OpCode::JumpIfFalse);
                 self.emit_u16(JUMP_PLACEHOLDER);
-                self.emit_opcode(OpCode::Pop);
+                //self.emit_opcode(OpCode::Pop);
 
                 self.compile_block_statement(&rng.body.list)?;
 
@@ -1840,6 +1857,7 @@ impl Compiler {
                 }
 
                 self.compile_expression(call.func.as_ref())?;
+
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
 
