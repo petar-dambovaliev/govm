@@ -64,6 +64,13 @@ pub enum DefineType {
 }
 
 impl DefineType {
+    pub fn strip_type(&self) -> DefineType {
+        if let Self::Type(v, _) = self {
+            *v.clone()
+        } else {
+            self.clone()
+        }
+    }
     pub fn strip_var(&self) -> DefineType {
         if let Self::Var(v) = self {
             *v.clone()

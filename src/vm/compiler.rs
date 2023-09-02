@@ -68,6 +68,7 @@ pub(crate) enum OpCode {
     IntoIter,
     Struct,
     CopyEnclosed,
+    EnclosedPtrWrite,
     LocalPtrWrite,
     GlobalPtrWrite,
     CopyGG,
@@ -138,7 +139,8 @@ impl OpCode {
             | OpCode::SetEnclosed
             | OpCode::CopyEnclosed
             | OpCode::LocalPtrWrite
-            | OpCode::GlobalPtrWrite => &[2],
+            | OpCode::GlobalPtrWrite
+            | OpCode::EnclosedPtrWrite => &[2],
 
             // OpCodes with no operands
             OpCode::Pop
@@ -1111,7 +1113,7 @@ impl Compiler {
                             let (symbol, setop, expect_t) = match resolved {
                                 Resolved::Enclosed((symbol, t)) => {
                                     let write_op = if is_deref {
-                                        OpCode::LocalPtrWrite
+                                        OpCode::EnclosedPtrWrite
                                     } else {
                                         OpCode::SetEnclosed
                                     };
@@ -1141,7 +1143,7 @@ impl Compiler {
 
                             if is_deref {
                                 assert!(expect_t.is_ref());
-                                let inner = expect_t.as_ref();
+                                let inner = expect_t.as_ref().strip_type();
                                 assert_eq!(inner, got_t);
                             } else {
                                 assert_eq!(expect_t, got_t);

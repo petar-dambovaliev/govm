@@ -14,12 +14,20 @@ fn main() {
     let mut parser = Parser::from(
         r#"
         package main
+        
+        func newClosre(i *int) func() {
+            return func() {
+                print("read")
+                print(i)
+                print("update")
+                *i = 100
+            }
+        }
 
         func main() {
             a := 5
-            b := &a
-            *b = 6
-            print(b)
+            c := newClosre(&a)
+            c()
             print(a)
         }
     "#,

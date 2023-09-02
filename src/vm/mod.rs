@@ -159,7 +159,22 @@ impl VM {
     fn set_local_enclosed(&mut self, rel_idx: u16, value: Object) {
         let mut obj = self.function_ctx.unwrap();
         let closure = obj.as_closure_mut();
-        closure.enclosed_objects[self.bp as usize + rel_idx as usize] = value;
+        closure.enclosed_objects[rel_idx as usize] = value;
+    }
+
+    #[inline(always)]
+    fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
+        let mut obj = self.function_ctx.unwrap();
+        let closure = obj.as_closure_mut();
+        let ptr = closure.enclosed_objects[rel_idx as usize].as_ref_mut();
+        assert_eq!(ptr.value.tag(), value.tag());
+
+        let (ptr_inner, val_inner) = match ptr.value.tag() {
+            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
+            _ => panic!("not supported ptr write"),
+        };
+
+        ptr_inner.value = val_inner;
     }
 
     #[inline(always)]
@@ -178,7 +193,14 @@ impl VM {
     #[inline(always)]
     fn global_ptr_write(&mut self, rel_idx: u16, value: Object) {
         let ptr = self.globals[rel_idx as usize].as_ref_mut();
-        ptr.value = value;
+        assert_eq!(ptr.value.tag(), value.tag());
+
+        let (ptr_inner, val_inner) = match ptr.value.tag() {
+            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
+            _ => panic!("not supported ptr write"),
+        };
+
+        ptr_inner.value = val_inner;
     }
 
     /// Reads a u16 value from the current position in the instructions array
@@ -435,6 +457,11 @@ impl VM {
                     let idx = self.read_u16();
                     let value = self.get_enclosed(idx);
                     self.push(value);
+                }
+                OpCode::EnclosedPtrWrite => {
+                    let idx = self.read_u16();
+                    let value = self.pop();
+                    self.enclosed_ptr_write(idx, value);
                 }
                 OpCode::LocalPtrWrite => {
                     let idx = self.read_u16();
