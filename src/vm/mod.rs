@@ -166,6 +166,7 @@ impl VM {
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
         let mut obj = self.function_ctx.unwrap();
         let closure = obj.as_closure_mut();
+        //println!("{:#?}", closure.enclosed_objects);
         let ptr = closure.enclosed_objects[rel_idx as usize].as_ref_mut();
         assert_eq!(ptr.value.tag(), value.tag());
 
@@ -317,15 +318,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        {
-            println!("Bytecode (raw)= \n{:?}", &code.instructions);
-            print!(
-                "Bytecode (human)= {}\n",
-                bytecode_to_human(&code.instructions, true)
-            );
-            println!("{:16}= {:?}", "Constants", code.constants);
-            println!("{:16}= {:?}", "Frames", self.frames);
-        }
+        // {
+        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
+        //     print!(
+        //         "Bytecode (human)= {}\n",
+        //         bytecode_to_human(&code.instructions, true)
+        //     );
+        //     println!("{:16}= {:?}", "Constants", code.constants);
+        //     println!("{:16}= {:?}", "Frames", self.frames);
+        // }
 
         // reset some state
         self.instructions = code.instructions;

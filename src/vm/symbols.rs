@@ -356,11 +356,13 @@ impl SymbolTable {
                         .current_context()
                         .enclosed_symbols
                         .iter()
-                        .find(|&a| a == &s.0)
-                        .cloned();
+                        .position(|a| a == &s.0);
 
                     let enclosed_symbol = if let Some(i) = ind {
-                        i
+                        Symbol {
+                            scope: Scope::Local,
+                            index: i as u16,
+                        }
                     } else {
                         self.current_context().enclosed_symbols.push(s.0.clone());
                         Symbol {

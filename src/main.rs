@@ -15,20 +15,21 @@ fn main() {
         r#"
         package main
         
-        func newClosre(i *int) func() {
+        func newClosre() func() {
+            a := 5
+            i := &a
+            
             return func() {
-                print("read")
                 print(i)
-                print("update")
                 *i = 100
+                print(i)
             }
         }
 
         func main() {
-            a := 5
-            c := newClosre(&a)
+            c := newClosre()
             c()
-            print(a)
+            
         }
     "#,
     );

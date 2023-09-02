@@ -2449,7 +2449,17 @@ impl Display for OpCode {
             IntoIter => "IntoIter",
             Struct => "Struct",
             CopyEnclosed => "CopyEnclosed",
-            PtrWrite => "PtrWrite",
+            LocalPtrWrite => "LocalPtrWrite",
+            GlobalPtrWrite => "GlobalPtrWrite",
+            EnclosedPtrWrite => "GlobalPtrWrite",
+            CopyLL => "CopyLL",
+            CopyLG => "CopyLG",
+            CopyGG => "CopyGG",
+            CopyGL => "CopyGL",
+            SwapLL => "SwapLL",
+            SwapGL => "SwapGL",
+            SwapLG => "SwapLG",
+            SwapGG => "SwapGG",
             Halt => "Halt",
         };
         f.write_str(s)
