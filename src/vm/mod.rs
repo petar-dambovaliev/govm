@@ -102,6 +102,53 @@ impl VM {
         self.stack[self.bp as usize + rel_idx as usize] = value;
     }
 
+    #[inline(always)]
+    fn copy_ll(&mut self, src_idx: u16, dst_idx: u16) {
+        self.stack[self.bp as usize + dst_idx as usize] =
+            self.stack[self.bp as usize + src_idx as usize];
+    }
+
+    #[inline(always)]
+    fn copy_gl(&mut self, src_idx: u16, dst_idx: u16) {
+        self.stack[self.bp as usize + dst_idx as usize] = self.globals[src_idx as usize];
+    }
+
+    #[inline(always)]
+    fn copy_lg(&mut self, src_idx: u16, dst_idx: u16) {
+        self.globals[src_idx as usize] = self.stack[self.bp as usize + dst_idx as usize];
+    }
+
+    #[inline(always)]
+    fn copy_gg(&mut self, src_idx: u16, dst_idx: u16) {
+        self.globals[src_idx as usize] = self.globals[dst_idx as usize];
+    }
+
+    #[inline(always)]
+    fn swap_ll(&mut self, src_idx: u16, dst_idx: u16) {
+        self.stack.swap(src_idx as usize, dst_idx as usize);
+    }
+
+    #[inline(always)]
+    fn swap_gl(&mut self, src_idx: u16, dst_idx: u16) {
+        std::mem::swap(
+            &mut self.stack[self.bp as usize + dst_idx as usize],
+            &mut self.globals[src_idx as usize],
+        );
+    }
+
+    #[inline(always)]
+    fn swap_lg(&mut self, src_idx: u16, dst_idx: u16) {
+        std::mem::swap(
+            &mut self.stack[self.bp as usize + dst_idx as usize],
+            &mut self.globals[src_idx as usize],
+        );
+    }
+
+    #[inline(always)]
+    fn swap_gg(&mut self, src_idx: u16, dst_idx: u16) {
+        self.globals.swap(src_idx as usize, dst_idx as usize);
+    }
+
     fn get_enclosed(&self, rel_idx: u16) -> Object {
         let mut obj = self.function_ctx.unwrap();
         let closure = obj.as_closure();
@@ -113,6 +160,18 @@ impl VM {
         let mut obj = self.function_ctx.unwrap();
         let closure = obj.as_closure_mut();
         closure.enclosed_objects[self.bp as usize + rel_idx as usize] = value;
+    }
+
+    #[inline(always)]
+    fn local_ptr_write(&mut self, rel_idx: u16, value: Object) {
+        let ptr = self.stack[self.bp as usize + rel_idx as usize].as_ref_mut();
+        ptr.value = value;
+    }
+
+    #[inline(always)]
+    fn global_ptr_write(&mut self, rel_idx: u16, value: Object) {
+        let ptr = self.globals[rel_idx as usize].as_ref_mut();
+        ptr.value = value;
     }
 
     /// Reads a u16 value from the current position in the instructions array
@@ -229,15 +288,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        // {
-        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
-        //     print!(
-        //         "Bytecode (human)= {}\n",
-        //         bytecode_to_human(&code.instructions, true)
-        //     );
-        //     println!("{:16}= {:?}", "Constants", code.constants);
-        //     println!("{:16}= {:?}", "Frames", self.frames);
-        // }
+        {
+            println!("Bytecode (raw)= \n{:?}", &code.instructions);
+            print!(
+                "Bytecode (human)= {}\n",
+                bytecode_to_human(&code.instructions, true)
+            );
+            println!("{:16}= {:?}", "Constants", code.constants);
+            println!("{:16}= {:?}", "Frames", self.frames);
+        }
 
         // reset some state
         self.instructions = code.instructions;
@@ -369,6 +428,67 @@ impl VM {
                     let idx = self.read_u16();
                     let value = self.get_enclosed(idx);
                     self.push(value);
+                }
+                OpCode::LocalPtrWrite => {
+                    let idx = self.read_u16();
+                    let value = self.pop();
+                    self.local_ptr_write(idx, value);
+                }
+                OpCode::GlobalPtrWrite => {
+                    let idx = self.read_u16();
+                    let value = self.pop();
+                    while self.globals.len() <= idx as usize {
+                        self.globals.push(Object::null());
+                    }
+                    self.global_ptr_write(idx, value);
+                }
+                OpCode::CopyGG => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.copy_gg(src, dst);
+                }
+                OpCode::CopyLG => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.copy_lg(src, dst);
+                }
+                OpCode::CopyGL => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.copy_gl(src, dst);
+                }
+                OpCode::CopyLL => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.copy_ll(src, dst);
+                }
+                OpCode::SwapGG => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.swap_gg(src, dst);
+                }
+                OpCode::SwapLG => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.swap_lg(src, dst);
+                }
+                OpCode::SwapGL => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.swap_gl(src, dst);
+                }
+                OpCode::SwapLL => {
+                    let src = self.read_u16();
+                    let dst = self.read_u16();
+
+                    self.swap_ll(src, dst);
                 }
                 OpCode::Range => {
                     let key_idx = self.read_u16();

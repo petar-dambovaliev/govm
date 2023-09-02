@@ -15,66 +15,15 @@ fn main() {
         r#"
         package main
 
-func new_map() map[string]int {
-	return map[string]int{"a":1, "b":2}
-}
-
-func main() {
-
-    m := new_map()
-    
-   for i:=0;i<2;i++ {
-        m := new_map()
-        print(m)
-        for k, v := range m {
-            print(k)
-            print(v)
-        }   
-   }
-}
+        func main() {
+            a := 5
+            b := &a
+            print(b)
+            print(a)
+            *b = 6
+        }
     "#,
     );
-
-    // func newClosure() func() {
-    //     a := false
-    //    return func() {
-    //         switch a {
-    //         case true:
-    //             print(true)
-    //         case false:
-    //             print(false)
-    //         }
-    //    }
-    // }
-
-    // func foo(f func()) {
-    //     f()
-    // }
-
-    // print("closure: switch")
-    // switch b:=a; b {
-    // case true:
-    //     print(5)
-    // case false:
-    //     print(5)
-    // }
-
-    // func main() {
-    //     a := 1
-    //     switch b:=a; a {
-    //     // case 4:
-    //     //     print(4)
-    //     case 1:
-    //         print(1)
-    //     case 1:
-    //         print("default")
-    //     }
-    // }
-
-    // let opts = Opts {
-    //     gogc: 100.0,
-    //     min_gc: 1024 * 1024,
-    // };
 
     let f = parser.parse_file().unwrap();
     //panic!("{:#?}", f);

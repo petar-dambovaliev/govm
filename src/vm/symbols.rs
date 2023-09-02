@@ -64,6 +64,13 @@ pub enum DefineType {
 }
 
 impl DefineType {
+    pub fn strip_var(&self) -> DefineType {
+        if let Self::Var(v) = self {
+            *v.clone()
+        } else {
+            self.clone()
+        }
+    }
     pub fn strip_ret(&self) -> DefineType {
         match &self {
             DefineType::Type(r, _) => r.clone().strip_ret(),
@@ -119,6 +126,13 @@ impl DefineType {
         }
     }
 
+    pub fn is_ref(&self) -> bool {
+        match &self {
+            Self::Ref(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_type(&self) -> bool {
         match &self {
             Self::Type(_, _) => true,
@@ -150,6 +164,13 @@ impl DefineType {
     pub fn as_var(&self) -> DefineType {
         match &self {
             Self::Var(t) => *t.clone(),
+            _ => panic!("expected Self::Var, got {:#?}", self),
+        }
+    }
+
+    pub fn as_ref(&self) -> DefineType {
+        match &self {
+            Self::Ref(t) => *t.clone(),
             _ => panic!("expected Self::Var, got {:#?}", self),
         }
     }

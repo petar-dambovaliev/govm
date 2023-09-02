@@ -68,6 +68,16 @@ pub(crate) enum OpCode {
     IntoIter,
     Struct,
     CopyEnclosed,
+    LocalPtrWrite,
+    GlobalPtrWrite,
+    CopyGG,
+    CopyLL,
+    CopyGL,
+    CopyLG,
+    SwapLL,
+    SwapGL,
+    SwapLG,
+    SwapGG,
     Halt,
 }
 
@@ -104,7 +114,15 @@ impl OpCode {
             | OpCode::MultiplyLocalConst
             | OpCode::DivideLocalConst
             | OpCode::ModuloLocalConst
-            | OpCode::Range => &[2, 2],
+            | OpCode::Range
+            | OpCode::CopyLL
+            | OpCode::CopyGL
+            | OpCode::CopyLG
+            | OpCode::CopyGG
+            | OpCode::SwapLL
+            | OpCode::SwapLG
+            | OpCode::SwapGG
+            | OpCode::SwapGL => &[2, 2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
@@ -118,7 +136,9 @@ impl OpCode {
             | OpCode::GetLocal
             | OpCode::GetEnclosed
             | OpCode::SetEnclosed
-            | OpCode::CopyEnclosed => &[2],
+            | OpCode::CopyEnclosed
+            | OpCode::LocalPtrWrite
+            | OpCode::GlobalPtrWrite => &[2],
 
             // OpCodes with no operands
             OpCode::Pop
@@ -1052,16 +1072,24 @@ impl Compiler {
                             self.emit_opcode(op);
                             self.emit_u16(symbol.index);
                         }
-                        //Operator::Define
                         Operator::Assign => 'assign: {
-                            let name = match &left {
-                                Expression::Ident(name) => name.name.as_str(),
+                            let (name, is_deref) = match &left {
+                                Expression::Ident(name) => (name.name.to_string(), false),
                                 Expression::Index(ind) => {
                                     self.compile_expression(ind.left.as_ref())?;
                                     self.compile_expression(ind.index.as_ref())?;
                                     self.compile_expression(right)?;
                                     self.emit_opcode(OpCode::IndexSet);
                                     return Ok(None);
+                                }
+                                Expression::Operation(op) => {
+                                    //deref
+                                    if op.y.is_none() && op.op == Operator::Star {
+                                        let ident = op.x.as_ident().unwrap();
+                                        (ident.name.to_string(), true)
+                                    } else {
+                                        panic!("cannot assign a value to expressions of type");
+                                    }
                                 }
                                 _ => {
                                     return Err(Error::TypeError(format!(
@@ -1071,23 +1099,54 @@ impl Compiler {
                                 }
                             };
 
+                            //todo pop expression if its not assigned to anything
                             if name == "_" {
                                 break 'assign;
                             }
 
-                            let resolved = self.symbols.resolve(name).ok_or(
+                            let resolved = self.symbols.resolve(&name).ok_or(
                                 Error::ReferenceError(format!("assign: `{name}` is not defined")),
                             )?;
 
-                            let (symbol, setop) = match resolved {
-                                Resolved::Enclosed((symbol, _)) => (symbol, OpCode::SetEnclosed),
-                                Resolved::Local((symbol, _)) => match symbol.scope {
-                                    Scope::Local => (symbol, OpCode::SetLocal),
-                                    Scope::Global => (symbol, OpCode::SetGlobal),
+                            let (symbol, setop, expect_t) = match resolved {
+                                Resolved::Enclosed((symbol, t)) => {
+                                    let write_op = if is_deref {
+                                        OpCode::LocalPtrWrite
+                                    } else {
+                                        OpCode::SetEnclosed
+                                    };
+                                    (symbol, write_op, t.strip_var())
+                                }
+                                Resolved::Local((symbol, t)) => match symbol.scope {
+                                    Scope::Local => {
+                                        let write_op = if is_deref {
+                                            OpCode::LocalPtrWrite
+                                        } else {
+                                            OpCode::SetLocal
+                                        };
+                                        (symbol, write_op, t.strip_var())
+                                    }
+                                    Scope::Global => {
+                                        let write_op = if is_deref {
+                                            OpCode::GlobalPtrWrite
+                                        } else {
+                                            OpCode::SetGlobal
+                                        };
+                                        (symbol, write_op, t.strip_var())
+                                    }
                                 },
                             };
 
-                            self.compile_expression(right)?;
+                            let got_t = self.compile_expression(right)?;
+
+                            if is_deref {
+                                assert!(expect_t.is_ref());
+                                let inner = expect_t.as_ref();
+                                assert_eq!(inner, got_t);
+                            } else {
+                                assert_eq!(expect_t, got_t);
+                            }
+
                             self.emit_opcode(setop);
                             self.emit_u16(symbol.index);
                         }
@@ -1766,11 +1825,9 @@ impl Compiler {
                             }
                             //reference expression
                             None => {
-                                let _ = self.compile_expression(&op.x)?;
+                                let t = self.compile_expression(&op.x)?;
                                 self.emit_opcode(OpCode::Ref);
-                                // if t != Type::Array {
-                                //     panic!("not implemented: {:#?}", op.x);
-                                // }
+                                return Ok(DefineType::Ref(Box::new(t.strip_var())));
                             }
                         }
                     }
@@ -2390,6 +2447,7 @@ impl Display for OpCode {
             IntoIter => "IntoIter",
             Struct => "Struct",
             CopyEnclosed => "CopyEnclosed",
+            PtrWrite => "PtrWrite",
             Halt => "Halt",
         };
         f.write_str(s)

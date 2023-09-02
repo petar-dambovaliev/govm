@@ -43,11 +43,11 @@ const MIN_INT: isize = isize::MIN >> VALUE_SHIFT_BITS;
 pub enum Type {
     // The types below are all stored directly inside the pointer
     Null = 0b0000,
-    Int,
     Bool,
     Function,
 
     // The types below are all heap-allocated
+    Int,
     Float,
     String,
     Rune,
@@ -115,9 +115,7 @@ impl Object {
     /// Create a new integer value
     #[inline(always)]
     pub fn int(value: isize) -> Self {
-        // assert there is no data loss because of the shift
-        debug_assert_eq!(((value << VALUE_SHIFT_BITS) >> VALUE_SHIFT_BITS), value);
-        Self::with_type((value << VALUE_SHIFT_BITS) as _, Type::Int)
+        Int::from_isize(value)
     }
 
     /// Create a new function value
@@ -151,7 +149,8 @@ impl Object {
     /// Note that is up to the caller to ensure this pointer is of the correct type
     #[inline(always)]
     pub fn as_int(self) -> isize {
-        self.0 as isize >> VALUE_SHIFT_BITS
+        assert_eq!(Type::Int, self.tag());
+        unsafe { Int::read(&self) }
     }
 
     /// Returns the function value of this object
@@ -182,6 +181,12 @@ impl Object {
     pub fn as_ref(&self) -> &Ref {
         assert_eq!(self.tag(), Type::Ref);
         unsafe { self.get::<Ref>() }
+    }
+
+    #[inline]
+    pub fn as_ref_mut(&self) -> &mut Ref {
+        assert_eq!(self.tag(), Type::Ref);
+        unsafe { self.get_mut::<Ref>() }
     }
 
     /// Returns the f64 value of this object pointer
@@ -604,6 +609,33 @@ impl Ref {
 }
 
 #[repr(C)]
+struct Int {
+    header: Header,
+    value: isize,
+}
+
+impl Int {
+    #[inline]
+    unsafe fn read(obj: &Object) -> isize {
+        obj.get::<Self>().value
+    }
+
+    #[inline]
+    unsafe fn destroy(obj: Object) {
+        drop_in_place(obj.as_ptr() as *mut Self);
+        dealloc(obj.as_ptr(), Layout::new::<Self>());
+    }
+
+    fn from_isize(value: isize) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value );
+        ptr
+    }
+}
+
+#[repr(C)]
 struct Float {
     header: Header,
     value: f64,
@@ -993,6 +1025,14 @@ mod tests {
         let left = Object::string("foo", &mut gc);
         let right = Object::string("foo", &mut gc);
         assert_eq!(left.cmp(&right), Ordering::Equal)
+    }
+    #[test]
+    fn test_ref() {
+        let mut gc = GC::new();
+        let left = Object::ref_t(Object::int(5), &mut gc);
+        let right = left;
+        right.as_ref_mut().value = Object::int(6);
+        println!("{:#?}--{:#?}", left, right);
     }
     // TODO: Test PartialEq & PartialOrd implementations
 }
