@@ -148,9 +148,21 @@ impl Object {
     /// Returns the integer value of this object pointer
     /// Note that is up to the caller to ensure this pointer is of the correct type
     #[inline(always)]
-    pub fn as_int(self) -> isize {
+    pub fn as_int(&self) -> &Int {
         assert_eq!(Type::Int, self.tag());
-        unsafe { Int::read(&self) }
+        unsafe { Int::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_int_mut(&self) -> &mut Int {
+        assert_eq!(Type::Int, self.tag());
+        unsafe { Int::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_isize(&self) -> isize {
+        assert_eq!(Type::Int, self.tag());
+        unsafe { Int::read_val(&self) }
     }
 
     /// Returns the function value of this object
@@ -487,7 +499,7 @@ macro_rules! impl_arith {
             }
 
             let result = match self.tag() {
-                Type::Int => Object::int(self.as_int() $op rhs.as_int()),
+                Type::Int => Object::int(self.as_isize() $op rhs.as_isize()),
 
                 // Safety: We've already asserted the object type
                 Type::Float => unsafe {
@@ -603,20 +615,31 @@ impl Ref {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Ref);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
+        //obj.value = value;
         init!(obj.value => value );
         ptr
     }
 }
 
 #[repr(C)]
-struct Int {
+pub struct Int {
     header: Header,
-    value: isize,
+    pub(crate) value: isize,
 }
 
 impl Int {
     #[inline]
-    unsafe fn read(obj: &Object) -> isize {
+    unsafe fn read(obj: &Object) -> &Self {
+        obj.get::<Self>()
+    }
+
+    #[inline]
+    unsafe fn read_mut(obj: &Object) -> &mut Self {
+        obj.get_mut::<Self>()
+    }
+
+    #[inline]
+    unsafe fn read_val(obj: &Object) -> isize {
         obj.get::<Self>().value
     }
 
@@ -735,7 +758,7 @@ impl Display for Object {
             Type::Null => f.write_str("nil")?,
             Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
             Type::Float => unsafe { f.write_str(&self.as_f64_unchecked().to_string())? },
-            Type::Int => f.write_str(&self.as_int().to_string())?,
+            Type::Int => f.write_str(&self.as_isize().to_string())?,
             Type::String => unsafe { f.write_str(self.as_str_unchecked())? },
             Type::Array => {
                 let values = unsafe { self.as_vec_unchecked() };
@@ -782,7 +805,12 @@ impl Display for Object {
             Type::Function => f.write_str("func")?,
             Type::Ref => {
                 f.write_char('&')?;
+                let hex = format!("{:p}", self.0);
+                f.write_str("{addr:")?;
+                std::fmt::Display::fmt(&hex, f)?;
+                f.write_str(", value: ")?;
                 std::fmt::Display::fmt(&self.as_ref().value, f)?;
+                f.write_str("}")?;
             }
         }
         Ok(())
@@ -950,29 +978,29 @@ mod tests {
     fn test_object_int() {
         let obj = Object::int(1);
         assert_eq!(obj.tag(), Type::Int);
-        assert_eq!(obj.as_int(), 1);
+        assert_eq!(obj.as_isize(), 1);
 
         let obj = Object::int(-1);
         assert_eq!(obj.tag(), Type::Int);
-        assert_eq!(obj.as_int(), -1);
+        assert_eq!(obj.as_isize(), -1);
 
         let obj = Object::int(MAX_INT);
         assert_eq!(obj.tag(), Type::Int);
-        assert_eq!(obj.as_int(), MAX_INT);
+        assert_eq!(obj.as_isize(), MAX_INT);
 
         let obj = Object::int(MIN_INT);
         assert_eq!(obj.tag(), Type::Int);
-        assert_eq!(obj.as_int(), MIN_INT);
+        assert_eq!(obj.as_isize(), MIN_INT);
     }
 
     #[test]
     #[should_panic]
     fn test_object_int_overflow() {
         assert_eq!(Object::int(MAX_INT + 1).tag(), Type::Int);
-        assert_eq!(Object::int(MAX_INT + 1).as_int(), MAX_INT + 1);
+        assert_eq!(Object::int(MAX_INT + 1).as_isize(), MAX_INT + 1);
 
         assert_eq!(Object::int(MIN_INT - 1).tag(), Type::Int);
-        assert_eq!(Object::int(MIN_INT - 1).as_int(), MIN_INT - 1);
+        assert_eq!(Object::int(MIN_INT - 1).as_isize(), MIN_INT - 1);
     }
 
     #[test]

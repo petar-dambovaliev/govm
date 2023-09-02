@@ -18,9 +18,9 @@ fn main() {
         func main() {
             a := 5
             b := &a
+            *b = 6
             print(b)
             print(a)
-            *b = 6
         }
     "#,
     );

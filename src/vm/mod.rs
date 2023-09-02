@@ -165,7 +165,14 @@ impl VM {
     #[inline(always)]
     fn local_ptr_write(&mut self, rel_idx: u16, value: Object) {
         let ptr = self.stack[self.bp as usize + rel_idx as usize].as_ref_mut();
-        ptr.value = value;
+        assert_eq!(ptr.value.tag(), value.tag());
+
+        let (ptr_inner, val_inner) = match ptr.value.tag() {
+            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
+            _ => panic!("not supported ptr write"),
+        };
+
+        ptr_inner.value = val_inner;
     }
 
     #[inline(always)]
@@ -569,7 +576,7 @@ impl VM {
                     let left = self.pop();
                     let result = match left.tag() {
                         Type::Float => unsafe { Object::float(-left.as_f64_unchecked(), gc) },
-                        Type::Int => Object::int(-left.as_int()),
+                        Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(
                                 "expected float or int, got: {:#?}",
@@ -762,7 +769,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                     index.tag()
                 )));
             }
-            index_get_array(let_obj, index.as_int())
+            index_get_array(let_obj, index.as_isize())
         }
         Type::String => {
             if index.tag() != Type::Int {
@@ -772,7 +779,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                 )));
             }
 
-            index_get_string(let_obj, index.as_int(), gc)
+            index_get_string(let_obj, index.as_isize(), gc)
         }
         Type::Map => index_get_map(let_obj, index, gc),
         Type::Struct => index_get_struct(let_obj, index, gc),
@@ -789,7 +796,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
 
 fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
     let strct = obj.as_struct();
-    let i = key.as_int();
+    let i = key.as_isize();
 
     if i < 0 {
         panic!("impossible");
@@ -853,8 +860,8 @@ fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, E
         )));
     }
     match left.tag() {
-        Type::Array => index_set_array(left.as_vec_mut(), index.as_int(), value)?,
-        Type::String => index_set_string(left.as_string_mut(), index.as_int(), value)?,
+        Type::Array => index_set_array(left.as_vec_mut(), index.as_isize(), value)?,
+        Type::String => index_set_string(left.as_string_mut(), index.as_isize(), value)?,
         _ => {
             return Err(Error::TypeError(format!(
                 "index_set: invalid type {}",
