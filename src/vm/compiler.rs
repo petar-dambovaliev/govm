@@ -508,6 +508,7 @@ impl Compiler {
     }
 
     fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
+        //println!("{:#?}", decl);
         match decl {
             Declaration::Variable(v) => {
                 for spec in &v.specs {

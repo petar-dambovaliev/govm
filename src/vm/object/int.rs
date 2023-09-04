@@ -115,7 +115,8 @@ impl Int {
     }
 
     pub(crate) fn from_isize(value: isize) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let raw = allocate(Layout::new::<Self>());
+        let ptr = Object::with_type(raw, Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         init!(obj.value => value );
