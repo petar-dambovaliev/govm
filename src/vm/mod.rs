@@ -42,7 +42,8 @@ pub struct VM {
     instructions: Vec<u8>,
     ip: usize,
     bp: u16,
-    function_ctx: Option<Object>,
+    closure_ctx: Vec<Object>,
+    escaped: Vec<Object>,
 }
 
 impl VM {
@@ -83,7 +84,8 @@ impl VM {
             instructions: Vec::new(),
             ip: 0,
             bp: 0,
-            function_ctx: None,
+            closure_ctx: Vec::with_capacity(10),
+            escaped: Vec::with_capacity(128),
         }
     }
 
@@ -149,25 +151,23 @@ impl VM {
         self.globals.swap(src_idx as usize, dst_idx as usize);
     }
 
-    fn get_enclosed(&self, rel_idx: u16) -> Object {
-        let mut obj = self.function_ctx.unwrap();
-        let closure = obj.as_closure();
-
-        closure.enclosed_objects[rel_idx as usize]
+    // fn get_propagate(&mut self, rel_idx: u16) -> Object {
+    //     let obj = self.closure_ctx.last_mut().unwrap();
+    //     let closure = obj.as_closure();
+    //
+    //     closure.propagate_objects[rel_idx as usize]
+    // }
+    fn get_enclosed(&mut self, rel_idx: u16) -> Object {
+        self.escaped[rel_idx as usize]
     }
     #[inline(always)]
     fn set_local_enclosed(&mut self, rel_idx: u16, value: Object) {
-        let mut obj = self.function_ctx.unwrap();
-        let closure = obj.as_closure_mut();
-        closure.enclosed_objects[rel_idx as usize] = value;
+        self.escaped[rel_idx as usize] = value;
     }
 
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let mut obj = self.function_ctx.unwrap();
-        let closure = obj.as_closure_mut();
-        //println!("{:#?}", closure.enclosed_objects);
-        let ptr = closure.enclosed_objects[rel_idx as usize].as_ref_mut();
+        let ptr = self.escaped[rel_idx as usize].as_ref_mut();
         assert_eq!(ptr.value.tag(), value.tag());
 
         let (ptr_inner, val_inner) = match ptr.value.tag() {
@@ -318,15 +318,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        // {
-        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
-        //     print!(
-        //         "Bytecode (human)= {}\n",
-        //         bytecode_to_human(&code.instructions, true)
-        //     );
-        //     println!("{:16}= {:?}", "Constants", code.constants);
-        //     println!("{:16}= {:?}", "Frames", self.frames);
-        // }
+        {
+            println!("Bytecode (raw)= \n{:?}", &code.instructions);
+            print!(
+                "Bytecode (human)= {}\n",
+                bytecode_to_human(&code.instructions, true)
+            );
+            println!("{:16}= {:?}", "Constants", code.constants);
+            println!("{:16}= {:?}", "Frames", self.frames);
+        }
 
         // reset some state
         self.instructions = code.instructions;
@@ -418,6 +418,11 @@ impl VM {
                     //println!("const: {:#?}", value);
                     self.push(value);
                 }
+                OpCode::Escape => {
+                    let idx = self.read_u16();
+                    let value = self.get_local(idx);
+                    self.escaped.push(value);
+                }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
                     //println!("SetGlobal-before: {:#?}", self.stack);
@@ -445,6 +450,7 @@ impl VM {
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
                     //println!("GetLocal-before: {:#?}", self.stack);
+                    //println!("{}", idx);
                     let value = self.get_local(idx);
                     self.push(value);
                     //println!("GetLocal-after: {:#?}", self.stack);
@@ -626,13 +632,9 @@ impl VM {
                             (ip, num_locals)
                         }
                         Type::Closure => {
-                            self.function_ctx = Some(obj);
+                            self.closure_ctx.push(obj);
                             let closure = obj.as_closure();
-                            (
-                                closure.ip,
-                                (closure.num_locals as usize + closure.enclosed_objects.len())
-                                    as u32,
-                            )
+                            (closure.ip, closure.num_locals as u32)
                         }
                         _ => {
                             //panic!("ins: {:#?} - {:#?}", self.peek_next(), self.stack);
@@ -685,10 +687,13 @@ impl VM {
                     for re in res {
                         self.push(re);
                     }
+
+                    self.closure_ctx.pop();
                 }
                 OpCode::Return => {
                     self.popframe();
                     self.push(Object::null());
+                    self.closure_ctx.pop();
                 }
                 OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
                 OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
@@ -762,21 +767,6 @@ impl VM {
                 OpCode::Halt => {
                     gc.untrace(final_result);
                     return Ok(final_result);
-                }
-                OpCode::CopyEnclosed => {
-                    let length = self.read_u16();
-
-                    let mut enclosed = Vec::with_capacity(length as usize);
-
-                    for _ in 0..length {
-                        enclosed.push(self.pop());
-                    }
-
-                    let mut obj = self.pop();
-                    let closure = obj.as_closure_mut();
-                    closure.enclosed_objects = enclosed;
-
-                    self.push(obj);
                 }
             }
         }

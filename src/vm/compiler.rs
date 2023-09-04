@@ -67,7 +67,6 @@ pub(crate) enum OpCode {
     Range,
     IntoIter,
     Struct,
-    CopyEnclosed,
     EnclosedPtrWrite,
     LocalPtrWrite,
     GlobalPtrWrite,
@@ -79,6 +78,7 @@ pub(crate) enum OpCode {
     SwapGL,
     SwapLG,
     SwapGG,
+    Escape,
     Halt,
 }
 
@@ -137,10 +137,10 @@ impl OpCode {
             | OpCode::GetLocal
             | OpCode::GetEnclosed
             | OpCode::SetEnclosed
-            | OpCode::CopyEnclosed
             | OpCode::LocalPtrWrite
             | OpCode::GlobalPtrWrite
-            | OpCode::EnclosedPtrWrite => &[2],
+            | OpCode::EnclosedPtrWrite
+            | OpCode::Escape => &[2],
 
             // OpCodes with no operands
             OpCode::Pop
@@ -1018,18 +1018,24 @@ impl Compiler {
                                         format!("assign: `{name}` is not defined"),
                                     ))?;
 
-                                let (symbol, setop) = match resolved {
-                                    Resolved::Enclosed((symbol, _)) => {
-                                        (symbol, OpCode::SetEnclosed)
+                                let (index, setop) = match resolved {
+                                    Resolved::Enclosed {
+                                        addr,
+                                        level,
+                                        heap_addr,
+                                        ..
+                                    } => {
+                                        self.symbols.add_escaped(addr, level);
+                                        (heap_addr, OpCode::SetEnclosed)
                                     }
                                     Resolved::Local((symbol, _)) => match symbol.scope {
-                                        Scope::Local => (symbol, OpCode::SetLocal),
-                                        Scope::Global => (symbol, OpCode::SetGlobal),
+                                        Scope::Local => (symbol.index, OpCode::SetLocal),
+                                        Scope::Global => (symbol.index, OpCode::SetGlobal),
                                     },
                                 };
 
                                 self.emit_opcode(setop);
-                                self.emit_u16(symbol.index);
+                                self.emit_u16(index);
                             }
                             _ => unimplemented!(),
                         }
@@ -1110,14 +1116,14 @@ impl Compiler {
                                 Error::ReferenceError(format!("assign: `{name}` is not defined")),
                             )?;
 
-                            let (symbol, setop, expect_t) = match resolved {
-                                Resolved::Enclosed((symbol, t)) => {
+                            let (index, setop, expect_t) = match resolved {
+                                Resolved::Enclosed { heap_addr, t, .. } => {
                                     let write_op = if is_deref {
                                         OpCode::EnclosedPtrWrite
                                     } else {
                                         OpCode::SetEnclosed
                                     };
-                                    (symbol, write_op, t.strip_var())
+                                    (heap_addr, write_op, t.strip_var())
                                 }
                                 Resolved::Local((symbol, t)) => match symbol.scope {
                                     Scope::Local => {
@@ -1126,7 +1132,7 @@ impl Compiler {
                                         } else {
                                             OpCode::SetLocal
                                         };
-                                        (symbol, write_op, t.strip_var())
+                                        (symbol.index, write_op, t.strip_var())
                                     }
                                     Scope::Global => {
                                         let write_op = if is_deref {
@@ -1134,7 +1140,7 @@ impl Compiler {
                                         } else {
                                             OpCode::SetGlobal
                                         };
-                                        (symbol, write_op, t.strip_var())
+                                        (symbol.index, write_op, t.strip_var())
                                     }
                                 },
                             };
@@ -1150,7 +1156,7 @@ impl Compiler {
                             }
 
                             self.emit_opcode(setop);
-                            self.emit_u16(symbol.index);
+                            self.emit_u16(index);
                         }
                         _ => unimplemented!(),
                     }
@@ -1882,16 +1888,24 @@ impl Compiler {
                         lit.value
                     )))?;
 
-                let (symbol, getop) = match resolved {
-                    Resolved::Enclosed((symbol, _)) => (symbol, OpCode::GetEnclosed),
+                let (index, getop) = match resolved {
+                    Resolved::Enclosed {
+                        addr,
+                        level,
+                        heap_addr,
+                        ..
+                    } => {
+                        self.symbols.add_escaped(addr, level);
+                        (heap_addr, OpCode::GetEnclosed)
+                    }
                     Resolved::Local((symbol, _)) => match symbol.scope {
-                        Scope::Local => (symbol, OpCode::GetLocal),
-                        Scope::Global => (symbol, OpCode::GetGlobal),
+                        Scope::Local => (symbol.index, OpCode::GetLocal),
+                        Scope::Global => (symbol.index, OpCode::GetGlobal),
                     },
                 };
 
                 self.emit_opcode(getop);
-                self.emit_u16(symbol.index);
+                self.emit_u16(index);
             }
 
             Expression::Call(call) => 'compile_call: {
@@ -2175,12 +2189,18 @@ impl Compiler {
 
                         return Ok(dt);
                     }
-                    Some(Resolved::Enclosed((symbol, dt))) => {
+                    Some(Resolved::Enclosed {
+                        addr,
+                        level,
+                        heap_addr,
+                        t,
+                    }) => {
+                        self.symbols.add_escaped(addr, level);
                         // enclosed symbols cannot be global
                         self.emit_opcode(OpCode::GetEnclosed);
-                        self.emit_u16(symbol.index);
+                        self.emit_u16(heap_addr);
 
-                        return Ok(dt);
+                        return Ok(t);
                     }
                     None => {
                         return Err(Error::ReferenceError(format!(
@@ -2338,26 +2358,21 @@ impl Compiler {
 
                 // Switch back to previous scope again
                 let ctx = self.symbols.leave_context();
+
                 let num_locals = ctx.max_size();
+                for addr in self.symbols.contexts.last().unwrap().escaped.clone() {
+                    self.emit_opcode(OpCode::Escape);
+                    self.emit_u16(addr);
+                }
 
                 // Create function object and store as constant
                 let obj = Closure::object(
                     pos_start_function.try_into().unwrap(),
                     num_locals.try_into().unwrap(),
-                    vec![],
                 );
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
-
-                for enclosed_symbol in &ctx.enclosed_symbols {
-                    //enclosed symbols can only be local
-                    self.emit_opcode(OpCode::GetLocal);
-                    self.emit_u16(enclosed_symbol.index);
-                }
-
-                self.emit_opcode(OpCode::CopyEnclosed);
-                self.emit_u16(ctx.enclosed_symbols.len() as u16);
 
                 return Ok(DefineType::Func(
                     "".to_string(),

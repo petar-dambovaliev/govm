@@ -580,7 +580,6 @@ pub struct Closure {
     header: Header,
     pub ip: u32,
     pub num_locals: u16,
-    pub enclosed_objects: Vec<Object>,
 }
 
 impl Closure {
@@ -592,14 +591,13 @@ impl Closure {
         ptr.get_mut::<Self>()
     }
 
-    pub fn object(ip: u32, num_locals: u16, enclosed_objects: Vec<Object>) -> Object {
+    pub fn object(ip: u32, num_locals: u16) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Closure);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         obj.ip = ip;
         obj.num_locals = num_locals;
 
-        init!(obj.enclosed_objects => enclosed_objects);
         ptr
     }
 }
