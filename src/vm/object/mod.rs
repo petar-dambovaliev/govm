@@ -1,13 +1,28 @@
+mod collections;
+mod float;
+mod function;
+mod int;
+mod r#ref;
+mod rune;
+mod string;
+mod structure;
+
 use crate::vm::gc::GC;
+use crate::vm::object::collections::{Array, Map, ObjIter};
+use crate::vm::object::float::{Float, Float32, Float64};
+use crate::vm::object::function::Closure;
+use crate::vm::object::int::{
+    Byte, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64, Uint8,
+};
+use crate::vm::object::r#ref::Ref;
+use crate::vm::object::structure::Struct;
 use crate::vm::Error;
-use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::alloc::{alloc, handle_alloc_error, Layout};
 use std::cmp::Ordering;
-use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
-use std::io::Write as IoWrite;
-use std::ptr::drop_in_place;
 use std::string::String as RString;
+use string::String;
 
 /// A macro for initialising a struct field (without dropping the original default value)
 macro_rules! init {
@@ -19,21 +34,21 @@ macro_rules! init {
 }
 
 /// The mask to apply to get just the type (tag) from a value object
-const TAG_MASK: usize = 0b1111;
+const TAG_MASK: usize = 0b111111;
 
 /// The mask to apply to get just the pointer address from a pointer object
 const PTR_MASK: usize = !TAG_MASK;
 
 /// The amount of bits to shift-left the actual value in value objects (last 4 bits store the type tag)
-const VALUE_SHIFT_BITS: usize = 4;
+const VALUE_SHIFT_BITS: usize = 6;
 
 #[allow(unused)]
 /// The max integer value we can store in a value object
-const MAX_INT: isize = isize::MAX >> VALUE_SHIFT_BITS;
+const MAX_INT: isize = isize::MAX;
 
 #[allow(unused)]
 /// The minimum integer value we can store in a value object
-const MIN_INT: isize = isize::MIN >> VALUE_SHIFT_BITS;
+const MIN_INT: isize = isize::MIN;
 
 // ARM uses 49 bits and x86-64 uses 48 bits
 // we have at least 15 bits to work with
@@ -48,7 +63,19 @@ pub enum Type {
 
     // The types below are all heap-allocated
     Int,
+    Byte,
+    I8,
+    I16,
+    I32,
+    I64,
+    UI,
+    UI8,
+    UI16,
+    UI32,
+    UI64,
     Float,
+    Float32,
+    Float64,
     String,
     Rune,
     Array,
@@ -118,6 +145,51 @@ impl Object {
         Int::from_isize(value)
     }
 
+    #[inline(always)]
+    pub fn int8(value: i8) -> Self {
+        Int8::from_i8(value)
+    }
+
+    #[inline(always)]
+    pub fn int16(value: i16) -> Self {
+        Int16::from_i16(value)
+    }
+
+    #[inline(always)]
+    pub fn int32(value: i32) -> Self {
+        Int32::from_i32(value)
+    }
+
+    #[inline(always)]
+    pub fn int64(value: i64) -> Self {
+        Int64::from_i64(value)
+    }
+
+    #[inline(always)]
+    pub fn byte(value: u8) -> Self {
+        Byte::from_u8(value)
+    }
+
+    #[inline(always)]
+    pub fn uint8(value: u8) -> Self {
+        Uint8::from_u8(value)
+    }
+
+    #[inline(always)]
+    pub fn uint16(value: u16) -> Self {
+        Uint16::from_u16(value)
+    }
+
+    #[inline(always)]
+    pub fn uint32(value: u32) -> Self {
+        Uint32::from_u32(value)
+    }
+
+    #[inline(always)]
+    pub fn uint64(value: u64) -> Self {
+        Uint64::from_u64(value)
+    }
+
     /// Create a new function value
     pub fn function(ip: u32, num_locals: u16) -> Self {
         let value = ((ip as isize) << 16) | num_locals as isize;
@@ -127,6 +199,20 @@ impl Object {
     #[inline]
     pub fn float(value: f64, gc: &mut GC) -> Self {
         let ptr = Float::from_f64(value);
+        gc.trace(ptr);
+        ptr
+    }
+
+    #[inline]
+    pub fn float32(value: f32, gc: &mut GC) -> Self {
+        let ptr = Float32::from_f32(value);
+        gc.trace(ptr);
+        ptr
+    }
+
+    #[inline]
+    pub fn float64(value: f64, gc: &mut GC) -> Self {
+        let ptr = Float64::from_f64(value);
         gc.trace(ptr);
         ptr
     }
@@ -151,6 +237,66 @@ impl Object {
     pub fn as_int(&self) -> &Int {
         assert_eq!(Type::Int, self.tag());
         unsafe { Int::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_int8(&self) -> &Int8 {
+        assert_eq!(Type::I8, self.tag());
+        unsafe { Int8::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_int16(&self) -> &Int16 {
+        assert_eq!(Type::I16, self.tag());
+        unsafe { Int16::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_int32(&self) -> &Int32 {
+        assert_eq!(Type::I32, self.tag());
+        unsafe { Int32::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_int64(&self) -> &Int64 {
+        assert_eq!(Type::I64, self.tag());
+        unsafe { Int64::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_byte(&self) -> &Byte {
+        assert_eq!(Type::Byte, self.tag());
+        unsafe { Byte::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_uint(&self) -> &Uint {
+        assert_eq!(Type::UI, self.tag());
+        unsafe { Uint::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_uint8(&self) -> &Uint8 {
+        assert_eq!(Type::UI8, self.tag());
+        unsafe { Uint8::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_uint16(&self) -> &Uint16 {
+        assert_eq!(Type::UI16, self.tag());
+        unsafe { Uint16::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_uint32(&self) -> &Uint32 {
+        assert_eq!(Type::UI32, self.tag());
+        unsafe { Uint32::read_mut(&self) }
+    }
+
+    #[inline(always)]
+    pub fn as_uint64(&self) -> &Uint64 {
+        assert_eq!(Type::UI64, self.tag());
+        unsafe { Uint64::read_mut(&self) }
     }
 
     #[inline(always)]
@@ -587,181 +733,6 @@ impl Header {
     }
 }
 
-#[repr(C)]
-pub struct Closure {
-    header: Header,
-    pub ip: u32,
-    pub num_locals: u16,
-}
-
-impl Closure {
-    pub unsafe fn read(ptr: &Object) -> &Self {
-        ptr.get::<Self>()
-    }
-
-    pub unsafe fn read_mut(ptr: &Object) -> &mut Self {
-        ptr.get_mut::<Self>()
-    }
-
-    pub fn object(ip: u32, num_locals: u16) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Closure);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        obj.ip = ip;
-        obj.num_locals = num_locals;
-
-        ptr
-    }
-}
-
-#[repr(C)]
-pub struct Ref {
-    header: Header,
-    pub value: Object,
-}
-
-impl Ref {
-    fn from_obj(value: Object) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Ref);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        //obj.value = value;
-        init!(obj.value => value );
-        ptr
-    }
-}
-
-#[repr(C)]
-pub struct Int {
-    header: Header,
-    pub(crate) value: isize,
-}
-
-impl Int {
-    #[inline]
-    unsafe fn read(obj: &Object) -> &Self {
-        obj.get::<Self>()
-    }
-
-    #[inline]
-    unsafe fn read_mut(obj: &Object) -> &mut Self {
-        obj.get_mut::<Self>()
-    }
-
-    #[inline]
-    unsafe fn read_val(obj: &Object) -> isize {
-        obj.get::<Self>().value
-    }
-
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
-    fn from_isize(value: isize) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => value );
-        ptr
-    }
-}
-
-#[repr(C)]
-struct Float {
-    header: Header,
-    value: f64,
-}
-
-impl Float {
-    #[inline]
-    unsafe fn read(obj: &Object) -> f64 {
-        obj.get::<Self>().value
-    }
-
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
-    fn from_f64(value: f64) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => value );
-        ptr
-    }
-}
-
-#[repr(C)]
-struct String {
-    header: Header,
-    value: RString,
-}
-
-impl String {
-    unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
-    fn from_string(value: RString) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::String);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => value);
-        ptr
-    }
-}
-
-#[repr(C)]
-pub struct Map {
-    header: Header,
-    value: BTreeMap<Object, Object>,
-}
-
-impl Map {
-    pub(crate) fn from_map(map: BTreeMap<Object, Object>, gc: &mut GC) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Map);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => map);
-        ptr
-    }
-}
-
-#[repr(C)]
-pub struct Array {
-    header: Header,
-    value: Vec<Object>,
-}
-
-impl Array {
-    unsafe fn read(ptr: &Object) -> &Vec<Object> {
-        ptr.get::<Self>().value.as_ref()
-    }
-
-    /// Drops and deallocate this NlArray struct and its value
-    unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
-    fn from_vec(vec: Vec<Object>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Array);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => vec);
-        ptr
-    }
-
-    fn from_slice(slice: &[Object]) -> Object {
-        Self::from_vec(slice.to_vec())
-    }
-}
-
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
@@ -824,84 +795,6 @@ impl Display for Object {
             }
         }
         Ok(())
-    }
-}
-
-#[repr(C)]
-pub struct Struct {
-    header: Header,
-    name: RString,
-    pub values: Vec<Object>,
-}
-
-impl Struct {
-    unsafe fn read(ptr: &Object) -> &Self {
-        ptr.get::<Self>()
-    }
-
-    unsafe fn read_mut(ptr: &Object) -> &mut Self {
-        ptr.get_mut::<Self>()
-    }
-
-    pub fn object(name: RString, values: Vec<Object>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.values => values);
-        init!(obj.name => name);
-        ptr
-    }
-}
-
-#[repr(C)]
-pub enum IterType {
-    Map(IntoIter<Object, Object>),
-    Array(std::iter::Enumerate<std::vec::IntoIter<Object>>),
-}
-
-#[repr(C)]
-pub struct ObjIter {
-    header: Header,
-    value: IterType,
-}
-
-impl ObjIter {
-    unsafe fn read(ptr: &mut Object) -> &mut ObjIter {
-        ptr.get_mut::<Self>()
-    }
-
-    pub fn next(&mut self) -> (Object, Object) {
-        match &mut self.value {
-            IterType::Map(map_iter) => map_iter.next().unwrap_or((Object::null(), Object::null())),
-            IterType::Array(iter) => iter
-                .next()
-                .map(|(a, b)| (Object::int(a as isize), b))
-                .unwrap_or((Object::null(), Object::null())),
-        }
-    }
-
-    pub fn from_obj(obj: Object) -> Object {
-        match obj.tag() {
-            Type::Map => Self::from_map(obj.as_map().clone()),
-            Type::Array => Self::from_vec(obj.as_vec().clone()),
-            _ => panic!("not an iterator: {:#?}", obj),
-        }
-    }
-
-    pub fn from_map(map: BTreeMap<Object, Object>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => IterType::Map(map.into_iter()));
-        ptr
-    }
-
-    pub fn from_vec(vec: Vec<Object>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
-        init!(obj.value => IterType::Array(vec.into_iter().enumerate()));
-        ptr
     }
 }
 

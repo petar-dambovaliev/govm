@@ -13,30 +13,98 @@ fn main() {
     // this seems to make the vm crazy &[]int{1,2,3}
     let mut parser = Parser::from(
         r#"
-        package main
+        package main 
         
-        func newClosure() func() func()  {
-            b := 5
-            a := func() func() {
-                c := &b
-               return func() {
-                    switch n:=*c; n {
-                    case 5:
-                        print(5)
-                    //fallthrough    
-                    default:
-                        print(n)    
-                    }
-               }
-            }
-            return a
+        var b bool
+        var s string
+
+        var (
+            i   int
+            i8  int8
+            i16 int16
+            i32 int32
+            i64 int64
+        )
+
+        var (
+            ui   uint
+            ui8  uint8
+            ui16 uint16
+            ui32 uint32
+            ui64 uint64
+            //up   uintptr
+        )
+
+        // var (
+        //     by byte // alias for uint8
+        //     r  rune // alias for int32. Represents a Unicode code point.
+        // )
+
+        // var (
+        //     f32 float32
+        //     f64 float64
+        // )
+
+        // var (
+        //  	c64  complex64
+        //  	c128 complex128
+        // )
+
+        func Print() {
+            println(b)
+            println(s)
+            println(i, i8, i16, i32, i64)
+            println(ui, ui8, ui16, ui32, ui64, up)
+            println(by, r)
+            println(f32, f64)
+            println(c64, c128)
+        }
+
+        func SetValues() {
+            b = true
+
+            s = "a string"
+
+            i = -42
+            i8 = -8
+            i16 = -4216
+            i32 = -4232
+            i64 = -4264
+
+            ui = 42
+            ui8 = 8
+            ui16 = 4216
+            ui32 = 4232
+            ui64 = 4264
+            up = 42
+
+            by = byte('A')
+            r = rune('A')
+
+            f32 = 42.32
+            f64 = 42.64
+
+            c64 = 42 + 64i
+            c128 = 42 + 128i
         }
 
         func main() {
-            a:= newClosure()
-            b := a()
-            b()
+            SetValues()
+            Print()
         }
+
+// package main
+// 
+// type Foo struct {}
+// 
+// func (f *Foo) blah() {
+//     print(f)
+// }
+// 
+// 
+// func main() {
+//     
+// }
     "#,
     );
 

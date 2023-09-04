@@ -509,7 +509,18 @@ impl Compiler {
         match decl {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
-                    for (name, value) in spec.name.iter().zip(spec.values.iter()) {
+                    let values = if spec.values.is_empty() {
+                        let tp = self.expression_to_define_type(spec.typ.as_ref().unwrap());
+                        let mut defaults = Vec::with_capacity(spec.name.len());
+                        for _ in 0..spec.name.len() {
+                            defaults.push(self.make_type_default_val(tp.clone()));
+                        }
+                        defaults
+                    } else {
+                        spec.values.clone()
+                    };
+
+                    for (name, value) in spec.name.iter().zip(values.iter()) {
                         let rt = self.compile_expression(value)?;
 
                         let symbol = self
@@ -527,6 +538,8 @@ impl Compiler {
                 }
             }
             Declaration::Function(f) => {
+                //panic!("{:#?}", f);
+                //f.recv
                 let pos_jump = self.instructions.len();
 
                 self.func_contexts.push(FuncContext::new(pos_jump));
@@ -2197,6 +2210,7 @@ impl Compiler {
                     return Ok(DefineType::Bool);
                 }
 
+                // panic!("{:#?}", self.symbols);
                 match self.symbols.resolve(&ident.name) {
                     Some(Resolved::Local((symbol, dt))) => {
                         let opcode = if symbol.scope == Scope::Global {
