@@ -16,10 +16,13 @@ fn main() {
         package main
         
         func newClosure() func() func()  {
+            b := 5
             a := func() func() {
-                b := 5
+                c := &b
                return func() {
-                    print(b)
+                    if *c == 5 {
+                        print(5)
+                    }
                }
             }
             return a

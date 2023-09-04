@@ -79,6 +79,7 @@ pub(crate) enum OpCode {
     SwapLG,
     SwapGG,
     Escape,
+    Deref,
     Halt,
 }
 
@@ -167,7 +168,8 @@ impl OpCode {
             | OpCode::IndexSet
             | OpCode::Halt
             | OpCode::Ref
-            | OpCode::IntoIter => &[],
+            | OpCode::IntoIter
+            | OpCode::Deref => &[],
         }
     }
 }
@@ -1742,24 +1744,10 @@ impl Compiler {
                             }
                             // *a // deref
                             None => {
-                                unimplemented!();
-                                //self.compile_expression(op.x.as_ref())?;
-
-                                // match operator {
-                                //     Operator::Negate | Operator::Subtract => {
-                                //         self.emit_opcode(OpCode::Negate);
-                                //     }
-                                //     Operator::Not => {
-                                //         self.emit_opcode(OpCode::Not);
-                                //     }
-                                //
-                                //     _ => {
-                                //         return Err(Error::TypeError(format!(
-                                //             "foutieve operator voor prefix expressie: {:?}",
-                                //             operator
-                                //         )))
-                                //     }
-                                // }
+                                //panic!("{:#?}", op);
+                                let ident = op.x.as_ident().unwrap();
+                                self.compile_expression(op.x.as_ref())?;
+                                self.emit_opcode(OpCode::Deref);
                             }
                         }
                     }

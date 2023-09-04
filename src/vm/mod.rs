@@ -418,6 +418,11 @@ impl VM {
                     //println!("const: {:#?}", value);
                     self.push(value);
                 }
+                OpCode::Deref => {
+                    let val = self.pop();
+                    let r = val.as_ref();
+                    self.push(r.value);
+                }
                 OpCode::Escape => {
                     let idx = self.read_u16();
                     let value = self.get_local(idx);

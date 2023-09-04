@@ -433,10 +433,22 @@ impl PartialEq for Object {
                 }
             }
         }
+        //panic!("{:#?}=={:#?}", self.tag(), other.tag());
         // TODO: Maybe delay type check (on other object) to here
         //  (and then only for heap-allocated objects)
         match self.tag() {
-            Type::Null | Type::Bool | Type::Int | Type::Function => self.0 == other.0,
+            Type::Null => true,
+            Type::Function => self.0 == other.0,
+            Type::Bool => {
+                let l = self.as_bool();
+                let r = self.as_bool();
+                l == r
+            }
+            Type::Int => {
+                let l = self.as_isize();
+                let r = self.as_isize();
+                l == r
+            }
             Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
