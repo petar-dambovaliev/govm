@@ -6,7 +6,9 @@ use crate::parser::ast::{
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::gc::GC;
-use crate::vm::object::{Closure, FromString, Struct, Type};
+use crate::vm::object::function::Closure;
+use crate::vm::object::structure::Struct;
+use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
 use ahash::AHashMap;

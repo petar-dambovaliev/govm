@@ -1,8 +1,8 @@
-mod builtin;
+pub mod builtin;
 pub mod compiler;
-mod gc;
+pub mod gc;
 pub mod object;
-mod symbols;
+pub mod symbols;
 
 use std::collections::BTreeMap;
 //use std::default::Default;
@@ -16,7 +16,9 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::{FromString, FromVec, Map, ObjIter, Object, Struct, Type};
+use crate::vm::object::collections::{Map, ObjIter};
+use crate::vm::object::structure::Struct;
+use crate::vm::object::{FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
@@ -614,7 +616,7 @@ impl VM {
                 OpCode::Negate => {
                     let left = self.pop();
                     let result = match left.tag() {
-                        Type::Float => unsafe { Object::float(-left.as_f64_unchecked(), gc) },
+                        Type::Float => unsafe { Object::float(-left.as_float(), gc) },
                         Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(

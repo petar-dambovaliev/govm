@@ -12,7 +12,7 @@ macro_rules! init {
 #[repr(C)]
 pub struct Struct {
     header: Header,
-    name: String,
+    pub(crate) name: String,
     pub values: Vec<Object>,
 }
 

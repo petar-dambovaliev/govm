@@ -11,18 +11,22 @@ macro_rules! init {
 }
 
 #[repr(C)]
-struct Rune {
+pub struct Rune {
     header: Header,
-    value: char,
+    pub value: char,
 }
 
 impl Rune {
+    #[inline]
+    pub(crate) unsafe fn read(obj: &Object) -> &Self {
+        obj.get::<Self>()
+    }
     unsafe fn destroy(ptr: Object) {
         drop_in_place(ptr.as_ptr() as *mut Self);
         dealloc(ptr.as_ptr(), Layout::new::<Self>());
     }
 
-    fn from_string(value: char) -> Object {
+    fn from_char(value: char) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Rune);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;

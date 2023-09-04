@@ -1,11 +1,11 @@
-mod collections;
-mod float;
-mod function;
-mod int;
-mod r#ref;
-mod rune;
-mod string;
-mod structure;
+pub mod collections;
+pub mod float;
+pub mod function;
+pub mod int;
+pub mod r#ref;
+pub mod rune;
+pub mod string;
+pub mod structure;
 
 use crate::vm::gc::GC;
 use crate::vm::object::collections::{Array, Map, ObjIter};
@@ -15,6 +15,7 @@ use crate::vm::object::int::{
     Byte, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64, Uint8,
 };
 use crate::vm::object::r#ref::Ref;
+use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::Struct;
 use crate::vm::Error;
 use std::alloc::{alloc, handle_alloc_error, Layout};
@@ -190,6 +191,11 @@ impl Object {
         Uint64::from_u64(value)
     }
 
+    #[inline(always)]
+    pub fn uint(value: usize) -> Self {
+        Uint::from_usize(value)
+    }
+
     /// Create a new function value
     pub fn function(ip: u32, num_locals: u16) -> Self {
         let value = ((ip as isize) << 16) | num_locals as isize;
@@ -327,14 +333,6 @@ impl Object {
         [ip, num_locals]
     }
 
-    /// Returns the f64 value of this object pointer
-    /// Panics if object does not point to a Float
-    #[inline]
-    pub fn as_f64(self) -> f64 {
-        assert_eq!(self.tag(), Type::Float);
-        unsafe { self.as_f64_unchecked() }
-    }
-
     #[inline]
     pub fn as_ref(&self) -> &Ref {
         assert_eq!(self.tag(), Type::Ref);
@@ -353,8 +351,20 @@ impl Object {
     ///
     /// The caller should ensure this pointer points to an actual Float type
     #[inline]
-    pub unsafe fn as_f64_unchecked(self) -> f64 {
+    pub unsafe fn as_float(self) -> f64 {
         Float::read(&self)
+    }
+
+    pub unsafe fn as_float32(self) -> f32 {
+        Float32::read(&self)
+    }
+
+    pub fn as_float64(self) -> f64 {
+        unsafe { Float64::read(&self) }
+    }
+
+    pub fn as_rune(&self) -> &Rune {
+        unsafe { Rune::read(&self) }
     }
 
     /// Returns the &str value of this object pointer
@@ -595,7 +605,59 @@ impl PartialEq for Object {
                 let r = self.as_isize();
                 l == r
             }
-            Type::Float => unsafe { self.as_f64_unchecked() == other.as_f64_unchecked() },
+            Type::I8 => {
+                let l = self.as_int8();
+                let r = self.as_int8();
+                l.value == r.value
+            }
+            Type::I16 => {
+                let l = self.as_int16();
+                let r = self.as_int16();
+                l.value == r.value
+            }
+            Type::I32 => {
+                let l = self.as_int32();
+                let r = self.as_int32();
+                l.value == r.value
+            }
+            Type::I64 => {
+                let l = self.as_int64();
+                let r = self.as_int64();
+                l.value == r.value
+            }
+            Type::UI => {
+                let l = self.as_uint();
+                let r = self.as_uint();
+                l.value == r.value
+            }
+            Type::UI8 => {
+                let l = self.as_uint8();
+                let r = self.as_uint8();
+                l.value == r.value
+            }
+            Type::UI16 => {
+                let l = self.as_uint16();
+                let r = self.as_uint16();
+                l.value == r.value
+            }
+            Type::UI32 => {
+                let l = self.as_uint32();
+                let r = self.as_uint32();
+                l.value == r.value
+            }
+            Type::UI64 => {
+                let l = self.as_uint64();
+                let r = self.as_uint64();
+                l.value == r.value
+            }
+            Type::Byte => {
+                let l = self.as_byte();
+                let r = self.as_byte();
+                l.value == r.value
+            }
+            Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
+            Type::Float64 => unsafe { self.as_float64() == other.as_float64() },
+            Type::Float => unsafe { self.as_float() == other.as_float() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
             Type::Array
@@ -622,16 +684,29 @@ impl PartialOrd for Object {
         debug_assert_eq!(self.tag(), other.tag());
 
         match self.tag() {
-            Type::Null | Type::Bool | Type::Int => self.0.partial_cmp(&other.0),
-            Type::Float => unsafe { self.as_f64_unchecked().partial_cmp(&other.as_f64()) },
+            Type::Null | Type::Bool => self.0.partial_cmp(&other.0),
+            Type::Int => unsafe { self.as_int().value.partial_cmp(&other.as_int().value) },
+            Type::I8 => unsafe { self.as_int8().value.partial_cmp(&other.as_int8().value) },
+            Type::I16 => unsafe { self.as_int16().value.partial_cmp(&other.as_int16().value) },
+            Type::I32 => unsafe { self.as_int32().value.partial_cmp(&other.as_int32().value) },
+            Type::I64 => unsafe { self.as_int64().value.partial_cmp(&other.as_int64().value) },
+            Type::Byte => unsafe { self.as_byte().value.partial_cmp(&other.as_byte().value) },
+            Type::UI => unsafe { self.as_uint().value.partial_cmp(&other.as_uint().value) },
+            Type::UI8 => unsafe { self.as_uint8().value.partial_cmp(&other.as_uint8().value) },
+            Type::UI16 => unsafe { self.as_uint16().value.partial_cmp(&other.as_uint16().value) },
+            Type::UI32 => unsafe { self.as_uint32().value.partial_cmp(&other.as_uint32().value) },
+            Type::UI64 => unsafe { self.as_uint64().value.partial_cmp(&other.as_uint64().value) },
+            Type::Float => unsafe { self.as_float().partial_cmp(&other.as_float()) },
+            Type::Float64 => unsafe { self.as_float64().partial_cmp(&other.as_float64()) },
+            Type::Float32 => unsafe { self.as_float32().partial_cmp(&other.as_float32()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
+            Type::Rune => self.as_rune().value.partial_cmp(&other.as_rune().value),
             Type::Array
             | Type::Function
             | Type::Ref
             | Type::Map
             | Type::Iter
             | Type::Struct
-            | Type::Rune
             | Type::Closure => {
                 unimplemented!("cannot compare {}", self.tag())
             }
@@ -658,10 +733,26 @@ macro_rules! impl_arith {
 
             let result = match self.tag() {
                 Type::Int => Object::int(self.as_isize() $op rhs.as_isize()),
+                Type::I8 => Object::int8(self.as_int8().value $op rhs.as_int8().value),
+                Type::I16 => Object::int16(self.as_int16().value $op rhs.as_int16().value),
+                Type::I32 => Object::int32(self.as_int32().value $op rhs.as_int32().value),
+                Type::I64 => Object::int64(self.as_int64().value $op rhs.as_int64().value),
+                Type::UI8 => Object::uint8(self.as_uint8().value $op rhs.as_uint8().value),
+                Type::UI => Object::uint(self.as_uint().value $op rhs.as_uint().value),
+                Type::UI8 => Object::uint8(self.as_uint8().value $op rhs.as_uint8().value),
+                Type::UI16 => Object::uint16(self.as_uint16().value $op rhs.as_uint16().value),
+                Type::UI32 => Object::uint32(self.as_uint32().value $op rhs.as_uint32().value),
+                Type::UI64 => Object::uint64(self.as_uint64().value $op rhs.as_uint64().value),
 
                 // Safety: We've already asserted the object type
                 Type::Float => unsafe {
-                    Object::float(self.as_f64_unchecked() $op rhs.as_f64_unchecked(), gc)
+                    Object::float(self.as_float() $op rhs.as_float(), gc)
+                }
+                Type::Float64 => unsafe {
+                    Object::float64(self.as_float64() $op rhs.as_float64(), gc)
+                }
+                Type::Float32 => unsafe {
+                    Object::float32(self.as_float32() $op rhs.as_float32(), gc)
                 }
                 _ => return Err(Error::TypeError(format!("unsupported op {} for type {}", stringify!($op), self.tag()))),
             };
@@ -738,8 +829,20 @@ impl Display for Object {
         match self.tag() {
             Type::Null => f.write_str("nil")?,
             Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
-            Type::Float => unsafe { f.write_str(&self.as_f64_unchecked().to_string())? },
-            Type::Int => f.write_str(&self.as_isize().to_string())?,
+            Type::Float => unsafe { f.write_str(&self.as_float().to_string())? },
+            Type::Float32 => unsafe { f.write_str(&self.as_float32().to_string())? },
+            Type::Float64 => unsafe { f.write_str(&self.as_float64().to_string())? },
+            Type::Int => f.write_str(&self.as_int().value.to_string())?,
+            Type::I8 => f.write_str(&self.as_int8().value.to_string())?,
+            Type::I16 => f.write_str(&self.as_int16().value.to_string())?,
+            Type::I32 => f.write_str(&self.as_int32().value.to_string())?,
+            Type::I64 => f.write_str(&self.as_int64().value.to_string())?,
+            Type::UI => f.write_str(&self.as_uint().value.to_string())?,
+            Type::UI8 => f.write_str(&self.as_uint8().value.to_string())?,
+            Type::UI16 => f.write_str(&self.as_uint16().value.to_string())?,
+            Type::UI32 => f.write_str(&self.as_uint32().value.to_string())?,
+            Type::UI64 => f.write_str(&self.as_uint64().value.to_string())?,
+            Type::Byte => f.write_str(&self.as_byte().value.to_string())?,
             Type::String => unsafe { f.write_str(self.as_str_unchecked())? },
             Type::Array => {
                 let values = unsafe { self.as_vec_unchecked() };
@@ -810,7 +913,19 @@ impl Display for Type {
             Type::Null => "nil",
             Type::Bool => "bool",
             Type::Float => "float",
+            Type::Float32 => "float32",
+            Type::Float64 => "float64",
+            Type::Byte => "byte",
             Type::Int => "int",
+            Type::UI => "uint",
+            Type::I8 => "int8",
+            Type::I16 => "int16",
+            Type::I32 => "int32",
+            Type::I64 => "int64",
+            Type::UI8 => "uint8",
+            Type::UI16 => "uint16",
+            Type::UI32 => "uint32",
+            Type::UI64 => "uint64",
             Type::String => "string",
             Type::Array => "array",
             Type::Function => "func",
@@ -921,7 +1036,7 @@ mod tests {
         let obj = Object::float(std::f64::consts::PI, &mut gc);
         assert_eq!(obj.tag(), Type::Float);
         assert!(obj.is_heap_allocated());
-        assert_eq!(obj.as_f64(), std::f64::consts::PI);
+        assert_eq!(obj.as_float64(), std::f64::consts::PI);
     }
 
     #[test]

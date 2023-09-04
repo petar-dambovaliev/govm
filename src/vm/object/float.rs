@@ -45,7 +45,7 @@ pub struct Float32 {
 
 impl Float32 {
     #[inline]
-    unsafe fn read(obj: &Object) -> f32 {
+    pub(crate) unsafe fn read(obj: &Object) -> f32 {
         obj.get::<Self>().value
     }
 
@@ -72,7 +72,7 @@ pub struct Float64 {
 
 impl Float64 {
     #[inline]
-    unsafe fn read(obj: &Object) -> f64 {
+    pub(crate) unsafe fn read(obj: &Object) -> f64 {
         obj.get::<Self>().value
     }
 
