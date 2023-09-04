@@ -1,3 +1,4 @@
+use crate::parser::ast::BranchStmt;
 use crate::parser::ast::{
     AssignStmt, BasicLit, CompositeLit, DeclStmt, Declaration, Element, ExprStmt, Expression,
     FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
@@ -1258,6 +1259,10 @@ impl Compiler {
                     self.emit_opcode(OpCode::Jump);
                     self.emit_u16(pos.unwrap().try_into().unwrap());
                 }
+                Keyword::FallThrough => {
+                    // already handled in the switch logic
+                    // do nothing
+                }
                 _ => panic!("key: {:#?}", branch.key),
             },
             Statement::IncDec(incdec) => {
@@ -1530,9 +1535,36 @@ impl Compiler {
                                 self.emit_opcode(OpCode::JumpIfFalse);
                                 self.emit_u16(JUMP_PLACEHOLDER);
 
+                                let mut has_fallthrough = false;
+                                let bl = clause.body.len();
+                                for (i, stmt) in clause.body.iter().enumerate() {
+                                    let is_fallthrough = if let Statement::Branch(br) = stmt {
+                                        br.key == Keyword::FallThrough
+                                    } else {
+                                        false
+                                    };
+                                    if is_fallthrough {
+                                        if i == bl - 1 {
+                                            has_fallthrough = true;
+                                        } else {
+                                            panic!("misplaced fallthrough");
+                                        }
+                                    }
+                                }
+
+                                let mut clause_body = clause.body.clone();
+
+                                if !has_fallthrough {
+                                    clause_body.push(Statement::Branch(BranchStmt {
+                                        pos: 0,
+                                        key: Keyword::Break,
+                                        ident: None,
+                                    }));
+                                }
+
                                 terminates = terminates
                                     && self
-                                        .compile_block_statement(&clause.body)?
+                                        .compile_block_statement(&clause_body)?
                                         .unwrap_or_default();
 
                                 if self.last_instruction_is(OpCode::Pop) {
@@ -1745,7 +1777,7 @@ impl Compiler {
                             // *a // deref
                             None => {
                                 //panic!("{:#?}", op);
-                                let ident = op.x.as_ident().unwrap();
+                                let _ident = op.x.as_ident().unwrap();
                                 self.compile_expression(op.x.as_ref())?;
                                 self.emit_opcode(OpCode::Deref);
                             }

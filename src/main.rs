@@ -20,8 +20,12 @@ fn main() {
             a := func() func() {
                 c := &b
                return func() {
-                    if *c == 5 {
+                    switch n:=*c; n {
+                    case 5:
                         print(5)
+                    //fallthrough    
+                    default:
+                        print(n)    
                     }
                }
             }
@@ -29,7 +33,6 @@ fn main() {
         }
 
         func main() {
-
             a:= newClosure()
             b := a()
             b()
