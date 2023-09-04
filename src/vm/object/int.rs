@@ -1,4 +1,5 @@
 use crate::vm::object::{allocate, Header, Object, Type};
+use num::Complex;
 use std::alloc::{dealloc, Layout};
 use std::ptr::drop_in_place;
 
@@ -9,6 +10,80 @@ macro_rules! init {
             std::ptr::addr_of_mut!($field).write($value);
         }
     };
+}
+
+#[repr(C)]
+pub struct Complex64 {
+    header: Header,
+    pub(crate) value: Complex<i64>,
+}
+
+impl Complex64 {
+    #[inline]
+    unsafe fn read(obj: &Object) -> &Self {
+        obj.get::<Self>()
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_mut(obj: &Object) -> &mut Self {
+        obj.get_mut::<Self>()
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<i64> {
+        obj.get::<Self>().value
+    }
+
+    #[inline]
+    unsafe fn destroy(obj: Object) {
+        drop_in_place(obj.as_ptr() as *mut Self);
+        dealloc(obj.as_ptr(), Layout::new::<Self>());
+    }
+
+    pub(crate) fn from_isize(value: Complex<i64>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value );
+        ptr
+    }
+}
+
+#[repr(C)]
+pub struct Complex128 {
+    header: Header,
+    pub(crate) value: Complex<i128>,
+}
+
+impl Complex128 {
+    #[inline]
+    unsafe fn read(obj: &Object) -> &Self {
+        obj.get::<Self>()
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_mut(obj: &Object) -> &mut Self {
+        obj.get_mut::<Self>()
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<i128> {
+        obj.get::<Self>().value
+    }
+
+    #[inline]
+    unsafe fn destroy(obj: Object) {
+        drop_in_place(obj.as_ptr() as *mut Self);
+        dealloc(obj.as_ptr(), Layout::new::<Self>());
+    }
+
+    pub(crate) fn from_isize(value: Complex<i128>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value );
+        ptr
+    }
 }
 
 #[repr(C)]
