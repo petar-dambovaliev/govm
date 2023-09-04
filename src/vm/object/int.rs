@@ -15,12 +15,12 @@ macro_rules! init {
 #[repr(C)]
 pub struct Complex64 {
     header: Header,
-    pub(crate) value: Complex<i64>,
+    pub(crate) value: Complex<f32>,
 }
 
 impl Complex64 {
     #[inline]
-    unsafe fn read(obj: &Object) -> &Self {
+    pub(crate) unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
     }
 
@@ -30,7 +30,7 @@ impl Complex64 {
     }
 
     #[inline]
-    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<i64> {
+    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<f32> {
         obj.get::<Self>().value
     }
 
@@ -40,7 +40,7 @@ impl Complex64 {
         dealloc(obj.as_ptr(), Layout::new::<Self>());
     }
 
-    pub(crate) fn from_isize(value: Complex<i64>) -> Object {
+    pub(crate) fn from_isize(value: Complex<f32>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
@@ -52,12 +52,12 @@ impl Complex64 {
 #[repr(C)]
 pub struct Complex128 {
     header: Header,
-    pub(crate) value: Complex<i128>,
+    pub(crate) value: Complex<f64>,
 }
 
 impl Complex128 {
     #[inline]
-    unsafe fn read(obj: &Object) -> &Self {
+    pub(crate) unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
     }
 
@@ -67,7 +67,7 @@ impl Complex128 {
     }
 
     #[inline]
-    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<i128> {
+    pub(crate) unsafe fn read_val(obj: &Object) -> Complex<f64> {
         obj.get::<Self>().value
     }
 
@@ -77,7 +77,7 @@ impl Complex128 {
         dealloc(obj.as_ptr(), Layout::new::<Self>());
     }
 
-    pub(crate) fn from_isize(value: Complex<i128>) -> Object {
+    pub(crate) fn from_isize(value: Complex<f64>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;

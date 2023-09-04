@@ -12,7 +12,8 @@ use crate::vm::object::collections::{Array, Map, ObjIter};
 use crate::vm::object::float::{Float, Float32, Float64};
 use crate::vm::object::function::Closure;
 use crate::vm::object::int::{
-    Byte, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64, Uint8,
+    Byte, Complex128, Complex64, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64,
+    Uint8,
 };
 use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
@@ -53,12 +54,12 @@ const MIN_INT: isize = isize::MIN;
 
 // ARM uses 49 bits and x86-64 uses 48 bits
 // we have at least 15 bits to work with
-// this is 4 bits and it supports up to 16 variants
+// this is 6 bits and it supports up to 64 variants
 #[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum Type {
     // The types below are all stored directly inside the pointer
-    Null = 0b0000,
+    Null = 0b000000,
     Bool,
     Function,
 
@@ -77,6 +78,8 @@ pub enum Type {
     Float,
     Float32,
     Float64,
+    Complex64,
+    Complex128,
     String,
     Rune,
     Array,
@@ -193,6 +196,11 @@ impl Object {
 
     #[inline(always)]
     pub fn uint(value: usize) -> Self {
+        Uint::from_usize(value)
+    }
+
+    #[inline(always)]
+    pub fn complex64(value: usize) -> Self {
         Uint::from_usize(value)
     }
 
@@ -365,6 +373,14 @@ impl Object {
 
     pub fn as_rune(&self) -> &Rune {
         unsafe { Rune::read(&self) }
+    }
+
+    pub fn as_complex64(&self) -> &Complex64 {
+        unsafe { Complex64::read(&self) }
+    }
+
+    pub fn as_complex128(&self) -> &Complex128 {
+        unsafe { Complex128::read(&self) }
     }
 
     /// Returns the &str value of this object pointer
@@ -655,6 +671,16 @@ impl PartialEq for Object {
                 let r = self.as_byte();
                 l.value == r.value
             }
+            Type::Complex64 => {
+                let l = self.as_complex64();
+                let r = self.as_complex64();
+                l.value == r.value
+            }
+            Type::Complex128 => {
+                let l = self.as_complex128();
+                let r = self.as_complex128();
+                l.value == r.value
+            }
             Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
             Type::Float64 => unsafe { self.as_float64() == other.as_float64() },
             Type::Float => unsafe { self.as_float() == other.as_float() },
@@ -700,6 +726,9 @@ impl PartialOrd for Object {
             Type::Float64 => unsafe { self.as_float64().partial_cmp(&other.as_float64()) },
             Type::Float32 => unsafe { self.as_float32().partial_cmp(&other.as_float32()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
+            Type::Complex64 | Type::Complex128 => {
+                unimplemented!()
+            }
             Type::Rune => self.as_rune().value.partial_cmp(&other.as_rune().value),
             Type::Array
             | Type::Function
@@ -844,6 +873,8 @@ impl Display for Object {
             Type::UI64 => f.write_str(&self.as_uint64().value.to_string())?,
             Type::Byte => f.write_str(&self.as_byte().value.to_string())?,
             Type::String => unsafe { f.write_str(self.as_str_unchecked())? },
+            Type::Complex64 => f.write_str(&self.as_complex64().value.to_string())?,
+            Type::Complex128 => f.write_str(&self.as_complex128().value.to_string())?,
             Type::Array => {
                 let values = unsafe { self.as_vec_unchecked() };
                 f.write_char('[')?;
@@ -935,6 +966,8 @@ impl Display for Type {
             Type::Struct => "struct",
             Type::Rune => "rune",
             Type::Closure => "closure",
+            Type::Complex64 => "complex64",
+            Type::Complex128 => "complex128",
         };
         f.write_str(str)
     }
