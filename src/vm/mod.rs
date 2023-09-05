@@ -170,6 +170,7 @@ impl VM {
 
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
+        println!("123");
         let ptr = self.escaped[rel_idx as usize].as_ref_mut();
         assert_eq!(ptr.value.tag(), value.tag());
 
@@ -435,15 +436,17 @@ impl VM {
                     let idx = self.read_u16() as usize;
                     //println!("SetGlobal-before: {:#?}", self.stack);
                     let value = self.pop();
+
                     while self.globals.len() <= idx {
                         self.globals.push(Object::null());
                     }
+
                     self.globals[idx] = value;
                     //println!("SetGlobal-after: {:#?}", self.stack);
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
-                    //println!("GetGlobal-before: {:#?}", self.stack);
+                    //println!("GetGlobal-before: {:#?}", constants);
                     let value = self.globals[idx as usize];
                     self.push(value);
                     //println!("GetGlobal-after: {:#?}", self.stack);
@@ -654,9 +657,9 @@ impl VM {
                     };
 
                     // Make room on the stack for any local variables defined inside this function
-                    for _ in 0..num_locals - num_args as u32 {
-                        self.push(Object::null());
-                    }
+                    // for _ in 0..num_locals - num_args as u32 {
+                    //     self.push(Object::null());
+                    // }
 
                     self.pushframe(ip, base_pointer);
                 }

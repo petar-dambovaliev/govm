@@ -15,10 +15,14 @@ fn main() {
         r#"
         package main
         
-        type Foo struct {}
+        type Foo struct {
+            blah int
+        }
         
         func (f *Foo) blah() {
-            print(f)
+            println(f)
+            //should not compile
+            println(f.blah)
         }
         
         func main() {

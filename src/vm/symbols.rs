@@ -51,7 +51,8 @@ pub enum DefineType {
     Null,
     Var(Box<Self>),
     Struct(String, Vec<ContextType>),
-    Func(String, Vec<ContextType>, Box<Self>),
+    // func name, recv      args              return type
+    Func(String, Option<Box<Self>>, Vec<ContextType>, Box<Self>),
     Int,
     Byte,
     Int8,
@@ -210,6 +211,14 @@ impl DefineType {
             self.clone()
         }
     }
+
+    pub fn strip_ref(&self) -> DefineType {
+        if let Self::Ref(v) = self {
+            *v.clone()
+        } else {
+            self.clone()
+        }
+    }
     pub fn strip_var(&self) -> DefineType {
         if let Self::Var(v) = self {
             *v.clone()
@@ -255,7 +264,7 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func(_, _, _) | Self::Map(_, _) | Self::Array(_) => true,
+            Self::Ref(_) | Self::Func(_, _, _, _) | Self::Map(_, _) | Self::Array(_) => true,
             _ => false,
         }
     }
@@ -303,7 +312,7 @@ impl DefineType {
 
     pub fn is_func(&self) -> bool {
         match &self {
-            Self::Func(_, _, _) => true,
+            Self::Func(_, _, _, _) => true,
             _ => false,
         }
     }

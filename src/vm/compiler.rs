@@ -514,6 +514,7 @@ impl Compiler {
 
                     DefineType::Func(
                         "".to_string(),
+                        None,
                         self.define_type_to_context_type(t_vec.as_ref()),
                         Box::new(dt),
                     )
@@ -543,6 +544,7 @@ impl Compiler {
                 let (ret, _) = self.field_list_to_define_type(&tf.result);
                 DefineType::Func(
                     "".to_string(),
+                    None,
                     self.define_type_to_context_type(args.as_ref()),
                     Box::new(ret),
                 )
@@ -622,8 +624,6 @@ impl Compiler {
                 }
             }
             Declaration::Function(f) => {
-                //panic!("{:#?}", f);
-                //f.recv
                 let pos_jump = self.instructions.len();
 
                 self.func_contexts.push(FuncContext::new(pos_jump));
@@ -631,20 +631,44 @@ impl Compiler {
                 self.emit_opcode(OpCode::Jump);
                 self.emit_u16(JUMP_PLACEHOLDER);
 
-                let symbol = if !f.name.name.is_empty() {
-                    Some(self.symbols.define(
-                        &f.name.name,
-                        DefineType::Func(f.name.name.clone(), vec![], Box::new(DefineType::Null)),
-                        false,
-                    ))
+                let (f_name, recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
+                    let recv = recv.list.first().unwrap();
+                    let t = self.expression_to_define_type(&recv.typ);
+
+                    (
+                        format!("0x{:#?}{}", t.strip_ref(), f.name.name),
+                        Some(recv),
+                        Some(Box::new(t)),
+                    )
                 } else {
-                    None
+                    (f.name.name.clone(), None, None)
                 };
+
+                let symbol = self.symbols.define(
+                    &f_name,
+                    DefineType::Func(
+                        f.name.name.clone(),
+                        recv_t.clone(),
+                        vec![],
+                        Box::new(DefineType::Null),
+                    ),
+                    false,
+                );
 
                 let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
                 // Compile function in a new scope
                 self.symbols.new_context(false);
+
+                if let Some(recv) = recv {
+                    let t = self.expression_to_define_type(&recv.typ);
+                    self.symbols.define(
+                        &recv.name.first().unwrap().name,
+                        DefineType::Var(Box::new(t.clone())),
+                        t.is_invar(),
+                    );
+                }
+
                 for p in &f.typ.params.list {
                     let t = self.expression_to_define_type(&p.typ);
                     for name in &p.name {
@@ -673,13 +697,11 @@ impl Compiler {
                     DefineType::Tuple(decl_r_types.clone())
                 };
 
-                if symbol.is_some() {
-                    let updated = self.symbols.update_dt(
-                        f.name.name.as_str(),
-                        DefineType::Func(f.name.name.clone(), decl_arg_types, Box::new(r_t)),
-                    );
-                    assert!(updated);
-                }
+                let updated = self.symbols.update_dt(
+                    &f_name,
+                    DefineType::Func(f.name.name.clone(), recv_t, decl_arg_types, Box::new(r_t)),
+                );
+                assert!(updated);
 
                 let pos_start_function = self.instructions.len();
 
@@ -783,19 +805,16 @@ impl Compiler {
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
 
-                // If this function received a name, define it in the scope
-                if let Some(symbol) = symbol {
-                    let opcode = if symbol.scope == Scope::Global {
-                        OpCode::SetGlobal
-                    } else {
-                        OpCode::SetLocal
-                    };
-                    self.emit_opcode(opcode);
-                    self.emit_u16(symbol.index);
+                let opcode = if symbol.scope == Scope::Global {
+                    OpCode::SetGlobal
+                } else {
+                    OpCode::SetLocal
+                };
+                self.emit_opcode(opcode);
+                self.emit_u16(symbol.index);
 
-                    self.emit_opcode(OpCode::Const);
-                    self.emit_u16(idx);
-                }
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
             }
             Declaration::Const(c) => {
                 for spec in &c.specs {
@@ -1078,7 +1097,7 @@ impl Compiler {
                 if assign.left.len() > 1 && assign.right.len() == 1 {
                     let dt = self.compile_expression(assign.right.first().unwrap())?;
                     let (_ident, _args, ret) = match dt {
-                        DefineType::Func(ident, args, ret) => (ident, args, ret),
+                        DefineType::Func(ident, _, args, ret) => (ident, args, ret),
                         _ => panic!("expected a func"),
                     };
 
@@ -1842,7 +1861,7 @@ impl Compiler {
             }),
             //todo interface
             DefineType::Ref(_)
-            | DefineType::Func(_, _, _)
+            | DefineType::Func(_, _, _, _)
             | DefineType::Map(_, _)
             | DefineType::Null
             | DefineType::Array(_) => Expression::Ident(Ident {
@@ -2126,11 +2145,23 @@ impl Compiler {
                     }
                 }
 
-                let mut dt = self
-                    .symbols
-                    .resolve(call.func.as_ident().unwrap().name.as_str())
-                    .unwrap()
-                    .get_type();
+                let (f_name, sel) = if let Expression::Selector(sel) = call.func.as_ref() {
+                    let sellt = self
+                        .symbols
+                        .resolve(&sel.x.as_ident().unwrap().name)
+                        .unwrap()
+                        .get_type()
+                        .strip_var();
+
+                    (
+                        format!("0x{:#?}{}", sellt, sel.sel.name),
+                        Some(sel.x.clone()),
+                    )
+                } else {
+                    (call.func.as_ident().unwrap().name.to_string(), None)
+                };
+
+                let mut dt = self.symbols.resolve(&f_name).unwrap().get_type();
 
                 if let DefineType::Var(inner) = &dt {
                     if inner.is_func() {
@@ -2142,19 +2173,39 @@ impl Compiler {
                     panic!("tried to call not a function: {:#?}", dt);
                 }
 
-                let (arg_types, rt) = match dt {
-                    DefineType::Func(_, arg_types, rts) => (arg_types, rts.type_to_val_t()),
+                let (recv_t, arg_types, rt) = match dt {
+                    DefineType::Func(_, recv_t, arg_types, rts) => {
+                        (recv_t, arg_types, rts.type_to_val_t())
+                    }
                     _ => unreachable!(),
                 };
 
                 assert_eq!(arg_types.len(), call.args.len());
+
+                //todo typecheck
+                if let Some(s) = sel.as_ref() {
+                    let got = self.compile_expression(s.as_ref())?;
+                    if recv_t.unwrap().is_ref() && !got.is_ref() {
+                        self.emit_opcode(OpCode::Ref);
+                    }
+                }
 
                 for (a, t) in call.args.iter().zip(arg_types) {
                     let got = self.compile_expression(a)?;
                     assert_eq!(t.as_named().1, got);
                 }
 
-                self.compile_expression(call.func.as_ref())?;
+                match call.func.as_ref() {
+                    Expression::Selector(_sl) => {
+                        self.compile_expression(&Expression::Ident(Ident {
+                            pos: 0,
+                            name: f_name.to_string(),
+                        }))?;
+                    }
+                    _ => {
+                        self.compile_expression(call.func.as_ref())?;
+                    }
+                }
 
                 self.emit_opcode(OpCode::Call);
                 self.emit_u8(call.args.len().try_into().unwrap());
@@ -2589,6 +2640,7 @@ impl Compiler {
 
                 return Ok(DefineType::Func(
                     "".to_string(),
+                    None,
                     decl_arg_types,
                     Box::new(r_t),
                 ));

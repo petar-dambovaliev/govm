@@ -893,6 +893,21 @@ impl Parser {
     // TypeTerm       = Type | UnderlyingType .
     // UnderlyingType = "~" Type .
     fn parse_type_elem(&mut self) -> Result<ast::Expression> {
+        // let mut is_invar = false;
+        // if self.current_is(Keyword::InVar) {
+        //     self.next()?;
+        //     is_invar = true;
+        // }
+
+        // let typ = if is_invar {
+        //     Expression::Invar(InvarExpression {
+        //         pos: t.pos(),
+        //         expr: Box::new(t),
+        //     })
+        // } else {
+        //     t
+        // };
+
         let mut typ = self.parse_type_term()?;
         while self.current_is(Operator::Or) {
             let op = Operator::Or;
