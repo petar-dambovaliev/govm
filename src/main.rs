@@ -15,86 +15,16 @@ fn main() {
         r#"
         package main
         
-        var b bool
+        type Foo struct {}
         
-        var s string
-        
-        var (
-            i   int
-            i8  int8
-            i16 int16
-            i32 int32
-            i64 int64
-        )
-         
-        var (
-            ui   uint
-            ui8  uint8
-            ui16 uint16
-            ui32 uint32
-            ui64 uint64
-        )
-
-        var (
-            by byte // alias for uint8
-            r  rune // alias for int32. Represents a Unicode code point.
-        )
-
-        var (
-            f32 float32
-            f64 float64
-        )
-
-        func Print() {
-            println(b)
-            println(s)
-            println(i, i8, i16, i32, i64)
-            println(ui, ui8, ui16, ui32, ui64)
-            println(by, r)
-            println(f32, f64)
+        func (f *Foo) blah() {
+            print(f)
         }
-
-        func SetValues() {
-            b = true
         
-            s = "a string"
-        
-            i = -42
-            i8 = -8
-            i16 = -4216
-            i32 = -4232
-            i64 = -4264
-        
-            ui = 42
-            ui8 = 8
-            ui16 = 4216
-            ui32 = 4232
-            ui64 = 4264
-        
-            by = byte('A')
-            r = rune('A')
-        
-            f32 = 42.32
-            f64 = 42.64
-        }
-
         func main() {
-            SetValues()
-            Print()
+            f := Foo{}
+            f.blah()
         }
-
-// package main
-// 
-// type Foo struct {}
-// 
-// func (f *Foo) blah() {
-//     print(f)
-// }
-// 
-// 
-// func main() {
-//     
-// }
     "#,
     );
 

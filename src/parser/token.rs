@@ -168,6 +168,8 @@ pub enum Keyword {
     Type,
     #[strum(serialize = "var")]
     Var,
+    #[strum(serialize = "invar")]
+    InVar,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

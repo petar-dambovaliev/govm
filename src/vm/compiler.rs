@@ -9,7 +9,7 @@ use crate::vm::gc::GC;
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::Struct;
-use crate::vm::object::{FromString, Type};
+use crate::vm::object::{is_builtin_const, FromString, Type};
 use crate::vm::symbols::*;
 use crate::vm::{builtin, Error, Object};
 use ahash::AHashMap;
@@ -323,18 +323,17 @@ impl Compiler {
     /// Compiles the given AST into executable Bytecode
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         //insert builtin values
-        self.constants.push(Object::null());
-
         let nil_symbol = self.symbols.define(
             "nil",
             DefineType::Type(Box::new(DefineType::Null), Type::Null),
+            false,
         );
         assert_eq!(0, nil_symbol.index);
 
         self.constants.push(Object::null());
-        let nil_symbol = self
-            .symbols
-            .define("_", DefineType::Var(Box::new(DefineType::Null)));
+        let nil_symbol =
+            self.symbols
+                .define("_", DefineType::Var(Box::new(DefineType::Null)), false);
         assert_eq!(1, nil_symbol.index);
 
         let numbers = vec![
@@ -401,22 +400,25 @@ impl Compiler {
         ];
 
         for number in numbers {
-            let _ = self.symbols.define(number.0, number.1);
+            let _ = self.symbols.define(number.0, number.1, false);
         }
 
         let _ = self.symbols.define(
             "string",
             DefineType::Type(Box::new(DefineType::String), Type::String),
+            false,
         );
 
         let _ = self.symbols.define(
             "rune",
             DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
+            false,
         );
 
         let _ = self.symbols.define(
             "bool",
             DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
+            false,
         );
 
         //todo define error interface properly
@@ -562,6 +564,9 @@ impl Compiler {
 
                 DefineType::Map(Box::new(k), Box::new(v))
             }
+            Expression::Invar(invar) => DefineType::Invar(Box::new(
+                self.expression_to_define_type(invar.expr.as_ref()),
+            )),
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
     }
@@ -585,6 +590,13 @@ impl Compiler {
 
                     for (name, value) in spec.name.iter().zip(values.iter()) {
                         let mut rt = self.compile_expression(value)?;
+                        if rt.is_invar() {
+                            panic!("var cant be invar");
+                        }
+
+                        if rt.is_nil() && tp.is_ref() {
+                            rt = tp.clone();
+                        }
 
                         if rt != tp && value.is_int_lit() {
                             let i = value.as_int_lit().unwrap();
@@ -593,9 +605,11 @@ impl Compiler {
                             }
                         }
 
-                        let symbol = self
-                            .symbols
-                            .define(name.name.as_str(), DefineType::Var(Box::new(rt)));
+                        let symbol = self.symbols.define(
+                            name.name.as_str(),
+                            DefineType::Var(Box::new(rt.clone())),
+                            rt.is_invar(),
+                        );
 
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -621,6 +635,7 @@ impl Compiler {
                     Some(self.symbols.define(
                         &f.name.name,
                         DefineType::Func(f.name.name.clone(), vec![], Box::new(DefineType::Null)),
+                        false,
                     ))
                 } else {
                     None
@@ -635,8 +650,11 @@ impl Compiler {
                     for name in &p.name {
                         decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
-                        self.symbols
-                            .define(&name.name, DefineType::Var(Box::new(t.clone())));
+                        self.symbols.define(
+                            &name.name,
+                            DefineType::Var(Box::new(t.clone())),
+                            t.is_invar(),
+                        );
                     }
                 }
 
@@ -784,9 +802,11 @@ impl Compiler {
                     for (name, value) in spec.name.iter().zip(spec.values.iter()) {
                         let rt = self.compile_expression(value)?;
 
-                        let symbol = self
-                            .symbols
-                            .define(name.name.as_str(), DefineType::Var(Box::new(rt)));
+                        let symbol = self.symbols.define(
+                            name.name.as_str(),
+                            DefineType::Var(Box::new(rt.clone())),
+                            rt.is_invar(),
+                        );
 
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -843,6 +863,7 @@ impl Compiler {
                         let symbol = self.symbols.define(
                             name,
                             DefineType::Struct(name.to_string(), field_types.clone()),
+                            false,
                         );
 
                         for field_type in &mut field_types {
@@ -1072,9 +1093,11 @@ impl Compiler {
                                     _ => panic!("only identifiers can be defined: {:#?}", left),
                                 };
 
-                                let symbol = self
-                                    .symbols
-                                    .define(name.as_str(), DefineType::Var(Box::new(ct)));
+                                let symbol = self.symbols.define(
+                                    name.as_str(),
+                                    DefineType::Var(Box::new(ct.clone())),
+                                    ct.is_invar(),
+                                );
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
                                 } else {
@@ -1154,9 +1177,11 @@ impl Compiler {
 
                             let rt = self.compile_expression(right)?;
 
-                            let symbol = self
-                                .symbols
-                                .define(name.as_str(), DefineType::Var(Box::new(rt)));
+                            let symbol = self.symbols.define(
+                                name.as_str(),
+                                DefineType::Var(Box::new(rt.clone())),
+                                rt.is_invar(),
+                            );
 
                             let op = if symbol.scope == Scope::Global {
                                 OpCode::SetGlobal
@@ -1234,6 +1259,10 @@ impl Compiler {
                             let got_t = self.compile_expression(right)?;
 
                             if is_deref {
+                                if expect_t.is_invar() {
+                                    panic!("cannot write to an invar reference");
+                                }
+                                //panic!("name: {:#?} type: {:#?}", name, expect_t);
                                 assert!(expect_t.is_ref());
                                 let inner = expect_t.as_ref().strip_type();
                                 assert_eq!(inner, got_t);
@@ -1414,9 +1443,11 @@ impl Compiler {
                 });
                 {
                     let name = "__iter__";
-                    iter_sym = self
-                        .symbols
-                        .define(name, DefineType::Var(Box::new(DefineType::Null)));
+                    iter_sym = self.symbols.define(
+                        name,
+                        DefineType::Var(Box::new(DefineType::Null)),
+                        false,
+                    );
                     self.compile_expression(&rng.expr)?;
                     self.emit_opcode(OpCode::IntoIter);
                     self.emit_opcode(OpCode::SetLocal);
@@ -1439,10 +1470,12 @@ impl Compiler {
                         let key_symbol = self.symbols.define(
                             key_id.name.as_str(),
                             DefineType::Var(Box::new(DefineType::Null)),
+                            false,
                         );
                         let value_symbol = self.symbols.define(
                             value_id.name.as_str(),
                             DefineType::Var(Box::new(DefineType::Null)),
+                            false,
                         );
 
                         self.emit_opcode(OpCode::GetLocal);
@@ -2077,11 +2110,7 @@ impl Compiler {
             }
 
             Expression::Call(call) => 'compile_call: {
-                //todo type check the arguments
-                for a in &call.args {
-                    self.compile_expression(a)?;
-                }
-
+                //todo typecheck return on builtins
                 if let Expression::Ident(name) = call.func.as_ref() {
                     if let Some(builtin) = builtin::resolve(&name.name) {
                         let is_void = builtin.is_void();
@@ -2097,12 +2126,6 @@ impl Compiler {
                     }
                 }
 
-                self.compile_expression(call.func.as_ref())?;
-
-                self.emit_opcode(OpCode::Call);
-                self.emit_u8(call.args.len().try_into().unwrap());
-
-                // todo this can be a closure
                 let mut dt = self
                     .symbols
                     .resolve(call.func.as_ident().unwrap().name.as_str())
@@ -2119,10 +2142,22 @@ impl Compiler {
                     panic!("tried to call not a function: {:#?}", dt);
                 }
 
-                let rt = match dt {
-                    DefineType::Func(_, _, rts) => rts.type_to_val_t(),
+                let (arg_types, rt) = match dt {
+                    DefineType::Func(_, arg_types, rts) => (arg_types, rts.type_to_val_t()),
                     _ => unreachable!(),
                 };
+
+                assert_eq!(arg_types.len(), call.args.len());
+
+                for (a, t) in call.args.iter().zip(arg_types) {
+                    let got = self.compile_expression(a)?;
+                    assert_eq!(t.as_named().1, got);
+                }
+
+                self.compile_expression(call.func.as_ref())?;
+
+                self.emit_opcode(OpCode::Call);
+                self.emit_u8(call.args.len().try_into().unwrap());
 
                 return Ok(rt);
             }
@@ -2349,10 +2384,16 @@ impl Compiler {
                 match self.symbols.resolve(&ident.name) {
                     Some(Resolved::Local((symbol, dt))) => {
                         let opcode = if symbol.scope == Scope::Global {
-                            OpCode::GetGlobal
+                            if is_builtin_const(&ident.name) {
+                                OpCode::Const
+                            } else {
+                                OpCode::GetGlobal
+                            }
                         } else {
                             OpCode::GetLocal
                         };
+                        //panic!("{:#?}", symbol);
+
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
 
@@ -2427,8 +2468,11 @@ impl Compiler {
                     for name in &p.name {
                         decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
-                        self.symbols
-                            .define(&name.name, DefineType::Var(Box::new(t.clone())));
+                        self.symbols.define(
+                            &name.name,
+                            DefineType::Var(Box::new(t.clone())),
+                            t.is_invar(),
+                        );
                     }
                 }
 
@@ -2549,6 +2593,10 @@ impl Compiler {
                     Box::new(r_t),
                 ));
             }
+            Expression::Invar(invar) => {
+                let rt = self.compile_expression(&invar.expr)?;
+                return Ok(DefineType::Invar(Box::new(rt.strip_var())));
+            }
             _ => {
                 return Err(Error::SyntaxError(format!(
                     "unsupported expression:  {:#?}",
@@ -2579,72 +2627,72 @@ impl Compiler {
 /// We use a string representation of OpCodes to make testing a little easier
 impl Display for OpCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use OpCode::*;
         let s = match &self {
-            Const => "Const",
-            Pop => "Pop",
-            True => "True",
-            False => "False",
-            Add => "Add",
-            Subtract => "Subtract",
-            Divide => "Divide",
-            Multiply => "Multiply",
-            Gt => "Gt",
-            Gte => "Gte",
-            Lt => "Lt",
-            Lte => "Lte",
-            Eq => "Eq",
-            Neq => "Neq",
-            And => "And",
-            Or => "Or",
-            Not => "Not",
-            Modulo => "Modulo",
-            Negate => "Negate",
-            Jump => "Jump",
-            JumpIfFalse => "JumpIfFalse",
-            Null => "Null",
-            Return => "Return",
-            ReturnValue => "ReturnValue",
-            Call => "Call",
-            CallBuiltin => "CallBuiltin",
-            GetLocal => "GetLocal",
-            SetLocal => "SetLocal",
-            GetEnclosed => "GetEnclosed",
-            SetEnclosed => "SetEnclosed",
-            GetGlobal => "GetGlobal",
-            SetGlobal => "SetGlobal",
-            GtLocalConst => "GtLocalConst",
-            GteLocalConst => "GteLocalConst",
-            LtLocalConst => "LtLocalConst",
-            LteLocalConst => "LteLocalConst",
-            EqLocalConst => "EqLocalConst",
-            NeqLocalConst => "NeqLocalConst",
-            AddLocalConst => "AddLocalConst",
-            SubtractLocalConst => "SubtractLocalConst",
-            MultiplyLocalConst => "MultiplyLocalConst",
-            DivideLocalConst => "DivideLocalConst",
-            ModuloLocalConst => "ModuloLocalConst",
-            Array => "Array",
-            Ref => "Ref",
-            IndexGet => "IndexGet",
-            IndexSet => "IndexSet",
-            Map => "Map",
-            Range => "Range",
-            IntoIter => "IntoIter",
-            Struct => "Struct",
-            CopyEnclosed => "CopyEnclosed",
-            LocalPtrWrite => "LocalPtrWrite",
-            GlobalPtrWrite => "GlobalPtrWrite",
-            EnclosedPtrWrite => "GlobalPtrWrite",
-            CopyLL => "CopyLL",
-            CopyLG => "CopyLG",
-            CopyGG => "CopyGG",
-            CopyGL => "CopyGL",
-            SwapLL => "SwapLL",
-            SwapGL => "SwapGL",
-            SwapLG => "SwapLG",
-            SwapGG => "SwapGG",
-            Halt => "Halt",
+            Self::Const => "Const",
+            Self::Pop => "Pop",
+            Self::True => "True",
+            Self::False => "False",
+            Self::Add => "Add",
+            Self::Subtract => "Subtract",
+            Self::Divide => "Divide",
+            Self::Multiply => "Multiply",
+            Self::Gt => "Gt",
+            Self::Gte => "Gte",
+            Self::Lt => "Lt",
+            Self::Lte => "Lte",
+            Self::Eq => "Eq",
+            Self::Neq => "Neq",
+            Self::And => "And",
+            Self::Or => "Or",
+            Self::Not => "Not",
+            Self::Modulo => "Modulo",
+            Self::Negate => "Negate",
+            Self::Jump => "Jump",
+            Self::JumpIfFalse => "JumpIfFalse",
+            Self::Null => "Null",
+            Self::Return => "Return",
+            Self::ReturnValue => "ReturnValue",
+            Self::Call => "Call",
+            Self::CallBuiltin => "CallBuiltin",
+            Self::GetLocal => "GetLocal",
+            Self::SetLocal => "SetLocal",
+            Self::GetEnclosed => "GetEnclosed",
+            Self::SetEnclosed => "SetEnclosed",
+            Self::GetGlobal => "GetGlobal",
+            Self::SetGlobal => "SetGlobal",
+            Self::GtLocalConst => "GtLocalConst",
+            Self::GteLocalConst => "GteLocalConst",
+            Self::LtLocalConst => "LtLocalConst",
+            Self::LteLocalConst => "LteLocalConst",
+            Self::EqLocalConst => "EqLocalConst",
+            Self::NeqLocalConst => "NeqLocalConst",
+            Self::AddLocalConst => "AddLocalConst",
+            Self::SubtractLocalConst => "SubtractLocalConst",
+            Self::MultiplyLocalConst => "MultiplyLocalConst",
+            Self::DivideLocalConst => "DivideLocalConst",
+            Self::ModuloLocalConst => "ModuloLocalConst",
+            Self::Array => "Array",
+            Self::Ref => "Ref",
+            Self::IndexGet => "IndexGet",
+            Self::IndexSet => "IndexSet",
+            Self::Map => "Map",
+            Self::Range => "Range",
+            Self::IntoIter => "IntoIter",
+            Self::Struct => "Struct",
+            Self::LocalPtrWrite => "LocalPtrWrite",
+            Self::GlobalPtrWrite => "GlobalPtrWrite",
+            Self::EnclosedPtrWrite => "GlobalPtrWrite",
+            Self::CopyLL => "CopyLL",
+            Self::CopyLG => "CopyLG",
+            Self::CopyGG => "CopyGG",
+            Self::CopyGL => "CopyGL",
+            Self::SwapLL => "SwapLL",
+            Self::SwapGL => "SwapGL",
+            Self::SwapLG => "SwapLG",
+            Self::SwapGG => "SwapGG",
+            Self::Escape => "Escape",
+            Self::Deref => "Deref",
+            Self::Halt => "Halt",
         };
         f.write_str(s)
     }
@@ -2749,7 +2797,7 @@ mod tests {
 
         let mut c = Compiler::new();
         c.symbols
-            .define(left, DefineType::Var(Box::new(DefineType::Int)));
+            .define(left, DefineType::Var(Box::new(DefineType::Int)), false);
         let r = c.compile_statement(&expr).unwrap();
 
         println!("{}", bytecode_to_human(&c.instructions, true));

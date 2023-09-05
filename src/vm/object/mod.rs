@@ -90,6 +90,13 @@ pub enum Type {
     Closure,
 }
 
+pub fn is_builtin_const(n: &str) -> bool {
+    match n {
+        "nil" => true,
+        _ => false,
+    }
+}
+
 impl Type {
     pub fn is_numeric(&self) -> bool {
         match &self {
@@ -149,6 +156,20 @@ impl Object {
     pub fn tag(self) -> Type {
         // Safety: self.0 with TAG_MASK applied will always yield a correct Type
         unsafe { std::mem::transmute((self.0 as usize >> NUM_BITS) as u8) }
+    }
+
+    pub fn is_ref(&self) -> bool {
+        match self.tag() {
+            Type::Ref => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        match self.tag() {
+            Type::Null => true,
+            _ => false,
+        }
     }
 
     /// Create a new null value

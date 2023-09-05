@@ -187,6 +187,12 @@ pub struct ParenExpression {
 }
 
 #[derive(Debug, Clone)]
+pub struct InvarExpression {
+    pub pos: usize,
+    pub expr: Box<Expression>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StarExpression {
     pub pos: usize,
     pub right: Box<Expression>,
@@ -238,6 +244,7 @@ pub enum Expression {
     TypeChannel(ChannelType),     // <-chan T | chan<- T | chan T
     TypePointer(PointerType),     // *T
     TypeInterface(InterfaceType), // interface { ... }
+    Invar(InvarExpression),
 }
 
 impl Expression {
@@ -612,6 +619,7 @@ impl Expression {
             Expression::TypeChannel(x) => x.pos.0,
             Expression::TypePointer(x) => x.pos,
             Expression::TypeInterface(x) => x.pos,
+            Expression::Invar(x) => x.pos,
         }
     }
 }
@@ -668,6 +676,7 @@ impl Debug for Expression {
             Self::TypeChannel(arg0) => f.debug_tuple("TypeChannel").field(arg0).finish(),
             Self::TypePointer(arg0) => f.debug_tuple("TypePointer").field(arg0).finish(),
             Self::TypeInterface(arg0) => f.debug_tuple("TypeInterface").field(arg0).finish(),
+            Self::Invar(arg0) => f.debug_tuple("Invar").field(arg0).finish(),
         }
     }
 }

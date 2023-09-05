@@ -17,6 +17,7 @@ use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
 use crate::vm::object::collections::{Map, ObjIter};
+use crate::vm::object::r#ref::Ref;
 use crate::vm::object::structure::Struct;
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
@@ -195,6 +196,9 @@ impl VM {
 
     #[inline(always)]
     fn global_ptr_write(&mut self, rel_idx: u16, value: Object) {
+        if self.globals[rel_idx as usize].is_null() {
+            panic!("nil pointer dereference");
+        }
         let ptr = self.globals[rel_idx as usize].as_ref_mut();
         assert_eq!(ptr.value.tag(), value.tag());
 

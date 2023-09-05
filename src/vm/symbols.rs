@@ -14,6 +14,7 @@ pub(crate) struct SymbolTable {
 pub struct Symbol {
     pub scope: Scope,
     pub index: u16,
+    pub invar: bool,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug, Eq)]
@@ -76,6 +77,7 @@ pub enum DefineType {
     Ref(Box<Self>),
     Tuple(Vec<Self>),
     Type(Box<Self>, Type),
+    Invar(Box<Self>),
 }
 
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
@@ -176,6 +178,12 @@ impl DefineType {
             _ => false,
         }
     }
+    pub fn is_invar(&self) -> bool {
+        match &self {
+            Self::Invar(_) => true,
+            _ => false,
+        }
+    }
     pub fn is_numeric(&self) -> bool {
         match &self {
             Self::Int
@@ -240,6 +248,7 @@ impl DefineType {
     pub fn is_nil(&self) -> bool {
         match &self {
             Self::Ref(r) => r.is_nil(),
+            Self::Type(t, _) => t.is_nil(),
             Self::Null => true,
             _ => false,
         }
@@ -378,7 +387,7 @@ impl Context {
     }
 
     /// Defines a new symbol in the current context its inner-most scope.
-    fn define(&mut self, name: &str, dt: DefineType) -> Symbol {
+    fn define(&mut self, name: &str, dt: DefineType, invar: bool) -> Symbol {
         let current_scope = self.symbols.last_mut().unwrap();
         current_scope.push((name.to_string(), dt));
         self.max_size += 1;
@@ -386,6 +395,7 @@ impl Context {
         Symbol {
             index: (self.total_len() - 1).try_into().unwrap(),
             scope: self.scope,
+            invar,
         }
     }
 
@@ -402,6 +412,7 @@ impl Context {
                     Symbol {
                         index: (abs_index + index).try_into().unwrap(),
                         scope: self.scope,
+                        invar: scope[index].1.is_invar(),
                     },
                     scope[index].1.clone(),
                 ));
@@ -500,8 +511,8 @@ impl SymbolTable {
     }
 
     /// Define a symbol in the current context (and current scope within that context).
-    pub fn define(&mut self, name: &str, dt: DefineType) -> Symbol {
-        self.current_context().define(name, dt)
+    pub fn define(&mut self, name: &str, dt: DefineType, invar: bool) -> Symbol {
+        self.current_context().define(name, dt, invar)
     }
 
     ///Resolve a symbol in either the current context or the global context if no local was found.

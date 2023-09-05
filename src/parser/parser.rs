@@ -5,6 +5,7 @@ use super::token::{Keyword, LitKind, Operator, Token, TokenKind};
 use super::Error;
 use super::Result;
 
+use crate::parser::ast::{Expression, InvarExpression};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -911,7 +912,17 @@ impl Parser {
     fn parse_type_term(&mut self) -> Result<ast::Expression> {
         let pos = self.current_pos();
         let under_type = self.skipped(Operator::Tiled)?;
-        let typ = self.type_()?;
+
+        let typ = if self.current_is(Keyword::InVar) {
+            self.next()?;
+            Expression::Invar(InvarExpression {
+                pos,
+                expr: Box::new(self.type_()?),
+            })
+        } else {
+            self.type_()?
+        };
+
         Ok(match under_type {
             false => typ,
             true => {
@@ -1139,14 +1150,19 @@ impl Parser {
                 Some((_, Token::Operator(Operator::ParenLeft))) => {
                     self.next()?;
                     let mut args = vec![];
+                    let mut prev_comma: Option<bool> = None;
                     while self.current_not(Operator::ParenRight)
                         && self.current_not(Operator::DotDotDot)
                     {
+                        if let Some(pc) = prev_comma {
+                            assert!(pc);
+                        }
                         args.push(self.parse_next_level_expr()?);
-                        self.skipped(Operator::Comma)?;
+                        prev_comma = Some(self.skipped(Operator::Comma)?);
                     }
 
                     let func = Box::new(x);
+
                     let current_pos = self.current_pos();
                     let dots = self.skipped(Operator::DotDotDot)?.then_some(current_pos);
                     self.skipped(Operator::Comma)?; // (a, b...,)
@@ -1185,6 +1201,15 @@ impl Parser {
     /// OperandName = identifier | QualifiedIdent .
     fn operand(&mut self) -> Result<ast::Expression> {
         match &self.current {
+            Some((p, Token::Keyword(Keyword::InVar))) => {
+                let p = *p;
+                self.next()?;
+                let expr = self.expression()?;
+                Ok(ast::Expression::Invar(InvarExpression {
+                    pos: p,
+                    expr: Box::new(expr),
+                }))
+            }
             Some((_, Token::Literal(LitKind::Ident, _))) => {
                 let name = self.identifier()?;
                 Ok(ast::Expression::Ident(name))
