@@ -320,15 +320,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        {
-            println!("Bytecode (raw)= \n{:?}", &code.instructions);
-            print!(
-                "Bytecode (human)= {}\n",
-                bytecode_to_human(&code.instructions, true)
-            );
-            println!("{:16}= {:?}", "Constants", code.constants);
-            println!("{:16}= {:?}", "Frames", self.frames);
-        }
+        // {
+        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
+        //     print!(
+        //         "Bytecode (human)= {}\n",
+        //         bytecode_to_human(&code.instructions, true)
+        //     );
+        //     println!("{:16}= {:?}", "Constants", code.constants);
+        //     println!("{:16}= {:?}", "Frames", self.frames);
+        // }
 
         // reset some state
         self.instructions = code.instructions;
@@ -344,9 +344,6 @@ impl VM {
         // Construct a new garbage collector
         // And allow to manage memory for constants
         let gc = &mut GC::new();
-        for c in &constants {
-            gc.maybe_trace(*c)
-        }
 
         macro_rules! impl_binary_op_method {
             ($op:tt) => {{
@@ -666,6 +663,7 @@ impl VM {
                     // also take all arguments from the stack in 1 op
 
                     let builtin = self.read_u8();
+                    //println!("builtin: {}", builtin);
                     let num_args = self.read_u8() as usize;
                     let mut args = Vec::with_capacity(num_args);
                     for _ in 0..num_args {

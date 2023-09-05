@@ -14,13 +14,6 @@ impl GC {
         }
     }
 
-    #[inline]
-    pub fn maybe_trace(&mut self, o: Object) {
-        if o.is_heap_allocated() {
-            self.objects.push(o);
-        }
-    }
-
     /// Adds the given object to the list of objects to manage
     #[inline]
     pub fn trace(&mut self, o: Object) {
@@ -78,9 +71,6 @@ impl GC {
         while i < self.objects.len() {
             let mut obj = self.objects[i];
 
-            // Immediate values should not end up on the traced objects list
-            debug_assert!(obj.is_heap_allocated());
-
             // Object is heap allocated
             // Read its header to check if its marked
             // If its marked, clear flag & continue
@@ -110,10 +100,6 @@ impl Drop for GC {
 /// Marks the given object as reachable
 #[inline]
 fn mark(o: &mut Object) {
-    if !o.is_heap_allocated() {
-        return;
-    }
-
     let header = unsafe { Header::read(o) };
     header.marked = true;
 

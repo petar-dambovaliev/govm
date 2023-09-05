@@ -78,7 +78,123 @@ pub enum DefineType {
     Type(Box<Self>, Type),
 }
 
+pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
+    if !t.is_integer() {
+        return false;
+    }
+    if i > 0 {
+        let num = i as usize;
+        let (min, max) = t.integer_max_usize();
+        if num >= min && num <= max {
+            return true;
+        }
+    } else {
+        let (min, max) = t.integer_max_isize();
+        if i >= min && i <= max {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
+    if !t.is_integer() {
+        return false;
+    }
+
+    let (min, max) = t.integer_max_usize();
+    if i >= min && i <= max {
+        return true;
+    }
+    false
+}
+
 impl DefineType {
+    pub fn is_coerceable_to(&self, other: &DefineType) -> bool {
+        if self.is_integer() && other.is_integer() {
+            return true;
+        }
+
+        if self.is_integer() && other.is_rune() {
+            return true;
+        }
+
+        if self.is_rune() && other.is_byte() {
+            return true;
+        }
+
+        false
+    }
+
+    pub fn integer_max_usize(&self) -> (usize, usize) {
+        match &self {
+            Self::Int => (isize::MIN as usize, isize::MAX as usize),
+            Self::Byte => (u8::MIN as usize, u8::MAX as usize),
+            Self::Int8 => (i8::MIN as usize, i8::MAX as usize),
+            Self::Int16 => (i16::MIN as usize, i16::MAX as usize),
+            Self::Int32 => (i32::MIN as usize, i32::MAX as usize),
+            Self::Int64 => (i64::MIN as usize, i64::MAX as usize),
+            Self::Uint => (usize::MIN, usize::MAX),
+            Self::Uint8 => (u8::MIN as usize, u8::MAX as usize),
+            Self::Uint16 => (u16::MIN as usize, u16::MAX as usize),
+            Self::Uint32 => (u32::MIN as usize, u32::MAX as usize),
+            Self::Uint64 => (u64::MIN as usize, u64::MAX as usize),
+            _ => panic!("not integer: {:#?}", self),
+        }
+    }
+
+    pub fn integer_max_isize(&self) -> (isize, isize) {
+        match &self {
+            Self::Int => (isize::MIN, isize::MAX),
+            Self::Byte => (u8::MIN as isize, u8::MAX as isize),
+            Self::Int8 => (i8::MIN as isize, i8::MAX as isize),
+            Self::Int16 => (i16::MIN as isize, i16::MAX as isize),
+            Self::Int32 => (i32::MIN as isize, i32::MAX as isize),
+            Self::Int64 => (i64::MIN as isize, i64::MAX as isize),
+            Self::Uint => (usize::MIN as isize, usize::MAX as isize),
+            Self::Uint8 => (u8::MIN as isize, u8::MAX as isize),
+            Self::Uint16 => (u16::MIN as isize, u16::MAX as isize),
+            Self::Uint32 => (u32::MIN as isize, u32::MAX as isize),
+            Self::Uint64 => (u64::MIN as isize, u64::MAX as isize),
+            _ => panic!("not integer: {:#?}", self),
+        }
+    }
+
+    pub fn is_integer(&self) -> bool {
+        match &self {
+            Self::Int
+            | Self::Byte
+            | Self::Int8
+            | Self::Int16
+            | Self::Int32
+            | Self::Int64
+            | Self::Uint
+            | Self::Uint8
+            | Self::Uint16
+            | Self::Uint32
+            | Self::Uint64 => true,
+            _ => false,
+        }
+    }
+    pub fn is_numeric(&self) -> bool {
+        match &self {
+            Self::Int
+            | Self::Byte
+            | Self::Int8
+            | Self::Int16
+            | Self::Int32
+            | Self::Int64
+            | Self::Uint
+            | Self::Uint8
+            | Self::Uint16
+            | Self::Uint32
+            | Self::Uint64
+            | Self::Float
+            | Self::Float32
+            | Self::Float64 => true,
+            _ => false,
+        }
+    }
     pub fn strip_type(&self) -> DefineType {
         if let Self::Type(v, _) = self {
             *v.clone()
@@ -137,6 +253,20 @@ impl DefineType {
     pub fn is_struct(&self) -> bool {
         match &self {
             Self::Struct(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_byte(&self) -> bool {
+        match &self {
+            Self::Byte => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_rune(&self) -> bool {
+        match &self {
+            Self::Rune => true,
             _ => false,
         }
     }

@@ -26,7 +26,7 @@ impl Rune {
         dealloc(ptr.as_ptr(), Layout::new::<Self>());
     }
 
-    fn from_char(value: char) -> Object {
+    pub(crate) fn from_char(value: char) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Rune);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;

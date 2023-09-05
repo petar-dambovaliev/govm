@@ -247,6 +247,27 @@ impl Expression {
             _ => Err(format!("{:#?} is not an identifier", self)),
         }
     }
+
+    pub fn is_int_lit(&self) -> bool {
+        match self {
+            Expression::BasicLit(lit) => lit.kind == LitKind::Integer,
+            _ => false,
+        }
+    }
+
+    pub fn as_int_lit(&self) -> Result<isize, String> {
+        match self {
+            Expression::BasicLit(lit) => Ok(lit.value.parse::<isize>().unwrap()),
+            _ => Err(format!("{:#?} is not a BasicLit", self)),
+        }
+    }
+
+    pub fn as_uint_lit(&self) -> Result<usize, String> {
+        match self {
+            Expression::BasicLit(lit) => Ok(lit.value.parse::<usize>().unwrap()),
+            _ => Err(format!("{:#?} is not a BasicLit", self)),
+        }
+    }
 }
 
 // ================ Declaration Definition ================

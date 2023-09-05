@@ -1,7 +1,10 @@
 use super::{Error, Object};
 use crate::vm::gc::GC;
+use crate::vm::object::int::Byte;
+use crate::vm::object::rune::Rune;
 use crate::vm::object::Type;
 
+#[derive(Debug, Copy, Clone)]
 #[repr(u8)]
 pub enum Builtin {
     Print,
@@ -11,12 +14,15 @@ pub enum Builtin {
     Int,
     String,
     Length,
+    Byte,
+    Rune,
+    Println,
 }
 
 impl Builtin {
     pub fn is_void(&self) -> bool {
         match &self {
-            Self::Print => true,
+            Self::Print | Self::Println => true,
             _ => false,
         }
     }
@@ -32,6 +38,9 @@ impl From<u8> for Builtin {
             4 => Self::Int,
             5 => Self::String,
             6 => Self::Length,
+            7 => Self::Byte,
+            8 => Self::Rune,
+            9 => Self::Println,
             _ => panic!("Builtin::from: invalid byte"),
         }
     }
@@ -45,7 +54,10 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "float" => Some(Builtin::Float),
         "bool" => Some(Builtin::Bool),
         "string" => Some(Builtin::String),
+        "byte" => Some(Builtin::Byte),
         "len" => Some(Builtin::Length),
+        "rune" => Some(Builtin::Rune),
+        "println" => Some(Builtin::Println),
         _ => None,
     }
 }
@@ -59,9 +71,27 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
         // Builtin::Bool => call_bool(args),
         // Builtin::Float => call_float(args, gc),
         // Builtin::Int => call_int(args),
+        Builtin::Byte => call_byte(args),
         Builtin::Length => call_length(args),
-        _ => unimplemented!(),
+        Builtin::Rune => call_rune(args),
+        Builtin::Println => call_println(args),
+        _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_println(args: &[Object]) -> Result<Object, Error> {
+    if !args.is_empty() {
+        let mut args = args.iter();
+
+        let mut output = Vec::with_capacity(args.len());
+        for arg in args {
+            output.push(format!("{:#?}", arg));
+        }
+
+        print!("{:#?}", output);
+    }
+    println!();
+    Ok(Object::null())
 }
 
 /// Prints all the given arguments using a very simple format scheme
@@ -70,16 +100,15 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
 fn call_print(args: &[Object]) -> Result<Object, Error> {
     if !args.is_empty() {
         let mut args = args.iter();
-        let mut format_str = format!("{:#?}", args.next());
 
-        for replacement in args {
-            format_str = format_str.replacen("{}", &format!("{:#?}", replacement), 1);
+        let mut output = Vec::with_capacity(args.len());
+        for arg in args {
+            output.push(format!("{:#?}", arg));
         }
 
-        print!("{format_str}");
+        print!("{:#?}", output);
     }
 
-    println!();
     Ok(Object::null())
 }
 
@@ -108,4 +137,127 @@ fn call_length(args: &[Object]) -> Result<Object, Error> {
         }
     };
     Ok(Object::int(length as isize))
+}
+
+fn call_byte(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "byte expects 1 argument given {}",
+            args.len()
+        )));
+    }
+
+    let tag = args[0].tag();
+    match tag {
+        Type::Rune => {
+            let r = args[0].as_rune().value;
+            let byte = r as u8;
+            Ok(Byte::from_u8(byte))
+        }
+        Type::Int => {
+            let i = args[0].as_int().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::I8 => {
+            let i = args[0].as_int8().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::I16 => {
+            let i = args[0].as_int16().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::I32 => {
+            let i = args[0].as_int32().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::I64 => {
+            let i = args[0].as_int64().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::UI => {
+            let i = args[0].as_uint().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::UI8 => {
+            let i = args[0].as_uint8().value;
+            Ok(Byte::from_u8(i))
+        }
+        Type::UI16 => {
+            let i = args[0].as_uint16().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::UI32 => {
+            let i = args[0].as_uint32().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        Type::UI64 => {
+            let i = args[0].as_uint64().value;
+            Ok(Byte::from_u8(i as u8))
+        }
+        _ => Err(Error::ArgumentError(format!(
+            "invalid argument: {:#?}",
+            args[0]
+        ))),
+    }
+}
+
+fn call_rune(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "rune expects 1 argument given {}",
+            args.len()
+        )));
+    }
+
+    let tag = args[0].tag();
+    match tag {
+        Type::Rune => {
+            let r = args[0].as_rune().value;
+            Ok(Rune::from_char(r))
+        }
+        Type::Int => {
+            let i = args[0].as_int().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::I8 => {
+            let i = args[0].as_int8().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::I16 => {
+            let i = args[0].as_int16().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::I32 => {
+            let i = args[0].as_int32().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::I64 => {
+            let i = args[0].as_int64().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::UI => {
+            let i = args[0].as_uint().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::UI8 => {
+            let i = args[0].as_uint8().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::UI16 => {
+            let i = args[0].as_uint16().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::UI32 => {
+            let i = args[0].as_uint32().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        Type::UI64 => {
+            let i = args[0].as_uint64().value;
+            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+        }
+        _ => Err(Error::ArgumentError(format!(
+            "invalid argument: {:#?}",
+            args[0]
+        ))),
+    }
 }

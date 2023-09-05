@@ -7,6 +7,7 @@ use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::gc::GC;
 use crate::vm::object::function::Closure;
+use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::Struct;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::*;
@@ -323,6 +324,7 @@ impl Compiler {
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         //insert builtin values
         self.constants.push(Object::null());
+
         let nil_symbol = self.symbols.define(
             "nil",
             DefineType::Type(Box::new(DefineType::Null), Type::Null),
@@ -335,15 +337,72 @@ impl Compiler {
             .define("_", DefineType::Var(Box::new(DefineType::Null)));
         assert_eq!(1, nil_symbol.index);
 
-        let _ = self.symbols.define(
-            "int",
-            DefineType::Type(Box::new(DefineType::Int), Type::Int),
-        );
+        let numbers = vec![
+            (
+                "int",
+                DefineType::Type(Box::new(DefineType::Int), Type::Int),
+            ),
+            (
+                "int8",
+                DefineType::Type(Box::new(DefineType::Int8), Type::I8),
+            ),
+            (
+                "int16",
+                DefineType::Type(Box::new(DefineType::Int16), Type::I16),
+            ),
+            (
+                "int32",
+                DefineType::Type(Box::new(DefineType::Int32), Type::I32),
+            ),
+            (
+                "int64",
+                DefineType::Type(Box::new(DefineType::Int64), Type::I64),
+            ),
+            (
+                "uint",
+                DefineType::Type(Box::new(DefineType::Uint), Type::UI),
+            ),
+            (
+                "uint8",
+                DefineType::Type(Box::new(DefineType::Uint8), Type::UI8),
+            ),
+            (
+                "uint16",
+                DefineType::Type(Box::new(DefineType::Uint16), Type::UI16),
+            ),
+            (
+                "uint32",
+                DefineType::Type(Box::new(DefineType::Uint32), Type::UI32),
+            ),
+            (
+                "uint64",
+                DefineType::Type(Box::new(DefineType::Uint64), Type::UI64),
+            ),
+            (
+                "byte",
+                DefineType::Type(Box::new(DefineType::Byte), Type::Byte),
+            ),
+            (
+                "float",
+                DefineType::Type(Box::new(DefineType::Float), Type::Float),
+            ),
+            (
+                "float32",
+                DefineType::Type(Box::new(DefineType::Float32), Type::Float32),
+            ),
+            (
+                "float64",
+                DefineType::Type(Box::new(DefineType::Float64), Type::Float64),
+            ),
+            (
+                "rune",
+                DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
+            ),
+        ];
 
-        let _ = self.symbols.define(
-            "float",
-            DefineType::Type(Box::new(DefineType::Float), Type::Float),
-        );
+        for number in numbers {
+            let _ = self.symbols.define(number.0, number.1);
+        }
 
         let _ = self.symbols.define(
             "string",
@@ -512,8 +571,9 @@ impl Compiler {
         match decl {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
+                    let tp = self.expression_to_define_type(spec.typ.as_ref().unwrap());
+
                     let values = if spec.values.is_empty() {
-                        let tp = self.expression_to_define_type(spec.typ.as_ref().unwrap());
                         let mut defaults = Vec::with_capacity(spec.name.len());
                         for _ in 0..spec.name.len() {
                             defaults.push(self.make_type_default_val(tp.clone()));
@@ -524,7 +584,14 @@ impl Compiler {
                     };
 
                     for (name, value) in spec.name.iter().zip(values.iter()) {
-                        let rt = self.compile_expression(value)?;
+                        let mut rt = self.compile_expression(value)?;
+
+                        if rt != tp && value.is_int_lit() {
+                            let i = value.as_int_lit().unwrap();
+                            if i >= u8::MIN as isize && i <= u8::MAX as isize {
+                                rt = tp.clone();
+                            }
+                        }
 
                         let symbol = self
                             .symbols
@@ -1171,7 +1238,27 @@ impl Compiler {
                                 let inner = expect_t.as_ref().strip_type();
                                 assert_eq!(inner, got_t);
                             } else {
-                                assert_eq!(expect_t, got_t);
+                                let stripped = expect_t.strip_type();
+
+                                if right.is_int_lit() {
+                                    let is_value_coercable = if let Ok(i) = right.as_int_lit() {
+                                        is_integer_coerceable_to(i, &stripped)
+                                    } else if let Ok(i) = right.as_uint_lit() {
+                                        is_uint_coerceable_to(i, &stripped)
+                                    } else {
+                                        false
+                                    };
+
+                                    if !(got_t.is_coerceable_to(&stripped) && is_value_coercable) {
+                                        assert_eq!(
+                                            expect_t.strip_type(),
+                                            got_t,
+                                            "left:{:#?}---right:{:#?}",
+                                            left,
+                                            right
+                                        );
+                                    }
+                                }
                             }
 
                             self.emit_opcode(setop);
@@ -1700,7 +1787,22 @@ impl Compiler {
                 kind: LitKind::String,
                 value: "".to_string(),
             }),
-            DefineType::Int => Expression::BasicLit(BasicLit {
+            DefineType::Rune => Expression::BasicLit(BasicLit {
+                pos: 0,
+                kind: LitKind::Char,
+                value: "".to_string(),
+            }),
+            DefineType::Int
+            | DefineType::Int8
+            | DefineType::Int16
+            | DefineType::Int32
+            | DefineType::Int64
+            | DefineType::Uint
+            | DefineType::Uint8
+            | DefineType::Uint16
+            | DefineType::Uint32
+            | DefineType::Uint64
+            | DefineType::Byte => Expression::BasicLit(BasicLit {
                 pos: 0,
                 kind: LitKind::Integer,
                 value: "0".to_string(),
@@ -1718,11 +1820,13 @@ impl Compiler {
                 pos: 0,
                 name: "false".to_string(),
             }),
-            DefineType::Float => Expression::BasicLit(BasicLit {
-                pos: 0,
-                kind: LitKind::Float,
-                value: "0.0".to_string(),
-            }),
+            DefineType::Float | DefineType::Float32 | DefineType::Float64 => {
+                Expression::BasicLit(BasicLit {
+                    pos: 0,
+                    kind: LitKind::Float,
+                    value: "0.0".to_string(),
+                })
+            }
             DefineType::Struct(n, inner_types) => {
                 let mut lit_val = LiteralValue {
                     pos: (0, 0),
@@ -1751,7 +1855,7 @@ impl Compiler {
                 });
                 expr
             }
-            _ => unimplemented!("{:#?}", t),
+            _ => unimplemented!("make_type_default_val: {:#?}", t),
         }
     }
 
@@ -1859,7 +1963,16 @@ impl Compiler {
 
                                 return Ok(DefineType::Int);
                             }
-                            None => unimplemented!(),
+                            None => {
+                                if op.op == Operator::Sub {
+                                    let left = self.compile_expression(op.x.as_ref())?;
+                                    assert!(left.is_numeric());
+                                    self.emit_opcode(OpCode::Negate);
+                                    return Ok(left);
+                                } else {
+                                    unimplemented!("{:#?}", op)
+                                }
+                            }
                         }
                     }
                     Operator::And => {
@@ -1914,6 +2027,25 @@ impl Compiler {
                 self.emit_u16(idx);
 
                 return Ok(DefineType::String);
+            }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Char => {
+                let mut chars: Vec<char> = lit.value.chars().collect();
+
+                if chars.is_empty() {
+                    chars = vec![char::default()];
+                } else {
+                    assert_eq!(3, chars.len());
+                    chars = vec![chars[1]];
+                }
+
+                assert_eq!(1, chars.len(), "{:#?}", chars);
+
+                let obj = Rune::from_char(*chars.first().unwrap());
+                let idx = self.add_constant(obj);
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
+
+                return Ok(DefineType::Rune);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
                 let resolved = self

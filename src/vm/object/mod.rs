@@ -90,6 +90,28 @@ pub enum Type {
     Closure,
 }
 
+impl Type {
+    pub fn is_numeric(&self) -> bool {
+        match &self {
+            Self::Int
+            | Self::Byte
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::UI
+            | Self::UI8
+            | Self::UI16
+            | Self::UI32
+            | Self::UI64
+            | Self::Float
+            | Self::Float32
+            | Self::Float64 => true,
+            _ => false,
+        }
+    }
+}
+
 impl TryFrom<&str> for Type {
     type Error = RString;
 
@@ -116,8 +138,6 @@ impl Object {
     /// Creates a new object from the value (or address) given with the given type mask applied
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {
-        println!("pointer: {:b}", raw as usize);
-
         let shift = (t as usize).shl(NUM_BITS);
         let s = Self((shift | raw as usize) as _);
         assert_eq!(s.tag(), t);
@@ -895,7 +915,9 @@ impl Display for Object {
                 }
                 f.write_char('}')?;
             }
-            Type::Rune => unimplemented!(),
+            Type::Rune => {
+                f.write_str(&format!("rune({})", self.as_rune().value.to_string()))?;
+            }
             Type::Map => {
                 let strct = unsafe { self.as_map() };
 
@@ -1003,7 +1025,6 @@ mod tests {
     #[test]
     fn test_object_null() {
         assert_eq!(Object::null().tag(), Type::Null);
-        assert!(!Object::null().is_heap_allocated());
     }
 
     #[test]
@@ -1016,9 +1037,6 @@ mod tests {
 
         assert_eq!(t.as_bool(), true);
         assert_eq!(f.as_bool(), false);
-
-        assert!(!t.is_heap_allocated());
-        assert!(!f.is_heap_allocated());
     }
 
     #[test]
@@ -1055,7 +1073,6 @@ mod tests {
         let mut gc = GC::new();
         let obj = Object::string("Hello, world!", &mut gc);
         assert_eq!(obj.tag(), Type::String);
-        assert!(obj.is_heap_allocated());
         assert_eq!(obj.as_str(), "Hello, world!");
     }
 
@@ -1064,7 +1081,6 @@ mod tests {
         let mut gc = GC::new();
         let obj = Object::float(std::f64::consts::PI, &mut gc);
         assert_eq!(obj.tag(), Type::Float);
-        assert!(obj.is_heap_allocated());
         assert_eq!(obj.as_float64(), std::f64::consts::PI);
     }
 
@@ -1072,7 +1088,6 @@ mod tests {
     fn test_pointer_empty_array() {
         let ptr = Array::from_slice(&[]);
         assert_eq!(ptr.tag(), Type::Array);
-        assert!(ptr.is_heap_allocated());
         assert_eq!(ptr.as_vec().len(), 0);
         ptr.free();
     }
