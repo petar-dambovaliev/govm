@@ -636,7 +636,7 @@ impl Compiler {
                     let t = self.expression_to_define_type(&recv.typ);
 
                     (
-                        format!("0x{:#?}{}", t.strip_ref(), f.name.name),
+                        Self::make_method_name(t.strip_ref(), &f.name.name),
                         Some(recv),
                         Some(Box::new(t)),
                     )
@@ -662,6 +662,17 @@ impl Compiler {
 
                 if let Some(recv) = recv {
                     let t = self.expression_to_define_type(&recv.typ);
+
+                    //check if there is a field with the same name
+                    if let DefineType::Struct(_, fields) = &t.strip_ref() {
+                        for field in fields {
+                            let (field_name, _) = field.as_named();
+                            if field_name == f.name.name {
+                                panic!("field and method with the same name {}", field_name);
+                            }
+                        }
+                    }
+
                     self.symbols.define(
                         &recv.name.first().unwrap().name,
                         DefineType::Var(Box::new(t.clone())),
@@ -855,10 +866,12 @@ impl Compiler {
                                     panic!("recursive definition");
                                 }
 
+                                let r = self.symbols.resolve(&inner_t.name).unwrap().get_type();
+
                                 let dt = if is_ref {
-                                    DefineType::Ref(Box::new(DefineType::Null))
+                                    DefineType::Ref(Box::new(r.strip_type()))
                                 } else {
-                                    DefineType::Null
+                                    r.strip_type()
                                 };
 
                                 for name in &field.name {
@@ -1790,6 +1803,10 @@ impl Compiler {
         self.emit_opcode(opcode);
     }
 
+    fn make_method_name(dt: DefineType, f_name: &str) -> String {
+        format!("0x{:#?}{}", dt, f_name)
+    }
+
     fn compile_const_var_infix_expression(
         &mut self,
         varname: &str,
@@ -2154,7 +2171,7 @@ impl Compiler {
                         .strip_var();
 
                     (
-                        format!("0x{:#?}{}", sellt, sel.sel.name),
+                        Self::make_method_name(sellt, &sel.sel.name),
                         Some(sel.x.clone()),
                     )
                 } else {

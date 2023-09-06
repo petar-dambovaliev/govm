@@ -19,7 +19,7 @@ fn main() {
             blah int
         }
         
-        func (f *Foo) blah() {
+        func (f *Foo) blah1() {
             println(f)
             //should not compile
             println(f.blah)
@@ -27,7 +27,7 @@ fn main() {
         
         func main() {
             f := Foo{}
-            f.blah()
+            f.blah1()
         }
     "#,
     );
