@@ -771,10 +771,11 @@ impl VM {
                     self.push(iter);
                 }
                 OpCode::IndexSet => {
+                    //println!("{:#?}", self.stack);
                     let value = self.pop();
                     let index = self.pop();
                     let left = self.pop();
-                    println!("value: {:#?} index: {:#?} left: {:#?}", value, index, left);
+                    //println!("value: {:#?} index: {:#?} left: {:#?}", value, index, left);
                     index_set(left, index, value)?;
                     self.push(left);
                 }

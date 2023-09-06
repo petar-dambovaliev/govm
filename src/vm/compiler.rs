@@ -1224,14 +1224,13 @@ impl Compiler {
                             self.emit_u16(symbol.index);
                         }
                         Operator::Assign => 'assign: {
-                            let (name, is_deref) = match &left {
-                                Expression::Ident(name) => (name.name.to_string(), false),
-                                Expression::Selector(_) => {
-                                    self.compile_expression(&left)?;
-                                    self.compile_expression(right)?;
-                                    self.emit_opcode(OpCode::IndexSet);
-                                    return Ok(None);
-                                }
+                            let (name, sel, is_deref) = match &left {
+                                Expression::Ident(name) => (name.name.to_string(), None, false),
+                                Expression::Selector(sl) => (
+                                    sl.x.as_ident().unwrap().name.clone(),
+                                    Some(sl.sel.name.to_string()),
+                                    false,
+                                ),
                                 Expression::Index(ind) => {
                                     self.compile_expression(ind.left.as_ref())?;
                                     self.compile_expression(ind.index.as_ref())?;
@@ -1243,7 +1242,7 @@ impl Compiler {
                                     //deref
                                     if op.y.is_none() && op.op == Operator::Star {
                                         let ident = op.x.as_ident().unwrap();
-                                        (ident.name.to_string(), true)
+                                        (ident.name.to_string(), None, true)
                                     } else {
                                         panic!("cannot assign a value to expressions of type");
                                     }
@@ -1264,6 +1263,38 @@ impl Compiler {
                             let resolved = self.symbols.resolve(&name).ok_or(
                                 Error::ReferenceError(format!("assign: `{name}` is not defined")),
                             )?;
+
+                            if let Some(s) = sel {
+                                let t = resolved.get_type().strip_var().strip_ref();
+
+                                match t {
+                                    DefineType::Struct(_, fields) => {
+                                        let mut i = None;
+                                        for (ind, field) in fields.iter().enumerate() {
+                                            let f = field.as_named();
+                                            if f.0 == s {
+                                                i = Some(ind);
+                                            }
+                                        }
+
+                                        let i = i.unwrap();
+
+                                        self.compile_expression(&Expression::Ident(Ident {
+                                            pos: 0,
+                                            name,
+                                        }))?;
+                                        self.compile_expression(&Expression::BasicLit(BasicLit {
+                                            pos: 0,
+                                            kind: LitKind::Integer,
+                                            value: format!("{}", i),
+                                        }))?;
+                                        self.compile_expression(right)?;
+                                        self.emit_opcode(OpCode::IndexSet);
+                                        return Ok(None);
+                                    }
+                                    _ => unimplemented!("{:#?}", t),
+                                }
+                            }
 
                             let (index, setop, expect_t) = match resolved {
                                 Resolved::Enclosed { heap_addr, t, .. } => {

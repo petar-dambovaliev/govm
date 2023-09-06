@@ -20,15 +20,14 @@ fn main() {
         }
         
         func (u *User) ageOneYear() {
-            //u.age += 1
+            u.age += 1
         }
         
         func main() {
             peter := User{age: 36}
-            peter.age += 1
-            //peter.ageOneYear()
-            
-            //println(peter)
+            println(peter)
+            peter.ageOneYear()
+            println(peter)
         }
     "#,
     );
