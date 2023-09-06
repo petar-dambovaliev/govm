@@ -325,15 +325,15 @@ impl VM {
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
         //#[cfg(feature = "debug")]
-        // {
-        //     println!("Bytecode (raw)= \n{:?}", &code.instructions);
-        //     print!(
-        //         "Bytecode (human)= {}\n",
-        //         bytecode_to_human(&code.instructions, true)
-        //     );
-        //     println!("{:16}= {:?}", "Constants", code.constants);
-        //     println!("{:16}= {:?}", "Frames", self.frames);
-        // }
+        {
+            println!("Bytecode (raw)= \n{:?}", &code.instructions);
+            print!(
+                "Bytecode (human)= {}\n",
+                bytecode_to_human(&code.instructions, true)
+            );
+            println!("{:16}= {:?}", "Constants", code.constants);
+            println!("{:16}= {:?}", "Frames", self.frames);
+        }
 
         // reset some state
         self.instructions = code.instructions;
@@ -461,7 +461,7 @@ impl VM {
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
                     //println!("GetLocal-before: {:#?}", self.stack);
-                    //println!("{}", idx);
+                    //println!("id: {} bp: {}", idx, self.bp);
                     let value = self.get_local(idx);
                     self.push(value);
                     //println!("GetLocal-after: {:#?}", self.stack);
@@ -677,6 +677,7 @@ impl VM {
                         args.push(self.pop());
                     }
                     args.reverse();
+
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
                     let result = builtin::call(builtin, &args, gc)?;
                     self.push(result);
@@ -773,8 +774,9 @@ impl VM {
                     let value = self.pop();
                     let index = self.pop();
                     let left = self.pop();
-                    let value = index_set(left, index, value)?;
-                    self.push(value);
+                    println!("value: {:#?} index: {:#?} left: {:#?}", value, index, left);
+                    index_set(left, index, value)?;
+                    self.push(left);
                 }
                 OpCode::Halt => {
                     gc.untrace(final_result);
@@ -841,13 +843,13 @@ fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error>
     Ok(res)
 }
 
-fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
+fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), Error> {
     let map = left.as_map_mut();
     //isert returns the old value
     // later for the gc
     map.insert(index, value);
 
-    Ok(value)
+    Ok(())
 }
 
 fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
@@ -879,7 +881,7 @@ fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Er
     Ok(result)
 }
 
-fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, Error> {
+fn index_set(mut left: Object, index: Object, value: Object) -> Result<(), Error> {
     if left.tag() == Type::Map {
         return index_set_map(left, index, value);
     }
@@ -892,15 +894,24 @@ fn index_set(mut left: Object, index: Object, value: Object) -> Result<Object, E
     match left.tag() {
         Type::Array => index_set_array(left.as_vec_mut(), index.as_isize(), value)?,
         Type::String => index_set_string(left.as_string_mut(), index.as_isize(), value)?,
+        Type::Struct => index_set_struct(left, index.as_isize() as usize, value)?,
+        Type::Ref => index_set(left.as_ref().value, index, value)?,
         _ => {
             return Err(Error::TypeError(format!(
-                "index_set: invalid type {}",
-                left.tag()
+                "index_set: invalid type {:#?}",
+                left
             )))
         }
     }
 
-    Ok(value)
+    Ok(())
+}
+
+fn index_set_struct(mut left: Object, index: usize, value: Object) -> Result<(), Error> {
+    let strct = left.as_struct_mut();
+
+    strct.values[index] = value;
+    Ok(())
 }
 
 fn index_set_array(array: &mut Vec<Object>, mut index: isize, value: Object) -> Result<(), Error> {

@@ -15,19 +15,20 @@ fn main() {
         r#"
         package main
         
-        type Foo struct {
-            blah int
+        type User struct {
+            age int
         }
         
-        func (f *Foo) blah1() {
-            println(f)
-            //should not compile
-            println(f.blah)
+        func (u *User) ageOneYear() {
+            //u.age += 1
         }
         
         func main() {
-            f := Foo{}
-            f.blah1()
+            peter := User{age: 36}
+            peter.age += 1
+            //peter.ageOneYear()
+            
+            //println(peter)
         }
     "#,
     );

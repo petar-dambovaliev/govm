@@ -85,7 +85,7 @@ fn call_println(args: &[Object]) -> Result<Object, Error> {
 
         let mut output = Vec::with_capacity(args.len());
         for arg in args {
-            output.push(format!("{:#?}", arg));
+            output.push(format!("{:#?}({:#?})", arg.tag(), arg));
         }
 
         print!("{:#?}", output);

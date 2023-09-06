@@ -1226,6 +1226,12 @@ impl Compiler {
                         Operator::Assign => 'assign: {
                             let (name, is_deref) = match &left {
                                 Expression::Ident(name) => (name.name.to_string(), false),
+                                Expression::Selector(_) => {
+                                    self.compile_expression(&left)?;
+                                    self.compile_expression(right)?;
+                                    self.emit_opcode(OpCode::IndexSet);
+                                    return Ok(None);
+                                }
                                 Expression::Index(ind) => {
                                     self.compile_expression(ind.left.as_ref())?;
                                     self.compile_expression(ind.index.as_ref())?;
@@ -2146,18 +2152,22 @@ impl Compiler {
             }
 
             Expression::Call(call) => 'compile_call: {
-                //todo typecheck return on builtins
+                //todo typecheck return and args on builtins
                 if let Expression::Ident(name) = call.func.as_ref() {
                     if let Some(builtin) = builtin::resolve(&name.name) {
+                        for a in &call.args {
+                            self.compile_expression(a)?;
+                        }
+
                         let is_void = builtin.is_void();
                         self.emit_opcode(OpCode::CallBuiltin);
                         self.emit_u8(builtin as u8);
                         self.emit_u8(call.args.len().try_into().unwrap());
 
                         if is_void {
+                            //panic!("{:#?}", 123);
                             self.emit_opcode(OpCode::Pop);
                         }
-
                         break 'compile_call;
                     }
                 }
@@ -2225,7 +2235,8 @@ impl Compiler {
                 }
 
                 self.emit_opcode(OpCode::Call);
-                self.emit_u8(call.args.len().try_into().unwrap());
+                let arg_len: u8 = call.args.len().try_into().unwrap();
+                self.emit_u8(arg_len + sel.is_some() as u8);
 
                 return Ok(rt);
             }
@@ -2336,7 +2347,10 @@ impl Compiler {
                 //struct
                 if let Expression::Ident(name) = clit.typ.as_ref() {
                     //todo this can be locally defined type
-                    let (s, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
+                    let (s, dt) = match self.symbols.resolve(name.name.as_str()) {
+                        Some(s) => s.as_local(),
+                        None => panic!("struct `{}` does not exist", name.name),
+                    };
 
                     let (name, inner_types) = match dt {
                         DefineType::Struct(name, fields) => (name, fields),
@@ -2496,9 +2510,9 @@ impl Compiler {
                     _ => panic!(),
                 };
 
-                let (_, inner_types) = match inner {
+                let (_, inner_types) = match inner.strip_ref() {
                     DefineType::Struct(name, inner_types) => (name, inner_types),
-                    _ => panic!(),
+                    _ => panic!("{:#?}", inner),
                 };
 
                 for (i, inner_type) in inner_types.into_iter().enumerate() {

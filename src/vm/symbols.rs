@@ -445,6 +445,7 @@ impl Context {
     }
 }
 
+#[derive(Debug)]
 pub enum Resolved {
     //addr, level, heap_addr, type
     Enclosed {
