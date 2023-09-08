@@ -2,7 +2,7 @@ pub mod parser;
 pub mod vm;
 
 use crate::parser::Parser;
-use crate::vm::compiler::Compiler;
+use crate::vm::compiler::compiler::Compiler;
 use crate::vm::VM;
 use std::time::Instant;
 
@@ -15,6 +15,10 @@ fn main() {
         r#"
         package main
         
+        type Ager interface {
+           ageOneYear()
+        }
+        
         type User struct {
             age int
         }
@@ -23,10 +27,13 @@ fn main() {
             u.age += 1
         }
         
+        func Age(a Ager) {
+            a.ageOneYear()
+        }
+        
         func main() {
             peter := User{age: 36}
-            println(peter)
-            peter.ageOneYear()
+            Age(&peter)
             println(peter)
         }
     "#,

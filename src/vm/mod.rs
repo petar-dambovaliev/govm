@@ -18,7 +18,7 @@ use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
 use crate::vm::object::collections::{Map, ObjIter};
 use crate::vm::object::r#ref::Ref;
-use crate::vm::object::structure::Struct;
+use crate::vm::object::structure::{Interface, Struct};
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
@@ -416,6 +416,45 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
             match self.next() {
+                OpCode::Downcast => {
+                    let value = self.pop();
+                    let iface = unsafe { Interface::read(&value) };
+                    self.push(Ref::from_obj(iface.value));
+                }
+                OpCode::DynamicDispatch => {
+                    let num_args = self.read_u16();
+                    let method_id = self.read_u16();
+
+                    let value = self.pop();
+                    let iface = unsafe { Interface::read(&value) };
+                    let method_name = &iface.methods[method_id as usize];
+
+                    let strct = iface.value.as_struct();
+
+                    for (name, ip) in &strct.method_dispatch {
+                        if method_name == name {
+                            let base_pointer = self.stack.len() as u16 - 1 - num_args;
+                            self.pushframe(*ip as u32, base_pointer);
+                            break;
+                        }
+                    }
+                }
+                OpCode::Icast => {
+                    let iface_id = self.read_u16();
+                    let value = self.pop();
+                    let c = self.globals[iface_id as usize];
+                    if c.tag() != Type::Interface {
+                        panic!("expected interface: got {:#?}", c);
+                    }
+                    let interface = unsafe { Interface::read(&c) };
+                    let iface = Interface::object(
+                        interface.name.clone(),
+                        interface.methods.clone(),
+                        value.as_ref().value,
+                    );
+
+                    self.push(iface);
+                }
                 OpCode::Const => {
                     let idx = self.read_u16();
                     let value = constants[idx as usize];
@@ -756,7 +795,7 @@ impl VM {
                         fields.push(value);
                     }
 
-                    let obj = Struct::object(struct_name.to_string(), fields);
+                    let obj = Struct::object(struct_name.to_string(), fields, vec![]);
                     self.push(obj);
                 }
                 OpCode::IndexGet => {

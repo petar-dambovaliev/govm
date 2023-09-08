@@ -1,3 +1,4 @@
+use crate::vm::compiler::compiler::Compiler;
 use crate::vm::object::Type;
 
 #[derive(Debug)]
@@ -50,9 +51,17 @@ pub enum ContextType {
 pub enum DefineType {
     Null,
     Var(Box<Self>),
-    Struct(String, Vec<ContextType>),
-    // func name, recv      args              return type
-    Func(String, Option<Box<Self>>, Vec<ContextType>, Box<Self>),
+    Struct {
+        name: String,
+        fields: Vec<ContextType>,
+        methods: Vec<Self>,
+    },
+    Func {
+        name: String,
+        recv: Option<Box<Self>>,
+        args: Vec<ContextType>,
+        rt: Box<Self>,
+    },
     Int,
     Byte,
     Int8,
@@ -79,6 +88,11 @@ pub enum DefineType {
     Tuple(Vec<Self>),
     Type(Box<Self>, Type),
     Invar(Box<Self>),
+    //should only contain functions
+    Interface {
+        name: String,
+        methods: Vec<Self>,
+    },
 }
 
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
@@ -113,6 +127,35 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
+    pub fn get_type_name(&self) -> String {
+        match self {
+            Self::Struct { name: n, .. } => n.to_string(),
+            Self::Ref(inner) => inner.get_type_name(),
+            _ => panic!("not implemented for {:#?}", self),
+        }
+    }
+    pub fn implements(&self, interface: &Self, c: &mut Compiler) -> bool {
+        let mut expect_methods = interface.as_interface().1;
+        let (name, _, _) = self.as_struct();
+
+        let (_, _, mut got_methods) = c.symbols.resolve(&name).unwrap().as_local().1.as_struct();
+
+        for gm in &mut got_methods {
+            let (name, _, args, rt) = gm.as_func();
+
+            *gm = DefineType::Func {
+                name,
+                recv: None,
+                args,
+                rt,
+            };
+        }
+
+        expect_methods.sort();
+        got_methods.sort();
+
+        expect_methods == got_methods
+    }
     pub fn is_coerceable_to(&self, other: &DefineType) -> bool {
         if self.is_integer() && other.is_integer() {
             return true;
@@ -185,6 +228,14 @@ impl DefineType {
             _ => false,
         }
     }
+
+    pub fn is_interface(&self) -> bool {
+        match &self {
+            Self::Interface { .. } => true,
+            _ => false,
+        }
+    }
+
     pub fn is_numeric(&self) -> bool {
         match &self {
             Self::Int
@@ -264,13 +315,13 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func(_, _, _, _) | Self::Map(_, _) | Self::Array(_) => true,
+            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Array(_) => true,
             _ => false,
         }
     }
     pub fn is_struct(&self) -> bool {
         match &self {
-            Self::Struct(_, _) => true,
+            Self::Struct { .. } => true,
             _ => false,
         }
     }
@@ -312,7 +363,7 @@ impl DefineType {
 
     pub fn is_func(&self) -> bool {
         match &self {
-            Self::Func(_, _, _, _) => true,
+            Self::Func { .. } => true,
             _ => false,
         }
     }
@@ -331,9 +382,46 @@ impl DefineType {
         }
     }
 
+    pub fn as_struct(&self) -> (String, Vec<ContextType>, Vec<DefineType>) {
+        match &self {
+            Self::Struct {
+                name,
+                fields,
+                methods,
+            } => (name.clone(), fields.clone(), methods.clone()),
+            _ => panic!("expected Self::Struct, got {:#?}", self),
+        }
+    }
+
+    pub fn as_interface(&self) -> (String, Vec<DefineType>) {
+        match &self {
+            Self::Interface { methods, name } => (name.clone(), methods.clone()),
+            _ => panic!("expected Self::Interface, got {:#?}", self),
+        }
+    }
+
     pub fn as_var(&self) -> DefineType {
         match &self {
             Self::Var(t) => *t.clone(),
+            _ => panic!("expected Self::Var, got {:#?}", self),
+        }
+    }
+
+    pub fn as_func(
+        &self,
+    ) -> (
+        String,
+        Option<Box<DefineType>>,
+        Vec<ContextType>,
+        Box<DefineType>,
+    ) {
+        match &self {
+            Self::Func {
+                name,
+                recv,
+                args,
+                rt,
+            } => (name.clone(), recv.clone(), args.clone(), rt.clone()),
             _ => panic!("expected Self::Var, got {:#?}", self),
         }
     }
@@ -397,6 +485,7 @@ impl Context {
 
     /// Defines a new symbol in the current context its inner-most scope.
     fn define(&mut self, name: &str, dt: DefineType, invar: bool) -> Symbol {
+        //println!("define: {}", name);
         let current_scope = self.symbols.last_mut().unwrap();
         current_scope.push((name.to_string(), dt));
         self.max_size += 1;

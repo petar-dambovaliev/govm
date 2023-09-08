@@ -14,6 +14,7 @@ pub struct Struct {
     header: Header,
     pub(crate) name: String,
     pub values: Vec<Object>,
+    pub method_dispatch: Vec<(String, usize)>,
 }
 
 impl Struct {
@@ -25,11 +26,44 @@ impl Struct {
         ptr.get_mut::<Self>()
     }
 
-    pub fn object(name: String, values: Vec<Object>) -> Object {
+    pub fn object(
+        name: String,
+        values: Vec<Object>,
+        method_dispatch: Vec<(String, usize)>,
+    ) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         init!(obj.values => values);
+        init!(obj.method_dispatch => method_dispatch);
+        init!(obj.name => name);
+        ptr
+    }
+}
+
+#[repr(C)]
+pub struct Interface {
+    header: Header,
+    pub(crate) name: String,
+    pub value: Object,
+    pub methods: Vec<String>,
+}
+
+impl Interface {
+    pub(crate) unsafe fn read(ptr: &Object) -> &Self {
+        ptr.get::<Self>()
+    }
+
+    pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut Self {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn object(name: String, methods: Vec<String>, value: Object) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Interface);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value);
+        init!(obj.methods => methods);
         init!(obj.name => name);
         ptr
     }

@@ -1,308 +1,34 @@
-use crate::parser::ast::BranchStmt;
 use crate::parser::ast::{
-    AssignStmt, BasicLit, CompositeLit, DeclStmt, Declaration, Element, ExprStmt, Expression,
-    FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
+    AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
+    Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
+use crate::vm::compiler::call::CallType;
+use crate::vm::compiler::{
+    Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext, JUMP_PLACEHOLDER,
+};
 use crate::vm::gc::GC;
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
-use crate::vm::object::structure::Struct;
-use crate::vm::object::{is_builtin_const, FromString, Type};
-use crate::vm::symbols::*;
-use crate::vm::{builtin, Error, Object};
+use crate::vm::object::structure::{Interface, Struct};
+use crate::vm::object::{is_builtin_const, FromString, Object, Type};
+use crate::vm::symbols::{
+    is_integer_coerceable_to, is_uint_coerceable_to, ContextType, DefineType, Resolved, Scope,
+    SymbolTable,
+};
+use crate::vm::{builtin, Error};
 use ahash::AHashMap;
-use std::fmt::Display;
-use std::fmt::Write;
-
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[allow(dead_code)]
-pub(crate) enum OpCode {
-    Const = 0,
-    Pop,
-    True,
-    False,
-    Add,
-    Subtract,
-    Divide,
-    Multiply,
-    Gt,
-    Gte,
-    Lt,
-    Lte,
-    Eq,
-    Neq,
-    And,
-    Or,
-    Not,
-    Modulo,
-    Negate,
-    Jump,
-    JumpIfFalse,
-    Null,
-    Return,
-    ReturnValue,
-    Call,
-    CallBuiltin,
-    GetEnclosed,
-    SetEnclosed,
-    GetLocal,
-    SetLocal,
-    GetGlobal,
-    SetGlobal,
-    GtLocalConst,
-    GteLocalConst,
-    LtLocalConst,
-    LteLocalConst,
-    EqLocalConst,
-    NeqLocalConst,
-    AddLocalConst,
-    SubtractLocalConst,
-    MultiplyLocalConst,
-    DivideLocalConst,
-    ModuloLocalConst,
-    Array,
-    IndexGet,
-    IndexSet,
-    Ref,
-    Map,
-    Range,
-    IntoIter,
-    Struct,
-    EnclosedPtrWrite,
-    LocalPtrWrite,
-    GlobalPtrWrite,
-    CopyGG,
-    CopyLL,
-    CopyGL,
-    CopyLG,
-    SwapLL,
-    SwapGL,
-    SwapLG,
-    SwapGG,
-    Escape,
-    Deref,
-    Halt,
-}
-
-const JUMP_PLACEHOLDER: u16 = 1337;
-
-impl From<u8> for OpCode {
-    #[inline(always)]
-    fn from(value: u8) -> Self {
-        unsafe { std::mem::transmute(value) }
-    }
-}
-
-impl OpCode {
-    fn operands(&self) -> &[usize] {
-        match self {
-            // OpCodes with 1 operand of 2 bytes
-            OpCode::Const
-            | OpCode::Jump
-            | OpCode::JumpIfFalse
-            | OpCode::Array
-            | OpCode::Map
-            | OpCode::ReturnValue
-            | OpCode::Struct => &[2],
-
-            // OpCodes with 2 operands of 2 bytes
-            OpCode::GtLocalConst
-            | OpCode::GteLocalConst
-            | OpCode::LtLocalConst
-            | OpCode::LteLocalConst
-            | OpCode::EqLocalConst
-            | OpCode::NeqLocalConst
-            | OpCode::AddLocalConst
-            | OpCode::SubtractLocalConst
-            | OpCode::MultiplyLocalConst
-            | OpCode::DivideLocalConst
-            | OpCode::ModuloLocalConst
-            | OpCode::Range
-            | OpCode::CopyLL
-            | OpCode::CopyGL
-            | OpCode::CopyLG
-            | OpCode::CopyGG
-            | OpCode::SwapLL
-            | OpCode::SwapLG
-            | OpCode::SwapGG
-            | OpCode::SwapGL => &[2, 2],
-
-            // OpCodes with 2 operands of 1 bytes each
-            OpCode::CallBuiltin => &[1, 1],
-
-            // OpCodes with 1 operand op 1 byte:
-            OpCode::Call => &[1],
-
-            OpCode::SetLocal
-            | OpCode::GetGlobal
-            | OpCode::SetGlobal
-            | OpCode::GetLocal
-            | OpCode::GetEnclosed
-            | OpCode::SetEnclosed
-            | OpCode::LocalPtrWrite
-            | OpCode::GlobalPtrWrite
-            | OpCode::EnclosedPtrWrite
-            | OpCode::Escape => &[2],
-
-            // OpCodes with no operands
-            OpCode::Pop
-            | OpCode::True
-            | OpCode::False
-            | OpCode::Add
-            | OpCode::Subtract
-            | OpCode::Divide
-            | OpCode::Multiply
-            | OpCode::Gt
-            | OpCode::Gte
-            | OpCode::Lt
-            | OpCode::Lte
-            | OpCode::Eq
-            | OpCode::Neq
-            | OpCode::And
-            | OpCode::Or
-            | OpCode::Not
-            | OpCode::Modulo
-            | OpCode::Negate
-            | OpCode::Null
-            | OpCode::Return
-            | OpCode::IndexGet
-            | OpCode::IndexSet
-            | OpCode::Halt
-            | OpCode::Ref
-            | OpCode::IntoIter
-            | OpCode::Deref => &[],
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Bytecode {
-    pub constants: Vec<Object>,
-    pub instructions: Vec<u8>,
-}
 
 pub struct Compiler {
-    symbols: SymbolTable,
+    pub(crate) symbols: SymbolTable,
     constants: Vec<Object>,
-    instructions: Vec<u8>,
+    pub(crate) instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
     contexts: Vec<Context>,
     func_contexts: Vec<FuncContext>,
     label_contexts: AHashMap<(usize, usize), String>,
     gc: GC,
-}
-
-enum Context {
-    Switch(SwitchContext),
-    For(LoopContext),
-}
-
-impl Context {
-    fn to_switch(self) -> SwitchContext {
-        match self {
-            Self::Switch(sw) => sw,
-            _ => panic!("expected switch"),
-        }
-    }
-
-    fn to_for(self) -> LoopContext {
-        match self {
-            Self::For(sw) => sw,
-            _ => panic!("expected switch"),
-        }
-    }
-
-    fn push_break(&mut self, pos: usize) {
-        match self {
-            Self::Switch(sw) => sw.break_instructions.push(pos),
-            Self::For(f) => f.break_instructions.push(pos),
-        }
-    }
-
-    fn start(&self) -> usize {
-        match self {
-            Self::Switch(sw) => sw.start,
-            Self::For(f) => f.start,
-        }
-    }
-
-    fn label(&self) -> Option<&String> {
-        match self {
-            Self::Switch(sw) => sw.label.as_ref(),
-            Self::For(f) => f.label.as_ref(),
-        }
-    }
-}
-
-/// Type to keep track of switch constructs so we can emit the proper jump instructions
-struct SwitchContext {
-    /// Points to the first instruction of the (current) loop condition
-    /// This is where continue statements should jump to
-    start: usize,
-
-    /// Stores the index of all JUMP instructions within the current switch context that originate from a break statement
-    /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this switch
-    break_instructions: Vec<usize>,
-
-    label: Option<String>,
-}
-
-impl SwitchContext {
-    fn new(start: usize, label: Option<String>) -> Self {
-        Self {
-            start,
-            break_instructions: Vec::new(),
-            label,
-        }
-    }
-}
-
-/// Type to keep track of loop constructs so we can emit the proper jump instructions
-struct LoopContext {
-    /// Points to the first instruction of the (current) loop condition
-    /// This is where continue statements should jump to
-    start: usize,
-
-    /// Stores the index of all JUMP instructions within the current loop context that originate from a break statement
-    /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this loop
-    break_instructions: Vec<usize>,
-
-    label: Option<String>,
-}
-
-impl LoopContext {
-    fn new(start: usize, label: Option<String>) -> Self {
-        Self {
-            start,
-            break_instructions: Vec::new(),
-            label,
-        }
-    }
-}
-
-/// Type to keep track of function constructs so we can emit the proper jump instructions
-struct FuncContext {
-    /// Points to the first instruction of the (current) loop condition
-    /// This is where continue statements should jump to
-    start: usize,
-
-    /// Stores the index of all JUMP instructions within the current function context that originate from a return statement
-    /// Once this function context ends, these instructions should have their operands updated to the first instruction that follows this function
-    ret_instructions: Vec<usize>,
-    ret_types: Vec<DefineType>,
-}
-
-impl FuncContext {
-    fn new(start: usize) -> Self {
-        Self {
-            start,
-            ret_instructions: Vec::new(),
-            ret_types: Vec::new(),
-        }
-    }
 }
 
 impl Compiler {
@@ -393,14 +119,11 @@ impl Compiler {
                 "float64",
                 DefineType::Type(Box::new(DefineType::Float64), Type::Float64),
             ),
-            (
-                "rune",
-                DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
-            ),
         ];
 
         for number in numbers {
             let _ = self.symbols.define(number.0, number.1, false);
+            //self.constants.push(Object::int(0));
         }
 
         let _ = self.symbols.define(
@@ -409,17 +132,23 @@ impl Compiler {
             false,
         );
 
+        //self.constants.push(Object::string("", &mut self.gc));
+
         let _ = self.symbols.define(
             "rune",
             DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
             false,
         );
 
+        //self.constants.push(Rune::from_char(0 as char));
+
         let _ = self.symbols.define(
             "bool",
             DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
             false,
         );
+
+        //self.constants.push(Object::bool(false));
 
         //todo define error interface properly
         // implement interfaces
@@ -512,12 +241,12 @@ impl Compiler {
                     let (_, t_vec) = self.field_list_to_define_type(&f.params);
                     let (dt, _) = self.field_list_to_define_type(&f.result);
 
-                    DefineType::Func(
-                        "".to_string(),
-                        None,
-                        self.define_type_to_context_type(t_vec.as_ref()),
-                        Box::new(dt),
-                    )
+                    DefineType::Func {
+                        name: "".to_string(),
+                        recv: None,
+                        args: self.define_type_to_context_type(t_vec.as_ref()),
+                        rt: Box::new(dt),
+                    }
                 }
                 _ => panic!("function: unsupported parameter expression: {:#?}", el.typ),
             };
@@ -542,12 +271,12 @@ impl Compiler {
             Expression::TypeFunction(tf) => {
                 let (_, args) = self.field_list_to_define_type(&tf.params);
                 let (ret, _) = self.field_list_to_define_type(&tf.result);
-                DefineType::Func(
-                    "".to_string(),
-                    None,
-                    self.define_type_to_context_type(args.as_ref()),
-                    Box::new(ret),
-                )
+                DefineType::Func {
+                    name: "".to_string(),
+                    recv: None,
+                    args: self.define_type_to_context_type(args.as_ref()),
+                    rt: Box::new(ret),
+                }
             }
             Expression::TypePointer(tp) => {
                 DefineType::Ref(Box::new(self.expression_to_define_type(&tp.typ)))
@@ -635,23 +364,25 @@ impl Compiler {
                     let recv = recv.list.first().unwrap();
                     let t = self.expression_to_define_type(&recv.typ);
 
-                    (
+                    let ret = (
                         Self::make_method_name(t.strip_ref(), &f.name.name),
                         Some(recv),
                         Some(Box::new(t)),
-                    )
+                    );
+
+                    ret
                 } else {
                     (f.name.name.clone(), None, None)
                 };
 
                 let symbol = self.symbols.define(
                     &f_name,
-                    DefineType::Func(
-                        f.name.name.clone(),
-                        recv_t.clone(),
-                        vec![],
-                        Box::new(DefineType::Null),
-                    ),
+                    DefineType::Func {
+                        name: f.name.name.clone(),
+                        recv: recv_t.clone(),
+                        args: vec![],
+                        rt: Box::new(DefineType::Null),
+                    },
                     false,
                 );
 
@@ -664,7 +395,7 @@ impl Compiler {
                     let t = self.expression_to_define_type(&recv.typ);
 
                     //check if there is a field with the same name
-                    if let DefineType::Struct(_, fields) = &t.strip_ref() {
+                    if let DefineType::Struct { name, fields, .. } = &t.strip_ref() {
                         for field in fields {
                             let (field_name, _) = field.as_named();
                             if field_name == f.name.name {
@@ -708,11 +439,39 @@ impl Compiler {
                     DefineType::Tuple(decl_r_types.clone())
                 };
 
-                let updated = self.symbols.update_dt(
-                    &f_name,
-                    DefineType::Func(f.name.name.clone(), recv_t, decl_arg_types, Box::new(r_t)),
-                );
+                let func_def = DefineType::Func {
+                    name: f.name.name.clone(),
+                    recv: recv_t,
+                    args: decl_arg_types,
+                    rt: Box::new(r_t),
+                };
+                let updated = self.symbols.update_dt(&f_name, func_def.clone());
                 assert!(updated);
+
+                //add method to struct symbol
+                if let Some(recv) = recv {
+                    let t = self.expression_to_define_type(&recv.typ);
+
+                    let (r_name, r_fields, mut r_methods) = self
+                        .symbols
+                        .resolve(&t.get_type_name())
+                        .unwrap()
+                        .get_type()
+                        .as_struct();
+
+                    r_methods.push(func_def.clone());
+
+                    let updated = self.symbols.update_dt(
+                        &r_name,
+                        DefineType::Struct {
+                            name: r_name.to_string(),
+                            fields: r_fields,
+                            methods: r_methods,
+                        },
+                    );
+
+                    assert!(updated);
+                }
 
                 let pos_start_function = self.instructions.len();
 
@@ -807,6 +566,24 @@ impl Compiler {
                 // Switch back to previous scope again
                 let ctx = self.symbols.leave_context();
 
+                //add method start position for dynamic dispatch
+                if let Some(recv) = recv {
+                    let t = self.expression_to_define_type(&recv.typ);
+
+                    if let DefineType::Struct { name, .. } = &t.strip_ref() {
+                        for constant in &mut self.constants {
+                            if constant.tag() == Type::Struct {
+                                let strct = constant.as_struct_mut();
+                                if &strct.name == name {
+                                    strct
+                                        .method_dispatch
+                                        .push((f_name.clone(), pos_start_function));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Create function object and store as constant
                 let obj = Object::function(
                     pos_start_function.try_into().unwrap(),
@@ -853,83 +630,144 @@ impl Compiler {
                     if !spec.alias {
                         let t = spec.name.clone();
 
-                        let mut field_types = vec![];
-                        if let Expression::TypeStruct(ta) = &spec.typ {
-                            //todo tags
-                            for field in &ta.fields {
-                                let (inner_t, is_ref) = match &field.typ {
-                                    Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
-                                    _ => (field.typ.as_ident().unwrap(), false),
-                                };
+                        match &spec.typ {
+                            Expression::TypeInterface(it) => {
+                                let mut funcs = Vec::with_capacity(it.methods.list.len());
+                                let mut func_names = Vec::with_capacity(it.methods.list.len());
 
-                                if !is_ref && t.name == inner_t.name {
-                                    panic!("recursive definition");
+                                for field in &it.methods.list {
+                                    let func_name = field.name.first().unwrap();
+                                    let (_, _, args, rt) =
+                                        self.expression_to_define_type(&field.typ).as_func();
+
+                                    funcs.push(DefineType::Func {
+                                        name: func_name.name.to_string(),
+                                        recv: None,
+                                        args,
+                                        rt,
+                                    });
+                                    func_names.push(func_name.name.to_string());
                                 }
 
-                                let r = self.symbols.resolve(&inner_t.name).unwrap().get_type();
+                                let s = self.symbols.define(
+                                    &spec.name.name.clone(),
+                                    DefineType::Interface {
+                                        name: spec.name.name.clone(),
+                                        methods: funcs,
+                                    },
+                                    false,
+                                );
 
-                                let dt = if is_ref {
-                                    DefineType::Ref(Box::new(r.strip_type()))
+                                let obj = Interface::object(
+                                    spec.name.name.clone(),
+                                    func_names,
+                                    Object::null(),
+                                );
+                                let idx = self.add_constant(obj);
+                                self.emit_opcode(OpCode::Const);
+                                self.emit_u16(idx);
+
+                                let opcode = if s.scope == Scope::Global {
+                                    OpCode::SetGlobal
                                 } else {
-                                    r.strip_type()
+                                    OpCode::SetLocal
                                 };
+                                self.emit_opcode(opcode);
+                                self.emit_u16(s.index);
 
-                                for name in &field.name {
-                                    field_types.push(ContextType::Named(
-                                        name.name.as_str().to_string(),
-                                        dt.clone(),
-                                    ));
-                                }
+                                self.emit_opcode(OpCode::Const);
+                                self.emit_u16(idx);
                             }
+                            Expression::TypeStruct(ta) => {
+                                let mut field_types = vec![];
+
+                                //todo tags
+                                for field in &ta.fields {
+                                    let (inner_t, is_ref) = match &field.typ {
+                                        Expression::TypePointer(p) => {
+                                            (p.typ.as_ident().unwrap(), true)
+                                        }
+                                        _ => (field.typ.as_ident().unwrap(), false),
+                                    };
+
+                                    if !is_ref && t.name == inner_t.name {
+                                        panic!("recursive definition");
+                                    }
+
+                                    let r = self.symbols.resolve(&inner_t.name).unwrap().get_type();
+
+                                    let dt = if is_ref {
+                                        DefineType::Ref(Box::new(r.strip_type()))
+                                    } else {
+                                        r.strip_type()
+                                    };
+
+                                    for name in &field.name {
+                                        field_types.push(ContextType::Named(
+                                            name.name.as_str().to_string(),
+                                            dt.clone(),
+                                        ));
+                                    }
+                                }
+
+                                let ftl = field_types.len();
+
+                                let mut field_values = Vec::with_capacity(ftl);
+
+                                for _ in 0..ftl {
+                                    field_values.push(Object::null());
+                                }
+
+                                let name = spec.name.name.as_str();
+                                let symbol = self.symbols.define(
+                                    name,
+                                    DefineType::Struct {
+                                        name: name.to_string(),
+                                        fields: field_types.clone(),
+                                        methods: vec![],
+                                    },
+                                    false,
+                                );
+
+                                for field_type in &mut field_types {
+                                    let (s, dt) = field_type.as_named();
+                                    let resolved = match dt {
+                                        DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
+                                        _ => dt,
+                                    };
+
+                                    *field_type = ContextType::Named(s, resolved);
+                                }
+
+                                let updated = self.symbols.update_dt(
+                                    name,
+                                    DefineType::Struct {
+                                        name: name.to_string(),
+                                        fields: field_types,
+                                        methods: vec![],
+                                    },
+                                );
+
+                                assert!(updated);
+
+                                let obj = Struct::object(name.to_string(), field_values, vec![]);
+                                let idx = self.add_constant(obj);
+                                self.emit_opcode(OpCode::Const);
+                                self.emit_u16(idx);
+
+                                let opcode = if symbol.scope == Scope::Global {
+                                    OpCode::SetGlobal
+                                } else {
+                                    OpCode::SetLocal
+                                };
+                                self.emit_opcode(opcode);
+                                self.emit_u16(symbol.index);
+
+                                self.emit_opcode(OpCode::Const);
+                                self.emit_u16(idx);
+                            }
+                            _ => unimplemented!("{:#?}", spec),
                         }
-
-                        let ftl = field_types.len();
-
-                        let mut field_values = Vec::with_capacity(ftl);
-
-                        for _ in 0..ftl {
-                            field_values.push(Object::null());
-                        }
-
-                        let name = spec.name.name.as_str();
-                        let symbol = self.symbols.define(
-                            name,
-                            DefineType::Struct(name.to_string(), field_types.clone()),
-                            false,
-                        );
-
-                        for field_type in &mut field_types {
-                            let (s, dt) = field_type.as_named();
-                            let resolved = match dt {
-                                DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
-                                _ => dt,
-                            };
-
-                            *field_type = ContextType::Named(s, resolved);
-                        }
-
-                        let updated = self
-                            .symbols
-                            .update_dt(name, DefineType::Struct(name.to_string(), field_types));
-
-                        assert!(updated);
-
-                        //todo add struct name
-                        let obj = Struct::object(name.to_string(), field_values);
-                        let idx = self.add_constant(obj);
-                        self.emit_opcode(OpCode::Const);
-                        self.emit_u16(idx);
-
-                        let opcode = if symbol.scope == Scope::Global {
-                            OpCode::SetGlobal
-                        } else {
-                            OpCode::SetLocal
-                        };
-                        self.emit_opcode(opcode);
-                        self.emit_u16(symbol.index);
-
-                        self.emit_opcode(OpCode::Const);
-                        self.emit_u16(idx);
                     }
                 }
             }
@@ -979,7 +817,7 @@ impl Compiler {
         Ok(Some(terminates))
     }
 
-    fn compile_statement(&mut self, stmt: &Statement) -> Result<Option<bool>, Error> {
+    pub(crate) fn compile_statement(&mut self, stmt: &Statement) -> Result<Option<bool>, Error> {
         match stmt {
             Statement::For(forstmt) => {
                 self.emit_opcode(OpCode::Null);
@@ -1110,7 +948,12 @@ impl Compiler {
                 if assign.left.len() > 1 && assign.right.len() == 1 {
                     let dt = self.compile_expression(assign.right.first().unwrap())?;
                     let (_ident, _args, ret) = match dt {
-                        DefineType::Func(ident, _, args, ret) => (ident, args, ret),
+                        DefineType::Func {
+                            name: ident,
+                            args: args,
+                            rt: ret,
+                            ..
+                        } => (ident, args, ret),
                         _ => panic!("expected a func"),
                     };
 
@@ -1268,7 +1111,7 @@ impl Compiler {
                                 let t = resolved.get_type().strip_var().strip_ref();
 
                                 match t {
-                                    DefineType::Struct(_, fields) => {
+                                    DefineType::Struct { fields: fields, .. } => {
                                         let mut i = None;
                                         for (ind, field) in fields.iter().enumerate() {
                                             let f = field.as_named();
@@ -1915,7 +1758,7 @@ impl Compiler {
             }),
             //todo interface
             DefineType::Ref(_)
-            | DefineType::Func(_, _, _, _)
+            | DefineType::Func { .. }
             | DefineType::Map(_, _)
             | DefineType::Null
             | DefineType::Array(_) => Expression::Ident(Ident {
@@ -1933,7 +1776,11 @@ impl Compiler {
                     value: "0.0".to_string(),
                 })
             }
-            DefineType::Struct(n, inner_types) => {
+            DefineType::Struct {
+                name: n,
+                fields: inner_types,
+                ..
+            } => {
                 let mut lit_val = LiteralValue {
                     pos: (0, 0),
                     values: vec![],
@@ -1965,9 +1812,171 @@ impl Compiler {
         }
     }
 
+    fn typecheck_call_func_sig(&mut self, call: &Call) -> Result<(), Error> {
+        let (f_name) = if let Expression::Selector(sel) = call.func.as_ref() {
+            let sellt = self
+                .symbols
+                .resolve(&sel.x.as_ident().unwrap().name)
+                .unwrap()
+                .get_type()
+                .strip_var();
+
+            Self::make_method_name(sellt, &sel.sel.name)
+        } else {
+            call.func.as_ident().unwrap().name.to_string()
+        };
+
+        let mut dt = self.symbols.resolve(&f_name).unwrap().get_type();
+
+        if let DefineType::Var(inner) = &dt {
+            if inner.is_func() {
+                dt = *inner.clone();
+            }
+        }
+
+        if !dt.is_func() {
+            return Err(Error::SyntaxError(format!(
+                "tried to call not a function: {:#?}",
+                dt
+            )));
+        }
+
+        let arg_types = match dt {
+            DefineType::Func {
+                args: arg_types, ..
+            } => arg_types,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(arg_types.len(), call.args.len());
+        Ok(())
+    }
+
     fn compile_expression(&mut self, expr: &Expression) -> Result<DefineType, Error> {
         match expr {
             //todo this is a total mess: fix me
+            Expression::Call(call) => 'compile_call: {
+                //todo typecheck return and args on builtins
+                if let Expression::Ident(name) = call.func.as_ref() {
+                    if let Some(builtin) = builtin::resolve(&name.name) {
+                        for a in &call.args {
+                            self.compile_expression(a)?;
+                        }
+
+                        let is_void = builtin.is_void();
+                        self.emit_opcode(OpCode::CallBuiltin);
+                        self.emit_u8(builtin as u8);
+                        self.emit_u8(call.args.len().try_into().unwrap());
+
+                        if is_void {
+                            //panic!("{:#?}", 123);
+                            self.emit_opcode(OpCode::Pop);
+                        }
+                        break 'compile_call;
+                    }
+                }
+
+                let ct = CallType::from_call(&call, self);
+
+                let rt = match ct {
+                    CallType::Func { func_dt, .. } => {
+                        let (_, _, arg_types, rts) = func_dt.as_func();
+                        let rts = rts.type_to_val_t();
+                        assert_eq!(arg_types.len(), call.args.len());
+
+                        for (a, t) in call.args.iter().zip(arg_types) {
+                            let got = self.compile_expression(a)?;
+                            let expected = t.as_named().1;
+                            if expected.is_interface() && got.is_ref() {
+                                let got_inner = got.as_ref();
+
+                                if got_inner.implements(&expected, self) {
+                                    let (name, _) = expected.as_interface();
+                                    let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
+
+                                    self.emit_opcode(OpCode::Icast);
+                                    self.emit_u16(s.index);
+                                } else {
+                                    assert_eq!(t.as_named().1, got);
+                                }
+                            } else {
+                                assert_eq!(t.as_named().1, got);
+                            }
+                        }
+                        self.compile_expression(call.func.as_ref())?;
+
+                        self.emit_opcode(OpCode::Call);
+                        let arg_len: u8 = call.args.len().try_into().unwrap();
+                        self.emit_u8(arg_len);
+
+                        rts
+                    }
+                    CallType::Method {
+                        mangled_name,
+                        struct_expr,
+                        method_dt,
+                        struct_dt,
+                        ..
+                    } => {
+                        let (_, _, arg_types, rts) = method_dt.as_func();
+                        let rts = rts.type_to_val_t();
+                        assert_eq!(arg_types.len(), call.args.len());
+
+                        //here we do automatic passing by reference
+                        // if the signature of the function is by ref
+                        // and our value is not we emit a ref opcode
+                        let got = self.compile_expression(&struct_expr)?;
+                        if struct_dt.is_ref() && !got.is_ref() {
+                            self.emit_opcode(OpCode::Ref);
+                        }
+
+                        for (a, t) in call.args.iter().zip(arg_types) {
+                            let got = self.compile_expression(a)?;
+                            assert_eq!(t.as_named().1, got);
+                        }
+
+                        self.compile_expression(&Expression::Ident(Ident {
+                            pos: 0,
+                            name: mangled_name,
+                        }))?;
+
+                        self.emit_opcode(OpCode::Call);
+                        let arg_len: u8 = call.args.len().try_into().unwrap();
+                        self.emit_u8(arg_len + 1);
+
+                        rts
+                    }
+                    CallType::DynamicDispatch {
+                        method_index,
+                        method_dt,
+                        iface_expr,
+                    } => {
+                        let (_, _, arg_types, rts) = method_dt.as_func();
+                        let rts = rts.type_to_val_t();
+                        assert_eq!(arg_types.len(), call.args.len());
+
+                        //downcast for the receiver
+                        self.compile_expression(&iface_expr)?;
+                        self.emit_opcode(OpCode::Downcast);
+
+                        for (a, t) in call.args.iter().zip(arg_types) {
+                            let got = self.compile_expression(a)?;
+                            assert_eq!(t.as_named().1, got);
+                        }
+
+                        // need to push the same interface for the dynamic dispatch info
+                        self.compile_expression(&iface_expr)?;
+                        self.emit_opcode(OpCode::DynamicDispatch);
+                        let arg_len: u16 = call.args.len().try_into().unwrap();
+                        self.emit_u16(arg_len + 1);
+                        self.emit_u16(method_index as u16);
+
+                        rts
+                    }
+                };
+
+                return Ok(rt);
+            }
             Expression::TypeMap(tm) => {
                 panic!("{:#?}", tm);
             }
@@ -2181,96 +2190,6 @@ impl Compiler {
                 self.emit_opcode(getop);
                 self.emit_u16(index);
             }
-
-            Expression::Call(call) => 'compile_call: {
-                //todo typecheck return and args on builtins
-                if let Expression::Ident(name) = call.func.as_ref() {
-                    if let Some(builtin) = builtin::resolve(&name.name) {
-                        for a in &call.args {
-                            self.compile_expression(a)?;
-                        }
-
-                        let is_void = builtin.is_void();
-                        self.emit_opcode(OpCode::CallBuiltin);
-                        self.emit_u8(builtin as u8);
-                        self.emit_u8(call.args.len().try_into().unwrap());
-
-                        if is_void {
-                            //panic!("{:#?}", 123);
-                            self.emit_opcode(OpCode::Pop);
-                        }
-                        break 'compile_call;
-                    }
-                }
-
-                let (f_name, sel) = if let Expression::Selector(sel) = call.func.as_ref() {
-                    let sellt = self
-                        .symbols
-                        .resolve(&sel.x.as_ident().unwrap().name)
-                        .unwrap()
-                        .get_type()
-                        .strip_var();
-
-                    (
-                        Self::make_method_name(sellt, &sel.sel.name),
-                        Some(sel.x.clone()),
-                    )
-                } else {
-                    (call.func.as_ident().unwrap().name.to_string(), None)
-                };
-
-                let mut dt = self.symbols.resolve(&f_name).unwrap().get_type();
-
-                if let DefineType::Var(inner) = &dt {
-                    if inner.is_func() {
-                        dt = *inner.clone();
-                    }
-                }
-
-                if !dt.is_func() {
-                    panic!("tried to call not a function: {:#?}", dt);
-                }
-
-                let (recv_t, arg_types, rt) = match dt {
-                    DefineType::Func(_, recv_t, arg_types, rts) => {
-                        (recv_t, arg_types, rts.type_to_val_t())
-                    }
-                    _ => unreachable!(),
-                };
-
-                assert_eq!(arg_types.len(), call.args.len());
-
-                //todo typecheck
-                if let Some(s) = sel.as_ref() {
-                    let got = self.compile_expression(s.as_ref())?;
-                    if recv_t.unwrap().is_ref() && !got.is_ref() {
-                        self.emit_opcode(OpCode::Ref);
-                    }
-                }
-
-                for (a, t) in call.args.iter().zip(arg_types) {
-                    let got = self.compile_expression(a)?;
-                    assert_eq!(t.as_named().1, got);
-                }
-
-                match call.func.as_ref() {
-                    Expression::Selector(_sl) => {
-                        self.compile_expression(&Expression::Ident(Ident {
-                            pos: 0,
-                            name: f_name.to_string(),
-                        }))?;
-                    }
-                    _ => {
-                        self.compile_expression(call.func.as_ref())?;
-                    }
-                }
-
-                self.emit_opcode(OpCode::Call);
-                let arg_len: u8 = call.args.len().try_into().unwrap();
-                self.emit_u8(arg_len + sel.is_some() as u8);
-
-                return Ok(rt);
-            }
             Expression::CompositeLit(clit) => {
                 //map
                 if let Expression::TypeMap(mp) = clit.typ.as_ref() {
@@ -2384,7 +2303,11 @@ impl Compiler {
                     };
 
                     let (name, inner_types) = match dt {
-                        DefineType::Struct(name, fields) => (name, fields),
+                        DefineType::Struct {
+                            name: name,
+                            fields: fields,
+                            ..
+                        } => (name, fields),
                         _ => panic!("expect struct"),
                     };
 
@@ -2475,7 +2398,11 @@ impl Compiler {
 
                     self.emit_opcode(OpCode::Struct);
                     self.emit_u16(inner_types.len().try_into().unwrap());
-                    return Ok(DefineType::Struct(name, inner_types));
+                    return Ok(DefineType::Struct {
+                        name: name,
+                        fields: inner_types,
+                        methods: vec![],
+                    });
                 }
                 panic!("unknown composite lit {:#?}", clit);
             }
@@ -2542,7 +2469,11 @@ impl Compiler {
                 };
 
                 let (_, inner_types) = match inner.strip_ref() {
-                    DefineType::Struct(name, inner_types) => (name, inner_types),
+                    DefineType::Struct {
+                        name: name,
+                        fields: inner_types,
+                        ..
+                    } => (name, inner_types),
                     _ => panic!("{:#?}", inner),
                 };
 
@@ -2700,12 +2631,12 @@ impl Compiler {
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
 
-                return Ok(DefineType::Func(
-                    "".to_string(),
-                    None,
-                    decl_arg_types,
-                    Box::new(r_t),
-                ));
+                return Ok(DefineType::Func {
+                    name: "".to_string(),
+                    recv: None,
+                    args: decl_arg_types,
+                    rt: Box::new(r_t),
+                });
             }
             Expression::Invar(invar) => {
                 let rt = self.compile_expression(&invar.expr)?;
@@ -2735,340 +2666,5 @@ impl Compiler {
         let idx = self.constants.len();
         self.constants.push(obj);
         idx.try_into().unwrap()
-    }
-}
-
-/// We use a string representation of OpCodes to make testing a little easier
-impl Display for OpCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match &self {
-            Self::Const => "Const",
-            Self::Pop => "Pop",
-            Self::True => "True",
-            Self::False => "False",
-            Self::Add => "Add",
-            Self::Subtract => "Subtract",
-            Self::Divide => "Divide",
-            Self::Multiply => "Multiply",
-            Self::Gt => "Gt",
-            Self::Gte => "Gte",
-            Self::Lt => "Lt",
-            Self::Lte => "Lte",
-            Self::Eq => "Eq",
-            Self::Neq => "Neq",
-            Self::And => "And",
-            Self::Or => "Or",
-            Self::Not => "Not",
-            Self::Modulo => "Modulo",
-            Self::Negate => "Negate",
-            Self::Jump => "Jump",
-            Self::JumpIfFalse => "JumpIfFalse",
-            Self::Null => "Null",
-            Self::Return => "Return",
-            Self::ReturnValue => "ReturnValue",
-            Self::Call => "Call",
-            Self::CallBuiltin => "CallBuiltin",
-            Self::GetLocal => "GetLocal",
-            Self::SetLocal => "SetLocal",
-            Self::GetEnclosed => "GetEnclosed",
-            Self::SetEnclosed => "SetEnclosed",
-            Self::GetGlobal => "GetGlobal",
-            Self::SetGlobal => "SetGlobal",
-            Self::GtLocalConst => "GtLocalConst",
-            Self::GteLocalConst => "GteLocalConst",
-            Self::LtLocalConst => "LtLocalConst",
-            Self::LteLocalConst => "LteLocalConst",
-            Self::EqLocalConst => "EqLocalConst",
-            Self::NeqLocalConst => "NeqLocalConst",
-            Self::AddLocalConst => "AddLocalConst",
-            Self::SubtractLocalConst => "SubtractLocalConst",
-            Self::MultiplyLocalConst => "MultiplyLocalConst",
-            Self::DivideLocalConst => "DivideLocalConst",
-            Self::ModuloLocalConst => "ModuloLocalConst",
-            Self::Array => "Array",
-            Self::Ref => "Ref",
-            Self::IndexGet => "IndexGet",
-            Self::IndexSet => "IndexSet",
-            Self::Map => "Map",
-            Self::Range => "Range",
-            Self::IntoIter => "IntoIter",
-            Self::Struct => "Struct",
-            Self::LocalPtrWrite => "LocalPtrWrite",
-            Self::GlobalPtrWrite => "GlobalPtrWrite",
-            Self::EnclosedPtrWrite => "GlobalPtrWrite",
-            Self::CopyLL => "CopyLL",
-            Self::CopyLG => "CopyLG",
-            Self::CopyGG => "CopyGG",
-            Self::CopyGL => "CopyGL",
-            Self::SwapLL => "SwapLL",
-            Self::SwapGL => "SwapGL",
-            Self::SwapLG => "SwapLG",
-            Self::SwapGG => "SwapGG",
-            Self::Escape => "Escape",
-            Self::Deref => "Deref",
-            Self::Halt => "Halt",
-        };
-        f.write_str(s)
-    }
-}
-
-// Converts an array of bytes to a string representation consisting of the OpCode along with their u16 values
-// For example: [OpCode::Const, 1, 0] -> "Const(1)"
-#[allow(dead_code)]
-pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
-    let mut ip = 0;
-    let mut str = String::with_capacity(256);
-
-    while ip < code.len() {
-        if ip > 0 {
-            str.push(' ');
-        }
-        let op = OpCode::from(code[ip]);
-        if positions {
-            write!(str, "\n{ip:4} ").unwrap();
-        }
-        str.push_str(&op.to_string());
-
-        if !op.operands().is_empty() {
-            str.push('(');
-        }
-        for (i, width) in op.operands().iter().enumerate() {
-            if i > 0 {
-                str.push(',');
-            }
-
-            match width {
-                2 => write!(
-                    str,
-                    "{}",
-                    (code[ip + 1] as u16) | ((code[ip + 2] as u16) << 8)
-                )
-                .unwrap(),
-                1 => write!(str, "{}", code[ip + 1]).unwrap(),
-                _ => panic!("invalid operand width"),
-            };
-            ip += width;
-        }
-        if !op.operands().is_empty() {
-            str.push(')');
-        }
-
-        ip += 1;
-    }
-
-    str
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::ast::Ident;
-    use crate::parser::Parser;
-
-    fn run(program: &str) -> String {
-        let mut p = Parser::from(program);
-        let ast = p.parse_file().unwrap();
-        let program = Compiler::new().compile_ast(&ast).unwrap();
-        bytecode_to_human(&program.instructions, false)
-    }
-
-    fn assert_bytecode_eq(program: &str, expected: &str) {
-        let mut p = Parser::from(program);
-        let ast = p.parse_file().unwrap();
-        let code = Compiler::new().compile_ast(&ast).unwrap();
-        assert_eq!(
-            bytecode_to_human(&code.instructions, false),
-            expected,
-            "\nInput: \t{program}\nBytecode: \t{}",
-            bytecode_to_human(&code.instructions, true)
-        );
-    }
-
-    #[test]
-    fn test_add_assignment_expression() {
-        let left = "a";
-        let expr = Statement::Assign(AssignStmt {
-            pos: 0,
-            op: Operator::Assign,
-            left: vec![Expression::Ident(Ident {
-                pos: 0,
-                name: left.to_string(),
-            })],
-            right: vec![Expression::Operation(Operation {
-                pos: 0,
-                op: Operator::Add,
-                x: Box::new(Expression::Ident(Ident {
-                    pos: 0,
-                    name: left.to_string(),
-                })),
-                y: Some(Box::new(Expression::BasicLit(BasicLit {
-                    pos: 0,
-                    kind: LitKind::Integer,
-                    value: "1".to_string(),
-                }))),
-            })],
-        });
-
-        let mut c = Compiler::new();
-        c.symbols
-            .define(left, DefineType::Var(Box::new(DefineType::Int)), false);
-        let r = c.compile_statement(&expr).unwrap();
-
-        println!("{}", bytecode_to_human(&c.instructions, true));
-    }
-
-    #[test]
-    fn test_int_expression() {
-        assert_eq!(run("5"), "Const(0) Pop Halt");
-        assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
-        assert_eq!(
-            run("5; 6; 5"),
-            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_bool_expression() {
-        assert_eq!(run("false"), "True Pop Halt");
-        assert_eq!(run("true; true"), "True Pop True Pop Halt");
-        assert_eq!(run("false"), "False Pop Halt");
-    }
-
-    #[test]
-    fn test_float_expression() {
-        assert_eq!(run("1.23"), "Const(0) Pop Halt");
-        assert_eq!(run("1.23; 1.23"), "Const(0) Pop Const(0) Pop Halt");
-        assert_eq!(
-            run("5.00; 6.00; 5.00"),
-            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_infix_expression() {
-        assert_eq!(run("1 + 2"), "Const(0) Const(1) Add Pop Halt");
-        assert_eq!(run("1 - 2"), "Const(0) Const(1) Subtract Pop Halt");
-        assert_eq!(run("1 * 2"), "Const(0) Const(1) Multiply Pop Halt");
-        assert_eq!(run("1 / 2"), "Const(0) Const(1) Divide Pop Halt");
-        assert_eq!(
-            run("1 * 2 * 3"),
-            "Const(0) Const(1) Multiply Const(2) Multiply Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_block_statements() {
-        assert_eq!(run("{ 1 }"), "Const(0) Pop Halt");
-    }
-
-    #[test]
-    fn test_if_expression() {
-        assert_bytecode_eq(
-            "als ja { 1 }",
-            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-        );
-        assert_bytecode_eq(
-            "als ja { 1 } anders { 2 }",
-            "True JumpIfFalse(10) Const(0) Jump(13) Const(1) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_if_expression_empty_body() {
-        assert_bytecode_eq(
-            "als ja { }",
-            "True JumpIfFalse(8) Null Jump(9) Null Pop Halt",
-        );
-
-        assert_bytecode_eq(
-            "als ja { } anders { 1 }",
-            "True JumpIfFalse(8) Null Jump(11) Const(0) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_if_expression_empty_else() {
-        assert_bytecode_eq(
-            "als ja { 1 } anders {}",
-            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_function_expression() {
-        assert_bytecode_eq(
-            "functie() { 1 }",
-            "Jump(7) Const(0) ReturnValue Const(1) Pop Halt",
-        );
-
-        assert_bytecode_eq(
-            "functie() { 1 } functie() { 2 }",
-            "Jump(7) Const(0) ReturnValue Const(1) Pop Jump(18) Const(2) ReturnValue Const(3) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_call_expression() {
-        assert_bytecode_eq(
-            "functie(a, b) { 1 }(1, 2)",
-            "Const(0) Const(1) Jump(13) Const(0) ReturnValue Const(2) Call(2) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_declare_statement() {
-        assert_eq!(run("stel a = 1;"), "Const(0) SetGlobal(0) Halt");
-
-        assert_eq!(
-            run("stel a = 1; stel b = 2;"),
-            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) Halt"
-        );
-
-        // TODO: Test scoped variables
-    }
-
-    #[test]
-    fn test_ident_expressions() {
-        assert_eq!(
-            run("stel a = 1; a"),
-            "Const(0) SetGlobal(0) GetGlobal(0) Pop Halt"
-        );
-
-        assert_eq!(
-            run("stel a = 1; stel b = 2; a; b;"),
-            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) GetGlobal(0) Pop GetGlobal(1) Pop Halt"
-        );
-
-        // TODO: Test scoped variables
-    }
-
-    #[test]
-    fn test_call_builtin() {
-        let mut p = Parser::from(
-            r#"
-        package main
-
-        func fib(n int) {
-            if n < 2 {
-                return n
-            }
-
-            return fib(n - 1) + fib(n - 2)
-        }
-    "#,
-        );
-        let mut compiler = Compiler::new();
-
-        let ast = p.parse_file().unwrap();
-        let code = compiler.compile_ast(&ast).unwrap();
-        //println!("{}", bytecode_to_human(&code.instructions, false))
-        // assert_eq!(
-        //     run(r#"
-        //         package main
-        //         func main(){}
-        //         var a = print("hallo")
-        //     "#),
-        //     "Const(0) CallBuiltin(0,1) Pop Halt"
-        // )
     }
 }
