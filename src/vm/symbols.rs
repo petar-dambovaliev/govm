@@ -154,7 +154,16 @@ impl DefineType {
         expect_methods.sort();
         got_methods.sort();
 
-        expect_methods == got_methods
+        fn is_subset<T: PartialEq>(subset: &[T], superset: &[T]) -> bool {
+            for item in subset {
+                if !superset.contains(item) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        is_subset(&expect_methods, &got_methods)
     }
     pub fn is_coerceable_to(&self, other: &DefineType) -> bool {
         if self.is_integer() && other.is_integer() {

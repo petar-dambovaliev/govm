@@ -936,13 +936,21 @@ impl Display for Object {
 
                 f.write_str(strct.name.as_str())?;
                 f.write_char('{')?;
+                f.write_str("fields: (")?;
                 for (i, obj) in strct.values.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
                     std::fmt::Display::fmt(&obj, f)?;
                 }
-                f.write_char('}')?;
+                f.write_str(") methods: (")?;
+                for (i, obj) in strct.method_dispatch.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    std::fmt::Display::fmt(&obj.0, f)?;
+                }
+                f.write_str(")}")?;
             }
             Type::Rune => {
                 f.write_str(&format!("rune({})", self.as_rune().value.to_string()))?;

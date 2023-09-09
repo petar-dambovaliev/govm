@@ -569,17 +569,25 @@ impl Compiler {
                 //add method start position for dynamic dispatch
                 if let Some(recv) = recv {
                     let t = self.expression_to_define_type(&recv.typ);
+                    let mut added = false;
 
                     if let DefineType::Struct { name, .. } = &t.strip_ref() {
                         for constant in &mut self.constants {
                             if constant.tag() == Type::Struct {
                                 let strct = constant.as_struct_mut();
                                 if &strct.name == name {
+                                    added = true;
                                     strct
                                         .method_dispatch
-                                        .push((f_name.clone(), pos_start_function));
+                                        .push((f.name.name.clone(), pos_start_function));
+                                    //println!("add {:#?} to {:#?}", f.name.name, strct.name);
                                 }
+                                //println!("{:#?}", constant);
                             }
+                        }
+
+                        if !added {
+                            panic!("internal error: could not added method to struct");
                         }
                     }
                 }
@@ -973,6 +981,7 @@ impl Compiler {
                                     DefineType::Var(Box::new(ct.clone())),
                                     ct.is_invar(),
                                 );
+
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
                                 } else {
@@ -2391,10 +2400,10 @@ impl Compiler {
                         }
                     }
 
-                    let obj = Object::string(name.clone(), &mut self.gc);
-                    let idx = self.add_constant(obj);
-                    self.emit_opcode(OpCode::Const);
-                    self.emit_u16(idx);
+                    // let obj = Object::string(name.clone(), &mut self.gc);
+                    // let idx = self.add_constant(obj);
+                    // self.emit_opcode(OpCode::Const);
+                    // self.emit_u16(idx);
 
                     self.emit_opcode(OpCode::Struct);
                     self.emit_u16(inner_types.len().try_into().unwrap());

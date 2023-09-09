@@ -19,21 +19,35 @@ fn main() {
            ageOneYear()
         }
         
+        type Namer interface {
+           getName()
+        }
+        
         type User struct {
             age int
+            name string
         }
         
         func (u *User) ageOneYear() {
             u.age += 1
         }
         
+        func (u *User) getName() {
+            println(u.name)
+        }
+        
         func Age(a Ager) {
             a.ageOneYear()
         }
         
+        func printName(n Namer) {
+            n.getName()
+        }
+        
         func main() {
-            peter := User{age: 36}
+            peter := User{age: 36, name: "peter"}
             Age(&peter)
+            printName(&peter)
             println(peter)
         }
     "#,

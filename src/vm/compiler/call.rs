@@ -46,7 +46,6 @@ impl CallType {
 
                 match sellt.clone() {
                     DefineType::Interface { name, methods } => {
-                        //println!("{:#?} {:#?}", method_name, methods);
                         let m = find_method(&method_name, methods);
 
                         match m {

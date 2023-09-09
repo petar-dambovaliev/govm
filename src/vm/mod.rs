@@ -418,8 +418,11 @@ impl VM {
             match self.next() {
                 OpCode::Downcast => {
                     let value = self.pop();
+                    //println!("{}", value);
                     let iface = unsafe { Interface::read(&value) };
-                    self.push(Ref::from_obj(iface.value));
+                    let rref = Ref::from_obj(iface.value);
+                    //println!("{}", rref);
+                    self.push(rref);
                 }
                 OpCode::DynamicDispatch => {
                     let num_args = self.read_u16();
@@ -433,7 +436,8 @@ impl VM {
 
                     for (name, ip) in &strct.method_dispatch {
                         if method_name == name {
-                            let base_pointer = self.stack.len() as u16 - 1 - num_args;
+                            let base_pointer = self.stack.len() as u16 - num_args;
+                            //println!("base_pointer: {:#?}", name);
                             self.pushframe(*ip as u32, base_pointer);
                             break;
                         }
@@ -458,7 +462,7 @@ impl VM {
                 OpCode::Const => {
                     let idx = self.read_u16();
                     let value = constants[idx as usize];
-                    //println!("const: {:#?}", value);
+                    //println!("const: {:#?} tag: {:#?}", value, value.tag());
                     self.push(value);
                 }
                 OpCode::Deref => {
@@ -492,8 +496,8 @@ impl VM {
                 }
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
-                    //println!("SetLocal-before: {:#?}", self.stack);
                     let value = self.pop();
+                    //println!("{:#?}", value);
                     self.set_local(idx, value);
                     //println!("SetLocal-after: {:#?}", self.stack);
                 }
@@ -786,7 +790,6 @@ impl VM {
                     self.push(obj);
                 }
                 OpCode::Struct => {
-                    let struct_name = self.pop();
                     let length = self.read_u16();
 
                     let mut fields = Vec::with_capacity(length as usize);
@@ -795,7 +798,11 @@ impl VM {
                         fields.push(value);
                     }
 
-                    let obj = Struct::object(struct_name.to_string(), fields, vec![]);
+                    let strct = self.pop_ref_mut();
+                    let strct = strct.as_struct();
+
+                    let obj =
+                        Struct::object(strct.name.clone(), fields, strct.method_dispatch.clone());
                     self.push(obj);
                 }
                 OpCode::IndexGet => {
@@ -819,6 +826,7 @@ impl VM {
                     self.push(left);
                 }
                 OpCode::Halt => {
+                    //println!("Halt: {:#?}", self.stack);
                     gc.untrace(final_result);
                     return Ok(final_result);
                 }
