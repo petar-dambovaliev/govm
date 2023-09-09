@@ -397,7 +397,7 @@ impl Compiler {
                     //check if there is a field with the same name
                     if let DefineType::Struct { name, fields, .. } = &t.strip_ref() {
                         for field in fields {
-                            let (field_name, _) = field.as_named();
+                            let (field_name, _) = field.as_named().unwrap();
                             if field_name == f.name.name {
                                 panic!("field and method with the same name {}", field_name);
                             }
@@ -460,7 +460,6 @@ impl Compiler {
                         .as_struct();
 
                     r_methods.push(func_def.clone());
-
                     let updated = self.symbols.update_dt(
                         &r_name,
                         DefineType::Struct {
@@ -738,7 +737,7 @@ impl Compiler {
                                 );
 
                                 for field_type in &mut field_types {
-                                    let (s, dt) = field_type.as_named();
+                                    let (s, dt) = field_type.as_named().unwrap();
                                     let resolved = match dt {
                                         DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
                                         _ => dt,
@@ -1123,7 +1122,7 @@ impl Compiler {
                                     DefineType::Struct { fields: fields, .. } => {
                                         let mut i = None;
                                         for (ind, field) in fields.iter().enumerate() {
-                                            let f = field.as_named();
+                                            let f = field.as_named().unwrap();
                                             if f.0 == s {
                                                 i = Some(ind);
                                             }
@@ -1796,7 +1795,7 @@ impl Compiler {
                 };
 
                 for inner_type in inner_types {
-                    let (key, it) = inner_type.as_named();
+                    let (key, it) = inner_type.as_named().unwrap();
                     let ex = self.make_type_default_val(it);
 
                     lit_val.values.push(KeyedElement {
@@ -1895,9 +1894,9 @@ impl Compiler {
 
                         for (a, t) in call.args.iter().zip(arg_types) {
                             let got = self.compile_expression(a)?;
-                            let expected = t.as_named().1;
+                            let expected = t.as_named().unwrap().1;
                             if expected.is_interface() && got.is_ref() {
-                                let got_inner = got.as_ref();
+                                let mut got_inner = got.as_ref();
 
                                 if got_inner.implements(&expected, self) {
                                     let (name, _) = expected.as_interface();
@@ -1906,10 +1905,10 @@ impl Compiler {
                                     self.emit_opcode(OpCode::Icast);
                                     self.emit_u16(s.index);
                                 } else {
-                                    assert_eq!(t.as_named().1, got);
+                                    assert_eq!(t.as_named().unwrap().1, got_inner);
                                 }
                             } else {
-                                assert_eq!(t.as_named().1, got);
+                                assert_eq!(t.as_named().unwrap().1, got);
                             }
                         }
                         self.compile_expression(call.func.as_ref())?;
@@ -1941,7 +1940,7 @@ impl Compiler {
 
                         for (a, t) in call.args.iter().zip(arg_types) {
                             let got = self.compile_expression(a)?;
-                            assert_eq!(t.as_named().1, got);
+                            assert_eq!(t.as_named().unwrap().1, got);
                         }
 
                         self.compile_expression(&Expression::Ident(Ident {
@@ -1970,7 +1969,14 @@ impl Compiler {
 
                         for (a, t) in call.args.iter().zip(arg_types) {
                             let got = self.compile_expression(a)?;
-                            assert_eq!(t.as_named().1, got);
+                            match t {
+                                ContextType::Named(_, adt) => {
+                                    assert_eq!(adt, got);
+                                }
+                                ContextType::Unnamed(adt) => {
+                                    assert_eq!(adt.as_type().0, got);
+                                }
+                            }
                         }
 
                         // need to push the same interface for the dynamic dispatch info
@@ -2321,7 +2327,7 @@ impl Compiler {
                     };
 
                     if let Some(ct) = inner_types.first() {
-                        let _ = ct.as_named();
+                        let _ = ct.as_named().unwrap();
                     }
 
                     let opcode = if s.scope == Scope::Global {
@@ -2337,7 +2343,7 @@ impl Compiler {
                     clit_values.sort_by_key(|val| {
                         inner_types
                             .iter()
-                            .map(|inner_type| inner_type.as_named())
+                            .map(|inner_type| inner_type.as_named().unwrap())
                             .position(|x| {
                                 let k_el = val.key.as_ref().unwrap();
                                 let k = match k_el {
@@ -2357,7 +2363,7 @@ impl Compiler {
                         .unwrap_or_default();
 
                     for inner_type in inner_types.iter().rev() {
-                        let (kk, inner_type) = inner_type.as_named();
+                        let (kk, inner_type) = inner_type.as_named().unwrap();
 
                         let found = clit_values.iter().find(|a| {
                             let k = a.key.as_ref().unwrap();
@@ -2487,7 +2493,7 @@ impl Compiler {
                 };
 
                 for (i, inner_type) in inner_types.into_iter().enumerate() {
-                    let (key, dt) = inner_type.as_named();
+                    let (key, dt) = inner_type.as_named().unwrap();
                     if key == sel.sel.name {
                         self.compile_expression(&Expression::Index(Index {
                             pos: (0, 0),

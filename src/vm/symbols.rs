@@ -1,5 +1,6 @@
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::object::Type;
+use crate::vm::Error;
 
 #[derive(Debug)]
 pub(crate) struct SymbolTable {
@@ -136,6 +137,29 @@ impl DefineType {
     }
     pub fn implements(&self, interface: &Self, c: &mut Compiler) -> bool {
         let mut expect_methods = interface.as_interface().1;
+
+        for expect_method in &mut expect_methods {
+            let (name, _, args, rts) = expect_method.as_func();
+
+            let new_args: Vec<ContextType> = args
+                .iter()
+                .map(|b| {
+                    if let ContextType::Named(_, c) = b {
+                        ContextType::Unnamed(c.clone())
+                    } else {
+                        b.clone()
+                    }
+                })
+                .collect();
+
+            *expect_method = DefineType::Func {
+                name,
+                recv: None,
+                args: new_args,
+                rt: rts,
+            };
+        }
+
         let (name, _, _) = self.as_struct();
 
         let (_, _, mut got_methods) = c.symbols.resolve(&name).unwrap().as_local().1.as_struct();
@@ -143,16 +167,24 @@ impl DefineType {
         for gm in &mut got_methods {
             let (name, _, args, rt) = gm.as_func();
 
+            let new_args: Vec<ContextType> = args
+                .iter()
+                .map(|b| {
+                    if let ContextType::Named(_, c) = b {
+                        ContextType::Unnamed(c.clone())
+                    } else {
+                        b.clone()
+                    }
+                })
+                .collect();
+
             *gm = DefineType::Func {
                 name,
                 recv: None,
-                args,
+                args: new_args,
                 rt,
             };
         }
-
-        expect_methods.sort();
-        got_methods.sort();
 
         fn is_subset<T: PartialEq>(subset: &[T], superset: &[T]) -> bool {
             for item in subset {
@@ -444,10 +476,13 @@ impl DefineType {
 }
 
 impl ContextType {
-    pub fn as_named(&self) -> (String, DefineType) {
+    pub fn as_named(&self) -> Result<(String, DefineType), Error> {
         match &self {
-            Self::Named(s, t) => (s.clone(), t.clone()),
-            _ => panic!(),
+            Self::Named(s, t) => Ok((s.clone(), t.clone())),
+            _ => Err(Error::InternalError(format!(
+                "ContextType:as_named: expected named got: {:#?}",
+                self
+            ))),
         }
     }
 

@@ -1009,6 +1009,7 @@ pub enum Error {
     ReferenceError(String),
     IndexError(String),
     ArgumentError(String),
+    InternalError(String),
 }
 
 // #[derive(Default, Debug)]

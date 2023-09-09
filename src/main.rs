@@ -15,40 +15,23 @@ fn main() {
         r#"
         package main
         
-        type Ager interface {
-           ageOneYear()
+        type Incrementor interface {
+           inc(int) int
         }
         
-        type Namer interface {
-           getName()
+        type User struct {}
+        
+        func (u *User) inc(i int) int {
+            return i + 1
         }
         
-        type User struct {
-            age int
-            name string
-        }
-        
-        func (u *User) ageOneYear() {
-            u.age += 1
-        }
-        
-        func (u *User) getName() {
-            println(u.name)
-        }
-        
-        func Age(a Ager) {
-            a.ageOneYear()
-        }
-        
-        func printName(n Namer) {
-            n.getName()
+        func Icn(i Incrementor) {
+            println(i.inc(1))
         }
         
         func main() {
-            peter := User{age: 36, name: "peter"}
-            Age(&peter)
-            printName(&peter)
-            println(peter)
+            peter := User{}
+            Icn(&peter)
         }
     "#,
     );
