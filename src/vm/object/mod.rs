@@ -17,7 +17,7 @@ use crate::vm::object::int::{
 };
 use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
-use crate::vm::object::structure::{Interface, Struct};
+use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::Error;
 use std::alloc::{alloc, handle_alloc_error, Layout};
 use std::cmp::Ordering;
@@ -89,6 +89,7 @@ pub enum Type {
     Ref,
     Closure,
     Interface,
+    Type,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -736,7 +737,8 @@ impl PartialEq for Object {
             | Type::Struct
             | Type::Rune
             | Type::Closure
-            | Type::Interface => {
+            | Type::Interface
+            | Type::Type => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     self.tag(),
@@ -781,7 +783,8 @@ impl PartialOrd for Object {
             | Type::Iter
             | Type::Struct
             | Type::Closure
-            | Type::Interface => {
+            | Type::Interface
+            | Type::Type => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -990,6 +993,12 @@ impl Display for Object {
                 f.write_str(&i.value.to_string())?;
                 f.write_char(')')?;
             }
+            Type::Type => {
+                let t = unsafe { TypeValue::read(&self) };
+                f.write_str("Type(")?;
+                f.write_str(&t.value.to_string())?;
+                f.write_char(')')?;
+            }
         }
         Ok(())
     }
@@ -1032,6 +1041,7 @@ impl Display for Type {
             Type::Complex64 => "complex64",
             Type::Complex128 => "complex128",
             Type::Interface => "interface",
+            Type::Type => "type",
         };
         f.write_str(str)
     }

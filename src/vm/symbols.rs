@@ -160,12 +160,36 @@ impl DefineType {
             };
         }
 
-        let (name, _, _) = self.as_struct();
+        let (strct, is_ref) = if self.is_ref() {
+            (self.as_ref(), true)
+        } else {
+            (self.clone(), false)
+        };
 
-        let (_, _, mut got_methods) = c.symbols.resolve(&name).unwrap().as_local().1.as_struct();
+        let mut got_methods = if strct.is_struct() {
+            let (name, _, _) = strct.as_struct().unwrap();
+
+            let (_, _, mut got_methods) = c
+                .symbols
+                .resolve(&name)
+                .unwrap()
+                .as_local()
+                .1
+                .as_struct()
+                .unwrap();
+            got_methods
+        } else {
+            vec![]
+        };
 
         for gm in &mut got_methods {
-            let (name, _, args, rt) = gm.as_func();
+            let (name, recv, args, rt) = gm.as_func();
+
+            if let Some(rr) = recv {
+                if is_ref != rr.is_ref() {
+                    continue;
+                }
+            }
 
             let new_args: Vec<ContextType> = args
                 .iter()
@@ -423,14 +447,17 @@ impl DefineType {
         }
     }
 
-    pub fn as_struct(&self) -> (String, Vec<ContextType>, Vec<DefineType>) {
+    pub fn as_struct(&self) -> Result<(String, Vec<ContextType>, Vec<DefineType>), Error> {
         match &self {
             Self::Struct {
                 name,
                 fields,
                 methods,
-            } => (name.clone(), fields.clone(), methods.clone()),
-            _ => panic!("expected Self::Struct, got {:#?}", self),
+            } => Ok((name.clone(), fields.clone(), methods.clone())),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Struct, got {:#?}",
+                self
+            ))),
         }
     }
 

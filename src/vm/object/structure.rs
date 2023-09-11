@@ -68,3 +68,27 @@ impl Interface {
         ptr
     }
 }
+
+#[repr(C)]
+pub struct TypeValue {
+    header: Header,
+    pub(crate) value: Type,
+}
+
+impl TypeValue {
+    pub(crate) unsafe fn read(ptr: &Object) -> &Self {
+        ptr.get::<Self>()
+    }
+
+    pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut Self {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn object(value: Type) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Type);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value);
+        ptr
+    }
+}

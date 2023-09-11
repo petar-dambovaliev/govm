@@ -77,6 +77,8 @@ pub(crate) enum OpCode {
     Icast,
     Downcast,
     DynamicDispatch,
+    TypeOf,
+    TypeCmp,
     Halt,
 }
 
@@ -169,7 +171,9 @@ impl OpCode {
             | OpCode::Ref
             | OpCode::IntoIter
             | OpCode::Downcast
-            | OpCode::Deref => &[],
+            | OpCode::Deref
+            | OpCode::TypeOf
+            | OpCode::TypeCmp => &[],
         }
     }
 }
@@ -361,6 +365,8 @@ impl Display for OpCode {
             Self::Icast => "Icast",
             Self::Downcast => "Downcast",
             Self::DynamicDispatch => "DynamicDispatch",
+            Self::TypeOf => "TypeOf",
+            Self::TypeCmp => "TypeCmp",
             Self::Halt => "Halt",
         };
         f.write_str(s)

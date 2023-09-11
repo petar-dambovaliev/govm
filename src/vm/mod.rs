@@ -18,7 +18,7 @@ use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
 use crate::vm::object::collections::{Map, ObjIter};
 use crate::vm::object::r#ref::Ref;
-use crate::vm::object::structure::{Interface, Struct};
+use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
@@ -416,13 +416,56 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
             match self.next() {
+                OpCode::TypeCmp => {
+                    let left = self.pop();
+                    let right = self.pop();
+
+                    match (left.tag(), right.tag()) {
+                        (Type::Interface, Type::Interface) => {
+                            let left_i = unsafe { Interface::read(&left) };
+                            let right_i = unsafe { Interface::read(&right) };
+
+                            self.push(Object::bool(
+                                left.tag() == right.tag() && left_i.name == right_i.name,
+                            ));
+                        }
+                        (Type::Struct, Type::Struct) => {
+                            let left_i = unsafe { Struct::read(&left) };
+                            let right_i = unsafe { Struct::read(&right) };
+
+                            self.push(Object::bool(
+                                left.tag() == right.tag() && left_i.name == right_i.name,
+                            ));
+                        }
+                        (Type::Type, _) => {
+                            let left_i = unsafe { TypeValue::read(&left) };
+
+                            self.push(Object::bool(left_i.value == right.tag()));
+                        }
+                        (_, Type::Type) => {
+                            let right_i = unsafe { TypeValue::read(&right) };
+
+                            self.push(Object::bool(right_i.value == left.tag()));
+                        }
+                        _ => {
+                            self.push(Object::bool(false));
+                        }
+                    };
+                }
+                OpCode::TypeOf => {
+                    unimplemented!()
+                    // let value = self.pop();
+                    //
+                    // if value.is_ref() {}
+                    //
+                    // self.push(TypeValue::object(value.tag()))
+                }
                 OpCode::Downcast => {
                     let value = self.pop();
                     //println!("{}", value);
                     let iface = unsafe { Interface::read(&value) };
-                    let rref = Ref::from_obj(iface.value);
                     //println!("{}", rref);
-                    self.push(rref);
+                    self.push(iface.value);
                 }
                 OpCode::DynamicDispatch => {
                     let num_args = self.read_u16();
@@ -448,14 +491,21 @@ impl VM {
                     let value = self.pop();
                     let c = self.globals[iface_id as usize];
                     if c.tag() != Type::Interface {
-                        panic!("expected interface: got {:#?}", c);
+                        panic!(
+                            "expected interface: got {:#?} globals: {:#?} id: {:#?}",
+                            c, self.globals, iface_id
+                        );
                     }
+
+                    let v = if value.is_ref() {
+                        value.as_ref().value
+                    } else {
+                        value
+                    };
+
                     let interface = unsafe { Interface::read(&c) };
-                    let iface = Interface::object(
-                        interface.name.clone(),
-                        interface.methods.clone(),
-                        value.as_ref().value,
-                    );
+                    let iface =
+                        Interface::object(interface.name.clone(), interface.methods.clone(), v);
 
                     self.push(iface);
                 }
@@ -489,7 +539,7 @@ impl VM {
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
-                    //println!("GetGlobal-before: {:#?}", constants);
+                    //println!("GetGlobal: {:#?} id: {}", self.globals, idx);
                     let value = self.globals[idx as usize];
                     self.push(value);
                     //println!("GetGlobal-after: {:#?}", self.stack);
@@ -498,8 +548,8 @@ impl VM {
                     let idx = self.read_u16();
                     let value = self.pop();
                     //println!("{:#?}", value);
+                    //println!("id: {:#?} bp: {:#?}", idx, self.bp);
                     self.set_local(idx, value);
-                    //println!("SetLocal-after: {:#?}", self.stack);
                 }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
@@ -700,9 +750,9 @@ impl VM {
                     };
 
                     // Make room on the stack for any local variables defined inside this function
-                    // for _ in 0..num_locals - num_args as u32 {
-                    //     self.push(Object::null());
-                    // }
+                    for _ in 0..num_locals - num_args as u32 {
+                        self.push(Object::null());
+                    }
 
                     self.pushframe(ip, base_pointer);
                 }
@@ -765,6 +815,7 @@ impl VM {
                 OpCode::Ref => {
                     let val = self.pop();
                     self.push(Object::ref_t(val, gc));
+                    //println!("{:#?}", self.stack);
                 }
                 OpCode::Array => {
                     let length = self.read_u16();

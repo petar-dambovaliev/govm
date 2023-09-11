@@ -58,8 +58,13 @@ impl CallType {
                         }
                     }
                     DefineType::Struct { name, methods, .. } => {
-                        let (_, _, methods) =
-                            c.symbols.resolve(&name).unwrap().get_type().as_struct();
+                        let (_, _, methods) = c
+                            .symbols
+                            .resolve(&name)
+                            .unwrap()
+                            .get_type()
+                            .as_struct()
+                            .unwrap();
 
                         match find_method(&method_name, methods) {
                             Some((m, _)) => {

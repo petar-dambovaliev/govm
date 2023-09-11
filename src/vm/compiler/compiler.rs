@@ -1,6 +1,8 @@
+use crate::parser::ast::InterfaceType;
 use crate::parser::ast::{
-    AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, DeclStmt, Declaration, Element, ExprStmt,
-    Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation, Statement,
+    AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
+    ExprStmt, Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation,
+    Statement, TypeSpec,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
@@ -11,7 +13,7 @@ use crate::vm::compiler::{
 use crate::vm::gc::GC;
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
-use crate::vm::object::structure::{Interface, Struct};
+use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{is_builtin_const, FromString, Object, Type};
 use crate::vm::symbols::{
     is_integer_coerceable_to, is_uint_coerceable_to, ContextType, DefineType, Resolved, Scope,
@@ -49,18 +51,42 @@ impl Compiler {
     /// Compiles the given AST into executable Bytecode
     pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
         //insert builtin values
-        let nil_symbol = self.symbols.define(
+        //interface{}
+        self.compile_declaration(&Declaration::Type(Decl {
+            docs: vec![],
+            pos0: 0,
+            pos1: None,
+            specs: vec![TypeSpec {
+                docs: vec![],
+                alias: false,
+                name: Default::default(),
+                params: Default::default(),
+                typ: Expression::TypeInterface(InterfaceType {
+                    pos: 0,
+                    methods: Default::default(),
+                }),
+            }],
+        }))?;
+
+        let _ = self.symbols.define(
+            "string",
+            DefineType::Type(Box::new(DefineType::String), Type::String),
+            false,
+        );
+        let idx = self.add_constant(TypeValue::object(Type::String));
+        self.emit_opcode(OpCode::SetGlobal);
+        self.emit_u16(idx);
+
+        let _ = self.symbols.define(
             "nil",
             DefineType::Type(Box::new(DefineType::Null), Type::Null),
             false,
         );
-        assert_eq!(0, nil_symbol.index);
 
         self.constants.push(Object::null());
-        let nil_symbol =
-            self.symbols
-                .define("_", DefineType::Var(Box::new(DefineType::Null)), false);
-        assert_eq!(1, nil_symbol.index);
+        let _ = self
+            .symbols
+            .define("_", DefineType::Var(Box::new(DefineType::Null)), false);
 
         let numbers = vec![
             (
@@ -127,14 +153,6 @@ impl Compiler {
         }
 
         let _ = self.symbols.define(
-            "string",
-            DefineType::Type(Box::new(DefineType::String), Type::String),
-            false,
-        );
-
-        //self.constants.push(Object::string("", &mut self.gc));
-
-        let _ = self.symbols.define(
             "rune",
             DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
             false,
@@ -147,11 +165,6 @@ impl Compiler {
             DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
             false,
         );
-
-        //self.constants.push(Object::bool(false));
-
-        //todo define error interface properly
-        // implement interfaces
 
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
@@ -298,6 +311,13 @@ impl Compiler {
             Expression::Invar(invar) => DefineType::Invar(Box::new(
                 self.expression_to_define_type(invar.expr.as_ref()),
             )),
+            Expression::TypeInterface(i) => {
+                assert!(i.methods.list.is_empty());
+                DefineType::Interface {
+                    name: "".to_string(),
+                    methods: vec![],
+                }
+            }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
     }
@@ -457,7 +477,8 @@ impl Compiler {
                         .resolve(&t.get_type_name())
                         .unwrap()
                         .get_type()
-                        .as_struct();
+                        .as_struct()
+                        .unwrap();
 
                     r_methods.push(func_def.clone());
                     let updated = self.symbols.update_dt(
@@ -468,7 +489,7 @@ impl Compiler {
                             methods: r_methods,
                         },
                     );
-
+                    println!("update");
                     assert!(updated);
                 }
 
@@ -1656,6 +1677,244 @@ impl Compiler {
 
                 return Ok(Some(terminates));
             }
+            Statement::TypeSwitch(switch) => {
+                let label = self.label_contexts.get(&(switch.pos, 0)).cloned();
+                self.contexts.push(Context::Switch(SwitchContext::new(
+                    self.instructions.len(),
+                    label,
+                )));
+
+                if let Some(init) = &switch.init {
+                    self.compile_statement(&init)?;
+                }
+
+                let internal_tag = Ident {
+                    pos: 0,
+                    name: "__tag__".to_string(),
+                };
+
+                let (mut left_ass, mut left_ass_type) = (None, None);
+
+                match switch.tag.clone().map(|a| *a) {
+                    Some(Statement::Expr(expr)) => {
+                        self.compile_statement(&Statement::Assign(AssignStmt {
+                            pos: 0,
+                            op: Operator::Define,
+                            left: vec![Expression::Ident(internal_tag.clone())],
+                            right: vec![expr.expr],
+                        }))?;
+                    }
+                    Some(Statement::Assign(ass)) => {
+                        let left = ass.left.first().unwrap().as_ident().unwrap().clone();
+                        left_ass = Some(left.clone());
+
+                        self.compile_statement(&Statement::Assign(ass))?;
+                        self.compile_statement(&Statement::Assign(AssignStmt {
+                            pos: 0,
+                            op: Operator::Define,
+                            left: vec![Expression::Ident(internal_tag.clone())],
+                            right: vec![Expression::Ident(left.clone())],
+                        }))?;
+                        left_ass_type = Some(self.symbols.resolve(&left.name).unwrap().get_type());
+                    }
+                    Some(_) => unreachable!(),
+                    None => unreachable!(),
+                }
+
+                let mut terminates = true;
+                let mut has_default = false;
+
+                for clause in &switch.block.body {
+                    match clause.tok {
+                        Keyword::Default => {
+                            if has_default {
+                                panic!("only one default allowed within a switch");
+                            }
+
+                            if let (Some(lat), Some(la)) = (&left_ass_type, &left_ass) {
+                                let updated = self.symbols.update_dt(&la.name, lat.clone());
+                                assert!(updated);
+                            }
+
+                            has_default = true;
+                            let cond = Expression::BasicLit(BasicLit {
+                                pos: 0,
+                                kind: LitKind::Ident,
+                                value: "true".to_string(),
+                            });
+
+                            self.compile_expression(&cond)?;
+
+                            if self.last_instruction_is(OpCode::Pop) {
+                                self.remove_last_instruction();
+                            }
+
+                            let pos_jump_if_false = self.instructions.len();
+                            self.emit_opcode(OpCode::JumpIfFalse);
+                            self.emit_u16(JUMP_PLACEHOLDER);
+
+                            terminates = terminates
+                                && self
+                                    .compile_block_statement(&clause.body)?
+                                    .unwrap_or_default();
+
+                            if self.last_instruction_is(OpCode::Pop) {
+                                self.remove_last_instruction();
+                            } else {
+                                self.emit_opcode(OpCode::Null);
+                            }
+
+                            let pos_jump = self.instructions.len();
+                            self.emit_opcode(OpCode::Jump);
+                            self.emit_u16(JUMP_PLACEHOLDER);
+
+                            self.change_jump_operand_at(
+                                pos_jump_if_false,
+                                self.instructions.len().try_into().unwrap(),
+                            );
+
+                            self.change_jump_operand_at(
+                                pos_jump,
+                                self.instructions.len().try_into().unwrap(),
+                            );
+                        }
+                        Keyword::Case => {
+                            for expr in &clause.list {
+                                match expr {
+                                    Expression::Ident(id) => {
+                                        // in each case the tag identifier has to be updated to the case's asserted type
+                                        // only if there is a single clause in the case
+                                        if clause.list.len() == 1 {
+                                            if let Some(la) = &left_ass {
+                                                let r = self
+                                                    .symbols
+                                                    .resolve(&id.name)
+                                                    .unwrap()
+                                                    .get_type();
+
+                                                let updated = self.symbols.update_dt(
+                                                    &la.name,
+                                                    DefineType::Var(Box::new(r)),
+                                                );
+                                                assert!(updated);
+                                            }
+                                        }
+
+                                        assert!(switch.tag.is_some());
+                                        self.compile_expression(&Expression::Ident(
+                                            internal_tag.clone(),
+                                        ))?;
+                                        self.compile_expression(&Expression::Ident(id.clone()))?;
+                                        self.emit_opcode(OpCode::TypeCmp);
+                                    }
+                                    Expression::TypePointer(pt) => {
+                                        let id = pt.typ.as_ident().unwrap();
+
+                                        // in each case the tag identifier has to be updated to the case's asserted type
+                                        // only if there is a single clause in the case
+                                        if clause.list.len() == 1 {
+                                            if let Some(la) = &left_ass {
+                                                let r = self
+                                                    .symbols
+                                                    .resolve(&id.name)
+                                                    .unwrap()
+                                                    .get_type();
+
+                                                let updated = self.symbols.update_dt(
+                                                    &la.name,
+                                                    DefineType::Var(Box::new(r)),
+                                                );
+
+                                                assert!(updated);
+                                            }
+                                        }
+
+                                        self.compile_expression(&Expression::Ident(
+                                            internal_tag.clone(),
+                                        ))?;
+                                        self.compile_expression(&Expression::Ident(id.clone()))?;
+                                        self.emit_opcode(OpCode::Ref);
+                                        self.emit_opcode(OpCode::TypeCmp);
+                                    }
+                                    _ => {
+                                        assert!(switch.tag.is_none());
+                                        self.compile_expression(&expr)?;
+                                    }
+                                };
+
+                                if self.last_instruction_is(OpCode::Pop) {
+                                    self.remove_last_instruction();
+                                }
+
+                                let pos_jump_if_false = self.instructions.len();
+                                self.emit_opcode(OpCode::JumpIfFalse);
+                                self.emit_u16(JUMP_PLACEHOLDER);
+
+                                let mut has_fallthrough = false;
+                                let bl = clause.body.len();
+                                for (i, stmt) in clause.body.iter().enumerate() {
+                                    let is_fallthrough = if let Statement::Branch(br) = stmt {
+                                        br.key == Keyword::FallThrough
+                                    } else {
+                                        false
+                                    };
+                                    if is_fallthrough {
+                                        if i == bl - 1 {
+                                            has_fallthrough = true;
+                                        } else {
+                                            panic!("misplaced fallthrough");
+                                        }
+                                    }
+                                }
+
+                                let mut clause_body = clause.body.clone();
+
+                                if !has_fallthrough {
+                                    clause_body.push(Statement::Branch(BranchStmt {
+                                        pos: 0,
+                                        key: Keyword::Break,
+                                        ident: None,
+                                    }));
+                                }
+
+                                terminates = terminates
+                                    && self
+                                        .compile_block_statement(&clause_body)?
+                                        .unwrap_or_default();
+
+                                if self.last_instruction_is(OpCode::Pop) {
+                                    self.remove_last_instruction();
+                                } else {
+                                    self.emit_opcode(OpCode::Null);
+                                }
+
+                                let pos_jump = self.instructions.len();
+                                self.emit_opcode(OpCode::Jump);
+                                self.emit_u16(JUMP_PLACEHOLDER);
+
+                                self.change_jump_operand_at(
+                                    pos_jump_if_false,
+                                    self.instructions.len().try_into().unwrap(),
+                                );
+
+                                self.change_jump_operand_at(
+                                    pos_jump,
+                                    self.instructions.len().try_into().unwrap(),
+                                );
+                            }
+                        }
+                        _ => unimplemented!(),
+                    }
+                }
+
+                let ctx = self.contexts.pop().unwrap().to_switch();
+
+                for ip in &ctx.break_instructions {
+                    self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
+                }
+
+                return Ok(Some(terminates));
+            }
             _ => {
                 return Err(Error::ReferenceError(format!(
                     "stmt not supported: {:#?}",
@@ -1895,18 +2154,13 @@ impl Compiler {
                         for (a, t) in call.args.iter().zip(arg_types) {
                             let got = self.compile_expression(a)?;
                             let expected = t.as_named().unwrap().1;
-                            if expected.is_interface() && got.is_ref() {
-                                let mut got_inner = got.as_ref();
 
-                                if got_inner.implements(&expected, self) {
-                                    let (name, _) = expected.as_interface();
-                                    let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
+                            if expected.is_interface() && got.implements(&expected, self) {
+                                let (name, _) = expected.as_interface();
+                                let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
 
-                                    self.emit_opcode(OpCode::Icast);
-                                    self.emit_u16(s.index);
-                                } else {
-                                    assert_eq!(t.as_named().unwrap().1, got_inner);
-                                }
+                                self.emit_opcode(OpCode::Icast);
+                                self.emit_u16(s.index);
                             } else {
                                 assert_eq!(t.as_named().unwrap().1, got);
                             }
@@ -2480,7 +2734,7 @@ impl Compiler {
                 let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
                 let inner = match dt {
                     DefineType::Var(inner) => *inner,
-                    _ => panic!(),
+                    _ => panic!("{:#?}", dt),
                 };
 
                 let (_, inner_types) = match inner.strip_ref() {
@@ -2657,6 +2911,24 @@ impl Compiler {
                 let rt = self.compile_expression(&invar.expr)?;
                 return Ok(DefineType::Invar(Box::new(rt.strip_var())));
             }
+            Expression::TypeAssert(type_assert) => match &type_assert.right {
+                Some(right) => {
+                    unimplemented!("{:#?}", right);
+                    //return Ok(DefineType::Tuple(vec![rt, DefineType::Bool]));
+                }
+                None => {
+                    let ident = type_assert.left.as_ident().unwrap();
+                    let r = self.symbols.resolve(&ident.name).unwrap();
+                    let t = r.get_type();
+                    assert!(t.is_var());
+                    assert!(t.as_var().is_interface());
+
+                    let rt = self.compile_expression(&type_assert.left)?;
+                    self.emit_opcode(OpCode::Downcast);
+                    //todo this should return DefineType::Type
+                    return Ok(rt);
+                }
+            },
             _ => {
                 return Err(Error::SyntaxError(format!(
                     "unsupported expression:  {:#?}",

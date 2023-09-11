@@ -15,23 +15,25 @@ fn main() {
         r#"
         package main
         
-        type Incrementor interface {
-           inc(int) int
-        }
+        type User struct {name string}
         
-        type User struct {}
-        
-        func (u *User) inc(i int) int {
-            return i + 1
-        }
-        
-        func Icn(i Incrementor) {
-            println(i.inc(1))
+        func do(i interface{}) {
+            switch v := i.(type) {
+            case *User:
+                println(v.name)
+            case string:
+                println(v)
+            default:
+                println(v)
+            }
         }
         
         func main() {
-            peter := User{}
-            Icn(&peter)
+            peter := User{name: "peter"}
+            
+            do(&peter)
+            do("this is my string")
+            do(123)
         }
     "#,
     );
