@@ -15,29 +15,23 @@ fn main() {
         r#"
 package main
 
-import "fmt"
-
 func main() {
-    i := 1
-    for i <= 3 {
-        println(i)
-        i = i + 1
+    if 7%2 == 0 {
+        println("7 is even")
+    } else {
+        println("7 is odd")
     }
     
-    for j := 7; j <= 9; j++ {
-        println(j)
-    }
-    
-    for {
-        println("loop")
-        break
+    if 8%4 == 0 {
+        println("8 is divisible by 4")
     }
 
-    for n := 0; n <= 5; n++ {
-        if n%2 == 0 {
-            continue
-        }
-        println(n)
+    if num := 9; num < 0 {
+        println(num, "is negative")
+    } else if num < 10 {
+        println(num, "has 1 digit")
+    } else {
+        println(num, "has multiple digits")
     }
 }
     "#,

@@ -885,7 +885,10 @@ impl Compiler {
                 false
             };
 
-            if last_term && !is_empty {
+            if last_term
+                && !is_empty
+                && self.func_contexts.last().unwrap().expected_ret != DefineType::Null
+            {
                 panic!("deadcode: {:#?}", s);
             }
 
@@ -991,6 +994,10 @@ impl Compiler {
                 return Ok(Some(loop_terminates));
             }
             Statement::If(ifstmt) => {
+                if let Some(init) = &ifstmt.init {
+                    self.compile_statement(init.as_ref())?;
+                }
+
                 self.compile_expression(&ifstmt.cond)?;
                 let pos_jump_if_false = self.instructions.len();
                 self.emit_opcode(OpCode::JumpIfFalse);
@@ -1018,7 +1025,10 @@ impl Compiler {
                         Statement::Block(bl) => {
                             else_terminates = self.compile_block_statement(&bl.list)?;
                         }
-                        _ => panic!("else should be a block"),
+                        Statement::If(_elseif) => {
+                            self.compile_statement(alternative.as_ref())?;
+                        }
+                        _ => panic!("else should be a block: {:#?}", alternative),
                     }
 
                     if self.last_instruction_is(OpCode::Pop) {
