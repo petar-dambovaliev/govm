@@ -18,15 +18,15 @@ fn main() {
         type User struct {name string}
         
         func Baz() (string, bool) {
-            return "", false
+            return "123", false
         }
         
         func Foo() (string, bool) {
-            var i interface{} = "hello"
+            var i interface{} = 5
             
             s, ok := i.(string)
             
-            if  ok {
+            if  !ok {
                 return s, true
             } else {
                 return Baz()

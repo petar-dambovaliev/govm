@@ -2438,6 +2438,21 @@ impl Compiler {
                             }
                         }
                     }
+                    Operator::Not => match &op.y {
+                        None => {
+                            let t = self.compile_expression(&op.x)?;
+
+                            if t.strip_var() != DefineType::Bool {
+                                panic!("expected bool got {:#?}", t.strip_var());
+                            }
+
+                            self.emit_opcode(OpCode::Not);
+                            return Ok(DefineType::Bool);
+                        }
+                        Some(y) => {
+                            unimplemented!("operator::not y {:#?}", y)
+                        }
+                    },
                     _ => panic!("unsupported op: {:#?}", op),
                 }
                 //
