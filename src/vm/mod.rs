@@ -416,6 +416,24 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
             match self.next() {
+                OpCode::SetDefault => {
+                    let def = self.pop();
+                    let value = self.pop();
+
+                    if def.tag() == value.tag() {
+                        self.push(value);
+                    } else {
+                        self.push(def)
+                    }
+                }
+                OpCode::PanicIfFalse => {
+                    let val = self.pop();
+                    let b = val.as_bool();
+
+                    if !b {
+                        panic!("OpCode::PanicIfFalse: got false");
+                    }
+                }
                 OpCode::TypeCmp => {
                     let left = self.pop();
                     let right = self.pop();
@@ -486,7 +504,7 @@ impl VM {
                         }
                     }
                 }
-                OpCode::Icast => {
+                OpCode::Upcast => {
                     let iface_id = self.read_u16();
                     let value = self.pop();
                     let c = self.globals[iface_id as usize];
@@ -527,7 +545,7 @@ impl VM {
                 }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
-                    //println!("SetGlobal-before: {:#?}", self.stack);
+                    //println!("SetGlobal-before: {:#?}", constants);
                     let value = self.pop();
 
                     while self.globals.len() <= idx {
@@ -535,7 +553,7 @@ impl VM {
                     }
 
                     self.globals[idx] = value;
-                    //println!("SetGlobal-after: {:#?}", self.stack);
+                    //println!("SetGlobal-after: id {:#?} => value {:#?}", idx, value);
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();

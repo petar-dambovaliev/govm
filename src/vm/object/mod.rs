@@ -144,11 +144,6 @@ unsafe impl Sync for Object {}
 unsafe impl Send for Object {}
 
 impl Object {
-    // pub fn default_value(t: Type) -> Object {
-    //     match t {
-    //         Type::Ref => {}
-    //     }
-    // }
     /// Creates a new object from the value (or address) given with the given type mask applied
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {

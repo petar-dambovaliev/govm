@@ -68,14 +68,17 @@ impl Compiler {
             }],
         }))?;
 
-        let _ = self.symbols.define(
+        let s = self.symbols.define(
             "string",
             DefineType::Type(Box::new(DefineType::String), Type::String),
             false,
         );
         let idx = self.add_constant(TypeValue::object(Type::String));
-        self.emit_opcode(OpCode::SetGlobal);
+        self.emit_opcode(OpCode::Const);
         self.emit_u16(idx);
+        self.emit_opcode(OpCode::SetGlobal);
+        self.emit_u16(s.index);
+        //panic!("{:#?}", self.constants);
 
         let _ = self.symbols.define(
             "nil",
@@ -349,10 +352,17 @@ impl Compiler {
                             rt = tp.clone();
                         }
 
-                        if rt != tp && value.is_int_lit() {
-                            let i = value.as_int_lit().unwrap();
-                            if i >= u8::MIN as isize && i <= u8::MAX as isize {
+                        let mut should_upcast = false;
+
+                        if rt != tp {
+                            if value.is_int_lit() {
+                                let i = value.as_int_lit().unwrap();
+                                if i >= u8::MIN as isize && i <= u8::MAX as isize {
+                                    rt = tp.clone();
+                                }
+                            } else if tp.is_interface() {
                                 rt = tp.clone();
+                                should_upcast = true;
                             }
                         }
 
@@ -361,6 +371,14 @@ impl Compiler {
                             DefineType::Var(Box::new(rt.clone())),
                             rt.is_invar(),
                         );
+
+                        if should_upcast {
+                            let (name, _) = tp.as_interface();
+                            let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
+
+                            self.emit_opcode(OpCode::Upcast);
+                            self.emit_u16(s.index);
+                        }
 
                         let op = if symbol.scope == Scope::Global {
                             OpCode::SetGlobal
@@ -972,17 +990,16 @@ impl Compiler {
                 return Ok(Some(terminates));
             }
             Statement::Assign(assign) => {
-                // a, err := call()
                 if assign.left.len() > 1 && assign.right.len() == 1 {
                     let dt = self.compile_expression(assign.right.first().unwrap())?;
-                    let (_ident, _args, ret) = match dt {
-                        DefineType::Func {
-                            name: ident,
-                            args: args,
-                            rt: ret,
-                            ..
-                        } => (ident, args, ret),
-                        _ => panic!("expected a func"),
+
+                    let (ret, is_type_assert) = match dt {
+                        DefineType::Func { rt: ret, .. } => (ret, false),
+                        DefineType::Tuple(_) => {
+                            //assert_eq!(2, assign.left.len());
+                            (Box::new(dt.clone()), true)
+                        }
+                        _ => panic!("expected a func: got {:#?}", dt),
                     };
 
                     let tuple = ret.as_tuple();
@@ -1001,6 +1018,12 @@ impl Compiler {
                                     DefineType::Var(Box::new(ct.clone())),
                                     ct.is_invar(),
                                 );
+
+                                if is_type_assert {
+                                    let def_expr = self.make_type_default_val(ct.clone());
+                                    self.compile_expression(&def_expr)?;
+                                    self.emit_opcode(OpCode::SetDefault);
+                                }
 
                                 let op = if symbol.scope == Scope::Global {
                                     OpCode::SetGlobal
@@ -1079,7 +1102,18 @@ impl Compiler {
                                 _ => panic!("only identifiers can be defined: {:#?}", left),
                             };
 
-                            let rt = self.compile_expression(right)?;
+                            let mut rt = self.compile_expression(right)?;
+
+                            rt = match rt {
+                                //type assertion
+                                // s := i.(string)
+                                DefineType::Tuple(tuple) => {
+                                    assert_eq!(2, tuple.len());
+                                    self.emit_opcode(OpCode::PanicIfFalse);
+                                    tuple[0].clone()
+                                }
+                                _ => rt,
+                            };
 
                             let symbol = self.symbols.define(
                                 name.as_str(),
@@ -2159,7 +2193,7 @@ impl Compiler {
                                 let (name, _) = expected.as_interface();
                                 let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
 
-                                self.emit_opcode(OpCode::Icast);
+                                self.emit_opcode(OpCode::Upcast);
                                 self.emit_u16(s.index);
                             } else {
                                 assert_eq!(t.as_named().unwrap().1, got);
@@ -2911,24 +2945,55 @@ impl Compiler {
                 let rt = self.compile_expression(&invar.expr)?;
                 return Ok(DefineType::Invar(Box::new(rt.strip_var())));
             }
-            Expression::TypeAssert(type_assert) => match &type_assert.right {
-                Some(right) => {
-                    unimplemented!("{:#?}", right);
-                    //return Ok(DefineType::Tuple(vec![rt, DefineType::Bool]));
-                }
-                None => {
-                    let ident = type_assert.left.as_ident().unwrap();
-                    let r = self.symbols.resolve(&ident.name).unwrap();
-                    let t = r.get_type();
-                    assert!(t.is_var());
-                    assert!(t.as_var().is_interface());
+            Expression::TypeAssert(type_assert) => {
+                let ident = type_assert.left.as_ident().unwrap();
+                let r = self.symbols.resolve(&ident.name).unwrap();
+                let t = r.get_type();
 
-                    let rt = self.compile_expression(&type_assert.left)?;
-                    self.emit_opcode(OpCode::Downcast);
-                    //todo this should return DefineType::Type
-                    return Ok(rt);
+                assert!(t.is_var());
+                assert!(t.as_var().is_interface());
+
+                let rt = self.compile_expression(&type_assert.left)?;
+
+                match &type_assert.right {
+                    Some(right) => {
+                        match right.as_ref() {
+                            Expression::Ident(ident) => {
+                                let r = self.symbols.resolve(&ident.name).unwrap();
+                                let t = r.get_type();
+
+                                match t {
+                                    //sidecast from interface to interface
+                                    // 1. downcast to T and upcast to the interface
+                                    DefineType::Interface { .. } => {
+                                        let (s, _) = r.as_local();
+
+                                        self.emit_opcode(OpCode::Downcast);
+                                        self.emit_opcode(OpCode::Upcast);
+                                        self.emit_u16(s.index);
+                                        self.emit_opcode(OpCode::TypeCmp);
+                                    }
+                                    DefineType::Struct { .. } | DefineType::Type(_, _) => {
+                                        self.emit_opcode(OpCode::Downcast);
+                                        self.compile_expression(&type_assert.left)?;
+                                        self.emit_opcode(OpCode::Downcast);
+                                        self.compile_expression(right)?;
+                                        self.emit_opcode(OpCode::TypeCmp);
+                                    }
+                                    _ => unimplemented!(),
+                                }
+                                return Ok(DefineType::Tuple(vec![t, DefineType::Bool]));
+                            }
+                            _ => unimplemented!("{:#?}", right),
+                        }
+                    }
+                    None => {
+                        self.emit_opcode(OpCode::Downcast);
+                        //todo this should return DefineType::Type
+                        return Ok(rt);
+                    }
                 }
-            },
+            }
             _ => {
                 return Err(Error::SyntaxError(format!(
                     "unsupported expression:  {:#?}",

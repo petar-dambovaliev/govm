@@ -74,11 +74,13 @@ pub(crate) enum OpCode {
     SwapGG,
     Escape,
     Deref,
-    Icast,
+    Upcast,
     Downcast,
     DynamicDispatch,
     TypeOf,
     TypeCmp,
+    PanicIfFalse,
+    SetDefault,
     Halt,
 }
 
@@ -102,7 +104,7 @@ impl OpCode {
             | OpCode::Map
             | OpCode::ReturnValue
             | OpCode::Struct
-            | OpCode::Icast => &[2],
+            | OpCode::Upcast => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -173,7 +175,9 @@ impl OpCode {
             | OpCode::Downcast
             | OpCode::Deref
             | OpCode::TypeOf
-            | OpCode::TypeCmp => &[],
+            | OpCode::TypeCmp
+            | OpCode::PanicIfFalse
+            | OpCode::SetDefault => &[],
         }
     }
 }
@@ -362,11 +366,13 @@ impl Display for OpCode {
             Self::SwapGG => "SwapGG",
             Self::Escape => "Escape",
             Self::Deref => "Deref",
-            Self::Icast => "Icast",
+            Self::Upcast => "Icast",
             Self::Downcast => "Downcast",
             Self::DynamicDispatch => "DynamicDispatch",
             Self::TypeOf => "TypeOf",
             Self::TypeCmp => "TypeCmp",
+            Self::PanicIfFalse => "PanicIfFalse",
+            Self::SetDefault => "SetDefault",
             Self::Halt => "Halt",
         };
         f.write_str(s)

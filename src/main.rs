@@ -17,23 +17,20 @@ fn main() {
         
         type User struct {name string}
         
-        func do(i interface{}) {
-            switch v := i.(type) {
-            case *User:
-                println(v.name)
-            case string:
-                println(v)
-            default:
-                println(v)
-            }
-        }
-        
         func main() {
-            peter := User{name: "peter"}
+            //peter := User{name: "peter"}
             
-            do(&peter)
-            do("this is my string")
-            do(123)
+            var i interface{} = "hello"
+            
+            s, ok := i.(User)
+            println(s)
+        
+            // s, ok := i.(string)
+            // println(s, ok)
+            // 
+            // f, ok := i.(float64)
+            // println(f, ok)
+
         }
     "#,
     );
