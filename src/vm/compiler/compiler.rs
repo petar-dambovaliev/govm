@@ -2039,6 +2039,8 @@ impl Compiler {
             //Operator::Negate => OpCode::Negate,
             Operator::And => OpCode::And,
             Operator::Or => OpCode::Or,
+            Operator::OrOr => OpCode::Or,
+            Operator::AndAnd => OpCode::And,
             _ => panic!("unexpected operator of type {operator:?}"),
         };
         self.emit_opcode(opcode);
@@ -2415,7 +2417,13 @@ impl Compiler {
                             _ => unimplemented!(),
                         }
                     }
-                    Operator::Add | Operator::Sub | Operator::Rem | Operator::Equal => {
+                    Operator::Add
+                    | Operator::Sub
+                    | Operator::Rem
+                    | Operator::Equal
+                    | Operator::Quo
+                    | Operator::AndAnd
+                    | Operator::OrOr => {
                         match &op.y {
                             Some(y) => {
                                 match (op.x.as_ref(), y.as_ref()) {

@@ -826,12 +826,27 @@ macro_rules! impl_arith {
                 Type::Float32 => unsafe {
                     Object::float32(self.as_float32() $op rhs.as_float32(), gc)
                 }
+
+                Type::String => add_strings(self, rhs),
+
                 _ => return Err(Error::TypeError(format!("unsupported op {} for type {}", stringify!($op), self.tag()))),
             };
 
             Ok(result)
         }
     };
+}
+
+fn add_strings(left: Object, right: Object) -> Object {
+    let left = left.as_str();
+    let right = right.as_str();
+
+    let mut new_string = RString::with_capacity(left.len() + right.len());
+
+    new_string.push_str(left);
+    new_string.push_str(right);
+
+    String::from_string(new_string)
 }
 
 macro_rules! impl_logical {

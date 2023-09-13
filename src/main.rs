@@ -13,21 +13,19 @@ fn main() {
     // this seems to make the vm crazy &[]int{1,2,3}
     let mut parser = Parser::from(
         r#"
-        package main
-        
-        type User struct {name string}
-        
-        func Foo() string {
-            var i interface{} = "123"
-            
-            return i.(string)
-        }
-        
-        
-        func main() {
-            f := Foo()
-            println(f)
-        }
+package main
+
+func main() {
+
+    println("go" + "lang")
+
+    println("1+1 =", 1+1)
+    println("7.0/3.0 =", 7.0/3.0)
+
+    println(true && false)
+    println(true || false)
+    println(!true)
+}
     "#,
     );
 
