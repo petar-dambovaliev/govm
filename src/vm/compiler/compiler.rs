@@ -1,3 +1,4 @@
+use crate::parser::ast::ArrayType;
 use crate::parser::ast::InterfaceType;
 use crate::parser::ast::{
     AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
@@ -325,6 +326,14 @@ impl Compiler {
                 DefineType::Interface {
                     name: "".to_string(),
                     methods: vec![],
+                }
+            }
+            Expression::TypeArray(ta) => {
+                let inner = self.expression_to_define_type(&ta.typ);
+                let len = ta.len.as_int_lit().unwrap();
+                DefineType::Array {
+                    inner_type: Box::new(inner),
+                    len: len as usize,
                 }
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
@@ -2143,11 +2152,42 @@ impl Compiler {
             DefineType::Ref(_)
             | DefineType::Func { .. }
             | DefineType::Map(_, _)
-            | DefineType::Null
-            | DefineType::Array(_) => Expression::Ident(Ident {
+            | DefineType::Null => Expression::Ident(Ident {
                 pos: 0,
                 name: "nil".to_string(),
             }),
+
+            DefineType::Array { len, inner_type } => {
+                let mut keyed_elements = Vec::with_capacity(len);
+
+                for i in 0..len {
+                    let el = KeyedElement {
+                        key: Some(Element::Expr(Expression::BasicLit(BasicLit {
+                            pos: 0,
+                            kind: LitKind::Integer,
+                            value: format!("{}", i),
+                        }))),
+                        val: Element::Expr(self.make_type_default_val(*inner_type.clone())),
+                    };
+                    keyed_elements.push(el);
+                }
+
+                Expression::CompositeLit(CompositeLit {
+                    typ: Box::new(Expression::TypeArray(ArrayType {
+                        pos: (0, 0),
+                        len: Box::new(Expression::BasicLit(BasicLit {
+                            pos: 0,
+                            kind: LitKind::Integer,
+                            value: format!("{}", len),
+                        })),
+                        typ: Box::new(inner_type.clone().to_expression()),
+                    })),
+                    val: LiteralValue {
+                        pos: (0, 0),
+                        values: keyed_elements,
+                    },
+                })
+            }
             DefineType::Bool => Expression::Ident(Ident {
                 pos: 0,
                 name: "false".to_string(),
@@ -2710,7 +2750,10 @@ impl Compiler {
                     }
                     self.emit_opcode(OpCode::Array);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
-                    return Ok(DefineType::Array(Box::new(slice_t)));
+                    return Ok(DefineType::Array {
+                        inner_type: Box::new(slice_t),
+                        len: clit.val.values.len(),
+                    });
                 }
 
                 //struct
@@ -2823,6 +2866,64 @@ impl Compiler {
                         methods: vec![],
                     });
                 }
+
+                //array
+                if let Expression::TypeArray(ta) = clit.typ.as_ref() {
+                    //todo assert length
+                    //if ta.len != clit.val.values.len() { }
+
+                    let slice_t = match ta.typ.as_ref() {
+                        Expression::Ident(ident) => self
+                            .symbols
+                            .resolve(ident.name.as_str())
+                            .unwrap()
+                            .as_local()
+                            .1
+                            .strip_type(),
+                        Expression::TypeArray(_at) => {
+                            self.expression_to_define_type(ta.typ.as_ref())
+                        }
+                        _ => {
+                            unimplemented!("array element type: {:#?}", ta.typ)
+                        }
+                    };
+
+                    let mut el_t = None;
+                    let key_required = clit
+                        .val
+                        .values
+                        .first()
+                        .map(|a| a.key.is_some())
+                        .unwrap_or_default();
+
+                    for v in &clit.val.values {
+                        //todo replace this with error handling
+                        //this makes sure keyed and unkeyed slice values aren't mixed
+                        assert_eq!(key_required, v.key.is_some());
+
+                        match &v.val {
+                            Element::Expr(el_expr) => {
+                                let expr_t = self.compile_expression(el_expr)?;
+                                assert_eq!(slice_t.strip_tuple_type(), expr_t);
+                                if let Some(expected_t) = &el_t {
+                                    assert_eq!(expected_t, &expr_t);
+                                } else {
+                                    el_t = Some(expr_t);
+                                }
+                            }
+                            _ => {
+                                panic!("123");
+                            }
+                        }
+                    }
+                    self.emit_opcode(OpCode::Array);
+                    self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    return Ok(DefineType::Array {
+                        inner_type: Box::new(slice_t),
+                        len: clit.val.values.len(),
+                    });
+                }
+
                 panic!("unknown composite lit {:#?}", clit);
             }
             Expression::Index(ind) => {

@@ -1,3 +1,5 @@
+use crate::parser::ast::{ArrayType, BasicLit, Expression, Ident};
+use crate::parser::token::LitKind;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::object::Type;
 use crate::vm::Error;
@@ -82,7 +84,10 @@ pub enum DefineType {
     Float64,
     String,
     Rune,
-    Array(Box<Self>),
+    Array {
+        inner_type: Box<Self>,
+        len: usize,
+    },
     Map(Box<Self>, Box<Self>),
     Iter(Box<Self>),
     Ref(Box<Self>),
@@ -128,6 +133,24 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
+    pub fn to_expression(self) -> Expression {
+        match self {
+            DefineType::Type(_, t) => Expression::Ident(Ident {
+                pos: 0,
+                name: t.to_string(),
+            }),
+            DefineType::Array { len, inner_type } => Expression::TypeArray(ArrayType {
+                pos: (0, 0),
+                len: Box::new(Expression::BasicLit(BasicLit {
+                    pos: 0,
+                    kind: LitKind::Integer,
+                    value: format!("{}", len),
+                })),
+                typ: Box::new(inner_type.to_expression()),
+            }),
+            _ => unimplemented!("DefineType::to_expression {:#?}", self),
+        }
+    }
     pub fn get_type_name(&self) -> String {
         match self {
             Self::Struct { name: n, .. } => n.to_string(),
@@ -329,15 +352,20 @@ impl DefineType {
     }
 
     pub fn strip_tuple_type(&self) -> DefineType {
-        if let Self::Tuple(v) = self {
-            let mut tuple = vec![];
+        match self {
+            Self::Tuple(v) => {
+                let mut tuple = vec![];
 
-            for t in v {
-                tuple.push(t.strip_var().strip_type());
+                for t in v {
+                    tuple.push(t.strip_var().strip_type());
+                }
+                DefineType::Tuple(tuple)
             }
-            DefineType::Tuple(tuple)
-        } else {
-            self.clone()
+            Self::Array { len, inner_type } => DefineType::Array {
+                len: *len,
+                inner_type: Box::new(inner_type.strip_tuple_type().strip_type()),
+            },
+            _ => self.clone(),
         }
     }
 
@@ -393,7 +421,7 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Array(_) => true,
+            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Array { .. } => true,
             _ => false,
         }
     }
