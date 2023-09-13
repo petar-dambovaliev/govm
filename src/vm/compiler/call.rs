@@ -1,4 +1,5 @@
 use crate::parser::ast::{Call, Expression};
+use crate::vm::builtin::signature_from_t;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::symbols::DefineType;
 
@@ -86,8 +87,13 @@ impl CallType {
                 }
             }
             Expression::Ident(id) => {
-                let t = c.symbols.resolve(&id.name).unwrap().get_type().strip_var();
-                assert!(t.is_func());
+                let mut t = c.symbols.resolve(&id.name).unwrap().get_type().strip_var();
+
+                if !t.is_type() {
+                    assert!(t.is_func());
+                } else {
+                    t = signature_from_t(t).unwrap();
+                }
 
                 return Self::Func {
                     name: id.name.to_string(),

@@ -1,8 +1,9 @@
 use super::{Error, Object};
 use crate::vm::gc::GC;
-use crate::vm::object::int::Byte;
+use crate::vm::object::int::{Byte, Int64};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::Type;
+use crate::vm::symbols::{ContextType, DefineType};
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
@@ -17,6 +18,7 @@ pub enum Builtin {
     Byte,
     Rune,
     Println,
+    Int64,
 }
 
 impl Builtin {
@@ -51,6 +53,7 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "print" => Some(Builtin::Print),
         "type" => Some(Builtin::Type),
         "int" => Some(Builtin::Int),
+        "int64" => Some(Builtin::Int64),
         "float" => Some(Builtin::Float),
         "bool" => Some(Builtin::Bool),
         "string" => Some(Builtin::String),
@@ -58,6 +61,31 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "len" => Some(Builtin::Length),
         "rune" => Some(Builtin::Rune),
         "println" => Some(Builtin::Println),
+        _ => None,
+    }
+}
+
+pub fn signature_from_t(t: DefineType) -> Option<DefineType> {
+    if !t.is_type() {
+        return None;
+    }
+
+    let (_, inner_t) = t.as_type();
+
+    //args define type need to be flexible
+    match inner_t {
+        Type::String => Some(DefineType::Func {
+            name: "string".to_string(),
+            args: vec![ContextType::Named("s".to_string(), DefineType::String)],
+            recv: None,
+            rt: Box::new(DefineType::String),
+        }),
+        Type::I64 => Some(DefineType::Func {
+            name: "int64".to_string(),
+            args: vec![ContextType::Named("i".to_string(), DefineType::Int)],
+            recv: None,
+            rt: Box::new(DefineType::String),
+        }),
         _ => None,
     }
 }
@@ -75,8 +103,22 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
         Builtin::Length => call_length(args),
         Builtin::Rune => call_rune(args),
         Builtin::Println => call_println(args),
+        Builtin::Int64 => call_int64(args),
         _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_int64(args: &[Object]) -> Result<Object, Error> {
+    let num = args[0];
+
+    let i = match num.tag() {
+        Type::Int => num.as_isize() as i64,
+        Type::I64 => return Ok(num),
+        Type::UI => num.as_uint().value as i64,
+        _ => unimplemented!(),
+    };
+
+    Ok(Int64::from_i64(i))
 }
 
 fn call_println(args: &[Object]) -> Result<Object, Error> {

@@ -416,6 +416,18 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
             match self.next() {
+                OpCode::IncLocal => {
+                    let id = self.read_u16();
+                    let val = &mut self.stack[self.bp as usize + id as usize];
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
+                }
+                OpCode::IncGlobal => {
+                    let id = self.read_u16();
+                    let val = &mut self.globals[self.bp as usize + id as usize];
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
+                }
                 OpCode::SetDefault => {
                     let def = self.pop();
                     let value = self.pop();
@@ -701,7 +713,13 @@ impl VM {
                 }
                 OpCode::Add => impl_binary_op_method!(add),
                 OpCode::Subtract => impl_binary_op_method!(sub),
-                OpCode::Divide => impl_binary_op_method!(div),
+                OpCode::Divide => {
+                    let right = self.pop();
+                    let left = self.pop();
+                    let result = left.div(right, gc)?;
+                    self.push(result);
+                }
+                //impl_binary_op_method!(div),
                 OpCode::Multiply => impl_binary_op_method!(mul),
                 OpCode::Gt => impl_binary_op_method!(gt),
                 OpCode::Gte => impl_binary_op_method!(gte),

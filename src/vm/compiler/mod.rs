@@ -81,6 +81,8 @@ pub(crate) enum OpCode {
     TypeCmp,
     PanicIfFalse,
     SetDefault,
+    IncLocal,
+    IncGlobal,
     Halt,
 }
 
@@ -104,7 +106,9 @@ impl OpCode {
             | OpCode::Map
             | OpCode::ReturnValue
             | OpCode::Struct
-            | OpCode::Upcast => &[2],
+            | OpCode::Upcast
+            | OpCode::IncLocal
+            | OpCode::IncGlobal => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -215,6 +219,13 @@ impl Context {
         }
     }
 
+    fn push_continue(&mut self, pos: usize) {
+        match self {
+            Self::Switch(_) => panic!("no continue on a switch"),
+            Self::For(f) => f.continue_instructions.push(pos),
+        }
+    }
+
     fn start(&self) -> usize {
         match self {
             Self::Switch(sw) => sw.start,
@@ -263,6 +274,10 @@ struct LoopContext {
     /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this loop
     break_instructions: Vec<usize>,
 
+    /// Stores the index of all JUMP instructions within the current loop context that originate from a break statement
+    /// Once this loop context ends, these instructions should have their operands updated to the first instruction that follows this loop
+    continue_instructions: Vec<usize>,
+
     label: Option<String>,
 }
 
@@ -271,6 +286,7 @@ impl LoopContext {
         Self {
             start,
             break_instructions: Vec::new(),
+            continue_instructions: Vec::new(),
             label,
         }
     }
@@ -375,6 +391,8 @@ impl Display for OpCode {
             Self::TypeCmp => "TypeCmp",
             Self::PanicIfFalse => "PanicIfFalse",
             Self::SetDefault => "SetDefault",
+            Self::IncLocal => "IncLocal",
+            Self::IncGlobal => "IncGlobal",
             Self::Halt => "Halt",
         };
         f.write_str(s)

@@ -336,9 +336,14 @@ impl Compiler {
         match decl {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
-                    let tp = self.expression_to_define_type(spec.typ.as_ref().unwrap());
-
+                    let mut declared_tp = None;
                     let values = if spec.values.is_empty() {
+                        let tp = self.expression_to_define_type(
+                            spec.typ
+                                .as_ref()
+                                .expect("no declared values requires a declared type"),
+                        );
+                        declared_tp = Some(tp.clone());
                         let mut defaults = Vec::with_capacity(spec.name.len());
                         for _ in 0..spec.name.len() {
                             defaults.push(self.make_type_default_val(tp.clone()));
@@ -354,21 +359,25 @@ impl Compiler {
                             panic!("var cant be invar");
                         }
 
-                        if rt.is_nil() && tp.is_ref() {
-                            rt = tp.clone();
+                        if let Some(dtp) = &declared_tp {
+                            if rt.is_nil() && dtp.is_ref() {
+                                rt = dtp.clone();
+                            }
                         }
 
                         let mut should_upcast = false;
 
-                        if rt != tp {
-                            if value.is_int_lit() {
-                                let i = value.as_int_lit().unwrap();
-                                if i >= u8::MIN as isize && i <= u8::MAX as isize {
-                                    rt = tp.clone();
+                        if let Some(dtp) = &declared_tp {
+                            if rt != *dtp {
+                                if value.is_int_lit() {
+                                    let i = value.as_int_lit().unwrap();
+                                    if i >= u8::MIN as isize && i <= u8::MAX as isize {
+                                        rt = dtp.clone();
+                                    }
+                                } else if dtp.is_interface() {
+                                    rt = dtp.clone();
+                                    should_upcast = true;
                                 }
-                            } else if tp.is_interface() {
-                                rt = tp.clone();
-                                should_upcast = true;
                             }
                         }
 
@@ -379,11 +388,13 @@ impl Compiler {
                         );
 
                         if should_upcast {
-                            let (name, _) = tp.as_interface();
-                            let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
+                            if let Some(dtp) = &declared_tp {
+                                let (name, _) = dtp.as_interface();
+                                let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
 
-                            self.emit_opcode(OpCode::Upcast);
-                            self.emit_u16(s.index);
+                                self.emit_opcode(OpCode::Upcast);
+                                self.emit_u16(s.index);
+                            }
                         }
 
                         let op = if symbol.scope == Scope::Global {
@@ -900,14 +911,15 @@ impl Compiler {
                 self.emit_opcode(OpCode::Null);
 
                 let label = self.label_contexts.get(&(forstmt.pos, 0)).cloned();
-                self.contexts.push(Context::For(LoopContext::new(
-                    self.instructions.len(),
-                    label,
-                )));
 
                 if let Some(init) = &forstmt.init {
                     self.compile_statement(init.as_ref())?;
                 }
+
+                self.contexts.push(Context::For(LoopContext::new(
+                    self.instructions.len(),
+                    label,
+                )));
 
                 let pos_before_condition = self.instructions.len();
 
@@ -935,17 +947,17 @@ impl Compiler {
 
                 let terminate = self.compile_block_statement(&forstmt.body.list)?;
 
+                let mut post_op_pos = 0;
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
-                    //todo
-                    // need to propagate info to add the post condition
-                    // to places where there are breaks/continues
                     if let Some(post) = &forstmt.post {
                         //panic!("{:#?}", post);
+                        post_op_pos = self.instructions.len();
                         self.compile_statement(post.as_ref())?;
                     }
                 } else {
                     if let Some(post) = &forstmt.post {
+                        post_op_pos = self.instructions.len();
                         self.compile_statement(post.as_ref())?;
                     }
                     self.emit_opcode(OpCode::Null);
@@ -965,6 +977,10 @@ impl Compiler {
                 let ctx = self.contexts.pop().unwrap().to_for();
                 for ip in &ctx.break_instructions {
                     self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
+                }
+
+                for ip in &ctx.continue_instructions {
+                    self.change_jump_operand_at(*ip, post_op_pos.try_into().unwrap());
                 }
 
                 let loop_terminates = (terminate.unwrap_or_default()
@@ -1405,26 +1421,27 @@ impl Compiler {
                 }
                 Keyword::Continue => {
                     self.emit_opcode(OpCode::Null);
+                    let pos = self.instructions.len();
+                    self.emit_opcode(OpCode::Jump);
+                    self.emit_u16(JUMP_PLACEHOLDER);
 
-                    let mut pos = None;
                     if let Some(l) = branch.ident.clone() {
-                        for ctx in self.contexts.iter().rev() {
+                        for ctx in self.contexts.iter_mut().rev() {
                             if let Some(label) = ctx.label() {
                                 if &l.name == label {
-                                    pos = Some(ctx.start());
+                                    ctx.push_break(pos);
+                                    return Ok(Some(false));
                                 }
                             }
                         }
                         panic!("label not found: {:#?}", branch.ident);
                     } else {
-                        pos = Some(match self.contexts.iter().last() {
-                            Some(ctx) => Ok(ctx.start()),
-                            None => Err(Error::SyntaxError("bad call 2".to_string())),
-                        }?);
-                    };
-
-                    self.emit_opcode(OpCode::Jump);
-                    self.emit_u16(pos.unwrap().try_into().unwrap());
+                        let ctx = match self.contexts.last_mut() {
+                            Some(ctx) => ctx,
+                            None => return Err(Error::SyntaxError("bad call 1".to_string())),
+                        };
+                        ctx.push_continue(pos);
+                    }
                 }
                 Keyword::FallThrough => {
                     // already handled in the switch logic
@@ -1438,27 +1455,20 @@ impl Compiler {
                     _ => panic!("only ident allowed inc/dec"),
                 };
 
-                let op = match incdec.op {
-                    Operator::Inc => Operator::Add,
-                    Operator::Dec => Operator::Sub,
-                    _ => panic!("invalid op"),
+                let (s, t) = self.symbols.resolve(&name.name).unwrap().as_local();
+
+                let op = match (incdec.op, s.scope) {
+                    (Operator::Inc, Scope::Global) => OpCode::IncGlobal,
+                    (Operator::Inc, Scope::Local) => OpCode::IncLocal,
+                    _ => unimplemented!("unimplemented op: {:#?}", incdec.op),
                 };
 
-                self.compile_statement(&Statement::Assign(AssignStmt {
-                    pos: 0,
-                    op: Operator::Assign,
-                    left: vec![Expression::Ident(name.clone())],
-                    right: vec![Expression::Operation(Operation {
-                        pos: 0,
-                        op,
-                        x: Box::new(Expression::Ident(name)),
-                        y: Some(Box::new(Expression::BasicLit(BasicLit {
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: "1".to_string(),
-                        }))),
-                    })],
-                }))?;
+                if !t.strip_var().is_numeric() {
+                    panic!("cannot use inc/dec operators on {:#?}", t);
+                }
+
+                self.emit_opcode(op);
+                self.emit_u16(s.index);
             }
             Statement::Empty(_) => {}
             Statement::Range(rng) => {
@@ -2258,7 +2268,7 @@ impl Compiler {
                                 self.emit_opcode(OpCode::Upcast);
                                 self.emit_u16(s.index);
                             } else {
-                                assert_eq!(t.as_named().unwrap().1, got);
+                                assert_eq!(t.as_named().unwrap().1, got.strip_var());
                             }
                         }
                         self.compile_expression(call.func.as_ref())?;
@@ -2426,12 +2436,19 @@ impl Compiler {
                     | Operator::OrOr => {
                         match &op.y {
                             Some(y) => {
+                                //todo work on Go constants
+                                // weird conversions
                                 match (op.x.as_ref(), y.as_ref()) {
                                     (Expression::Ident(name), Expression::BasicLit(lit))
                                     | (Expression::BasicLit(lit), Expression::Ident(name))
                                         if lit.kind == LitKind::Integer =>
                                     {
-                                        let value: isize = lit.value.parse().unwrap();
+                                        let value = lit
+                                            .value
+                                            .parse::<isize>()
+                                            .or_else(|_| isize::from_str_radix(&lit.value, 16))
+                                            .unwrap();
+
                                         let res = self.compile_const_var_infix_expression(
                                             &name.name, value, &op.op,
                                         );
@@ -2515,7 +2532,13 @@ impl Compiler {
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
                 // add to gc
-                let idx = self.add_constant(Object::int(lit.value.parse().unwrap()));
+                let value = lit
+                    .value
+                    .parse::<isize>()
+                    .or_else(|_| isize::from_str_radix(&lit.value, 16))
+                    .unwrap();
+
+                let idx = self.add_constant(Object::int(value));
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
 

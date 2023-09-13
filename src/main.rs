@@ -15,16 +15,30 @@ fn main() {
         r#"
 package main
 
+import "fmt"
+
 func main() {
+    i := 1
+    for i <= 3 {
+        println(i)
+        i = i + 1
+    }
+    
+    for j := 7; j <= 9; j++ {
+        println(j)
+    }
+    
+    for {
+        println("loop")
+        break
+    }
 
-    println("go" + "lang")
-
-    println("1+1 =", 1+1)
-    println("7.0/3.0 =", 7.0/3.0)
-
-    println(true && false)
-    println(true || false)
-    println(!true)
+    for n := 0; n <= 5; n++ {
+        if n%2 == 0 {
+            continue
+        }
+        println(n)
+    }
 }
     "#,
     );

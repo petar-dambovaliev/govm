@@ -652,72 +652,72 @@ impl PartialEq for Object {
             Type::Function => self.0 == other.0,
             Type::Bool => {
                 let l = self.as_bool();
-                let r = self.as_bool();
+                let r = other.as_bool();
                 l == r
             }
             Type::Int => {
                 let l = self.as_isize();
-                let r = self.as_isize();
+                let r = other.as_isize();
                 l == r
             }
             Type::I8 => {
                 let l = self.as_int8();
-                let r = self.as_int8();
+                let r = other.as_int8();
                 l.value == r.value
             }
             Type::I16 => {
                 let l = self.as_int16();
-                let r = self.as_int16();
+                let r = other.as_int16();
                 l.value == r.value
             }
             Type::I32 => {
                 let l = self.as_int32();
-                let r = self.as_int32();
+                let r = other.as_int32();
                 l.value == r.value
             }
             Type::I64 => {
                 let l = self.as_int64();
-                let r = self.as_int64();
+                let r = other.as_int64();
                 l.value == r.value
             }
             Type::UI => {
                 let l = self.as_uint();
-                let r = self.as_uint();
+                let r = other.as_uint();
                 l.value == r.value
             }
             Type::UI8 => {
                 let l = self.as_uint8();
-                let r = self.as_uint8();
+                let r = other.as_uint8();
                 l.value == r.value
             }
             Type::UI16 => {
                 let l = self.as_uint16();
-                let r = self.as_uint16();
+                let r = other.as_uint16();
                 l.value == r.value
             }
             Type::UI32 => {
                 let l = self.as_uint32();
-                let r = self.as_uint32();
+                let r = other.as_uint32();
                 l.value == r.value
             }
             Type::UI64 => {
                 let l = self.as_uint64();
-                let r = self.as_uint64();
+                let r = other.as_uint64();
                 l.value == r.value
             }
             Type::Byte => {
                 let l = self.as_byte();
-                let r = self.as_byte();
+                let r = other.as_byte();
                 l.value == r.value
             }
             Type::Complex64 => {
                 let l = self.as_complex64();
-                let r = self.as_complex64();
+                let r = other.as_complex64();
                 l.value == r.value
             }
             Type::Complex128 => {
                 let l = self.as_complex128();
-                let r = self.as_complex128();
+                let r = other.as_complex128();
                 l.value == r.value
             }
             Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
