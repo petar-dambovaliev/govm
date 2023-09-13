@@ -285,7 +285,8 @@ struct FuncContext {
     /// Stores the index of all JUMP instructions within the current function context that originate from a return statement
     /// Once this function context ends, these instructions should have their operands updated to the first instruction that follows this function
     ret_instructions: Vec<usize>,
-    ret_types: Vec<DefineType>,
+    ret_types: Vec<(DefineType, bool)>,
+    pub expected_ret: DefineType,
 }
 
 impl FuncContext {
@@ -294,6 +295,7 @@ impl FuncContext {
             start,
             ret_instructions: Vec::new(),
             ret_types: Vec::new(),
+            expected_ret: DefineType::Null,
         }
     }
 }

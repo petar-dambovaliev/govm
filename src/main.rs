@@ -17,26 +17,16 @@ fn main() {
         
         type User struct {name string}
         
-        func Baz() (string, bool) {
-            return "123", false
-        }
-        
-        func Foo() (string, bool) {
-            var i interface{} = 5
+        func Foo() string {
+            var i interface{} = "123"
             
-            s, ok := i.(string)
-            
-            if  !ok {
-                return s, true
-            } else {
-                return Baz()
-            }
+            return i.(string)
         }
         
         
         func main() {
-            f, ok := Foo()
-            println(f, ok)
+            f := Foo()
+            println(f)
         }
     "#,
     );

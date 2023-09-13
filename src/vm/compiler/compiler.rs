@@ -487,10 +487,12 @@ impl Compiler {
                     name: f.name.name.clone(),
                     recv: recv_t,
                     args: decl_arg_types,
-                    rt: Box::new(r_t),
+                    rt: Box::new(r_t.clone()),
                 };
                 let updated = self.symbols.update_dt(&f_name, func_def.clone());
                 assert!(updated);
+
+                self.func_contexts.last_mut().unwrap().expected_ret = r_t;
 
                 //add method to struct symbol
                 if let Some(recv) = recv {
@@ -571,7 +573,7 @@ impl Compiler {
                         panic!("expected return");
                     }
 
-                    for mut ret_type in ctx.ret_types {
+                    for (mut ret_type, is_type_assert) in ctx.ret_types {
                         if ret_type.is_var() {
                             ret_type = ret_type.as_var();
                         }
@@ -595,16 +597,21 @@ impl Compiler {
                         }
 
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                            assert_eq!(
-                                expected_t,
-                                ret_type.strip_tuple_type(),
-                                "{:#?}",
-                                f.name.name
-                            );
+                            if is_type_assert && !expected_t.is_tuple() && ret_type.is_tuple() {
+                                let tuple = ret_type.as_tuple();
+                                assert_eq!(expected_t, tuple[0]);
+                            } else {
+                                assert_eq!(
+                                    expected_t,
+                                    ret_type.strip_tuple_type(),
+                                    "{:#?}",
+                                    f.name.name
+                                );
+                            }
                         }
                     }
                 } else {
-                    for ret_type in &ctx.ret_types {
+                    for (ret_type, _) in &ctx.ret_types {
                         assert_eq!(ret_type, &DefineType::Null);
                     }
                 }
@@ -1342,7 +1349,28 @@ impl Compiler {
                     rt = DefineType::Tuple(tuple);
                 }
 
-                self.func_contexts.last_mut().unwrap().ret_types.push(rt);
+                let expect_t = self.func_contexts.last().unwrap().expected_ret.clone();
+
+                let is_type_assert = if expr.ret.len() == 1 {
+                    if let Expression::TypeAssert(_) = &expr.ret[0] {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !expect_t.is_tuple() && is_type_assert {
+                    rts_len = 1;
+                    self.emit_opcode(OpCode::PanicIfFalse);
+                }
+
+                self.func_contexts
+                    .last_mut()
+                    .unwrap()
+                    .ret_types
+                    .push((rt, is_type_assert));
 
                 assert!(rts_len < u16::MAX as usize);
                 self.emit_opcode(OpCode::ReturnValue);
@@ -2931,16 +2959,21 @@ impl Compiler {
                         panic!("expected return");
                     }
 
-                    for mut ret_type in ctx.ret_types {
+                    for (mut ret_type, is_type_assert) in ctx.ret_types {
                         if ret_type.is_var() {
                             ret_type = ret_type.as_var();
                         }
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                            assert_eq!(expected_t, ret_type);
+                            if is_type_assert && !expected_t.is_tuple() && ret_type.is_tuple() {
+                                let tuple = ret_type.as_tuple();
+                                assert_eq!(expected_t, tuple[0]);
+                            } else {
+                                assert_eq!(expected_t, ret_type);
+                            }
                         }
                     }
                 } else {
-                    for ret_type in &ctx.ret_types {
+                    for (ret_type, is_type_assert) in &ctx.ret_types {
                         assert_eq!(ret_type, &DefineType::Null);
                     }
                 }
