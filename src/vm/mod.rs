@@ -565,7 +565,7 @@ impl VM {
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    //println!("{:#?}", value);
+                    //println!("setlocal: {:#?}", idx);
                     //println!("id: {:#?} bp: {:#?}", idx, self.bp);
                     self.set_local(idx, value);
                 }
@@ -744,7 +744,7 @@ impl VM {
                 }
                 OpCode::Call => {
                     let num_args = self.read_u8();
-                    //println!("{:#?}", self.stack);
+                    //println!("CALL");
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
                     let mut obj = self.pop();
 
@@ -808,13 +808,16 @@ impl VM {
 
                     //println!("after popframe: {:#?}", self.stack);
 
-                    for re in res {
-                        self.push(re);
+                    //println!("res: {:#?}", num_r);
+
+                    for re in res.iter().rev() {
+                        self.push(re.clone());
                     }
 
                     self.closure_ctx.pop();
                 }
                 OpCode::Return => {
+                    //println!("return");
                     self.popframe();
                     self.push(Object::null());
                     self.closure_ctx.pop();

@@ -80,6 +80,18 @@ impl Compiler {
         self.emit_u16(s.index);
         //panic!("{:#?}", self.constants);
 
+        let s = self.symbols.define(
+            "bool",
+            DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
+            false,
+        );
+
+        let idx = self.add_constant(TypeValue::object(Type::Bool));
+        self.emit_opcode(OpCode::Const);
+        self.emit_u16(idx);
+        self.emit_opcode(OpCode::SetGlobal);
+        self.emit_u16(s.index);
+
         let _ = self.symbols.define(
             "nil",
             DefineType::Type(Box::new(DefineType::Null), Type::Null),
@@ -162,12 +174,6 @@ impl Compiler {
         );
 
         //self.constants.push(Rune::from_char(0 as char));
-
-        let _ = self.symbols.define(
-            "bool",
-            DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
-            false,
-        );
 
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
@@ -535,7 +541,6 @@ impl Compiler {
                 let ctx = self.func_contexts.pop().unwrap();
 
                 if !decl_r_types.is_empty() {
-                    decl_r_types.sort();
                     let sorted_decl_r_types: Vec<DefineType> = decl_r_types
                         .iter()
                         .map(|b| {
@@ -558,9 +563,10 @@ impl Compiler {
                     };
 
                     //println!("{:#?}", un_rts);
-                    if !terminates.unwrap_or_default()
+                    if (!terminates.unwrap_or_default()
                         && expected_t != DefineType::Null
-                        && !has_top_return
+                        && !has_top_return)
+                        || (expected_t != DefineType::Null && ctx.ret_types.is_empty())
                     {
                         panic!("expected return");
                     }
@@ -574,8 +580,27 @@ impl Compiler {
                             ret_type = ret_type.as_type().0;
                         }
 
+                        if let DefineType::Tuple(tuple) = ret_type {
+                            let mut res_tuple = vec![];
+
+                            for el in tuple {
+                                let ell = match el {
+                                    DefineType::Type(a, _) => a,
+                                    _ => Box::new(el),
+                                };
+                                res_tuple.push(*ell);
+                            }
+
+                            ret_type = DefineType::Tuple(res_tuple);
+                        }
+
                         if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                            assert_eq!(expected_t, ret_type, "{:#?}", f.name.name);
+                            assert_eq!(
+                                expected_t,
+                                ret_type.strip_tuple_type(),
+                                "{:#?}",
+                                f.name.name
+                            );
                         }
                     }
                 } else {
@@ -835,7 +860,6 @@ impl Compiler {
 
         for s in block {
             let term = self.compile_statement(s)?;
-            //println!("{:#?}", term);
 
             let is_empty = if let Statement::Empty(_) = s {
                 true
@@ -1004,6 +1028,7 @@ impl Compiler {
 
                     let tuple = ret.as_tuple();
                     assert_eq!(assign.left.len(), tuple.len());
+                    let mut i = 0;
 
                     for (left, ct) in assign.left.iter().zip(tuple).rev() {
                         match &assign.op {
@@ -1019,7 +1044,7 @@ impl Compiler {
                                     ct.is_invar(),
                                 );
 
-                                if is_type_assert {
+                                if is_type_assert && i == assign.left.len() - 1 {
                                     let def_expr = self.make_type_default_val(ct.clone());
                                     self.compile_expression(&def_expr)?;
                                     self.emit_opcode(OpCode::SetDefault);
@@ -1075,6 +1100,7 @@ impl Compiler {
                             }
                             _ => unimplemented!(),
                         }
+                        i += 1;
                     }
                     return Ok(None);
                 }
@@ -1301,14 +1327,20 @@ impl Compiler {
                     rts.push(t);
                 }
 
-                let rts_len = rts.len();
-                let rt = if rts_len == 0 {
+                let mut rts_len = rts.len();
+                let mut rt = if rts_len == 0 {
                     DefineType::Null
                 } else if rts_len == 1 {
                     rts[0].clone()
                 } else {
                     DefineType::Tuple(rts)
                 };
+
+                if rts_len == 1 && rt.is_tuple() {
+                    let mut tuple = rt.as_tuple();
+                    rts_len = tuple.len();
+                    rt = DefineType::Tuple(tuple);
+                }
 
                 self.func_contexts.last_mut().unwrap().ret_types.push(rt);
 
@@ -2856,7 +2888,6 @@ impl Compiler {
                 let ctx = self.func_contexts.pop().unwrap();
 
                 if !decl_r_types.is_empty() {
-                    decl_r_types.sort();
                     let sorted_decl_r_types: Vec<DefineType> = decl_r_types
                         .iter()
                         .map(|b| {

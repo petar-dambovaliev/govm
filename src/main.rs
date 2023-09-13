@@ -17,20 +17,26 @@ fn main() {
         
         type User struct {name string}
         
-        func main() {
-            //peter := User{name: "peter"}
-            
+        func Baz() (string, bool) {
+            return "", false
+        }
+        
+        func Foo() (string, bool) {
             var i interface{} = "hello"
             
-            s, ok := i.(User)
-            println(s)
+            s, ok := i.(string)
+            
+            if  ok {
+                return s, true
+            } else {
+                return Baz()
+            }
+        }
         
-            // s, ok := i.(string)
-            // println(s, ok)
-            // 
-            // f, ok := i.(float64)
-            // println(f, ok)
-
+        
+        func main() {
+            f, ok := Foo()
+            println(f, ok)
         }
     "#,
     );

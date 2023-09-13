@@ -328,6 +328,19 @@ impl DefineType {
         }
     }
 
+    pub fn strip_tuple_type(&self) -> DefineType {
+        if let Self::Tuple(v) = self {
+            let mut tuple = vec![];
+
+            for t in v {
+                tuple.push(t.strip_var().strip_type());
+            }
+            DefineType::Tuple(tuple)
+        } else {
+            self.clone()
+        }
+    }
+
     pub fn strip_ref(&self) -> DefineType {
         if let Self::Ref(v) = self {
             *v.clone()
@@ -422,6 +435,13 @@ impl DefineType {
     pub fn is_type(&self) -> bool {
         match &self {
             Self::Type(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_tuple(&self) -> bool {
+        match &self {
+            Self::Tuple(_) => true,
             _ => false,
         }
     }
