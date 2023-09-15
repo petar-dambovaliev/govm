@@ -1,8 +1,10 @@
 use super::{Error, Object};
 use crate::vm::gc::GC;
-use crate::vm::object::int::{Byte, Int64};
+use crate::vm::object::collections::Slice;
+use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
-use crate::vm::object::Type;
+use crate::vm::object::structure::TypeValue;
+use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
 
 #[derive(Debug, Copy, Clone)]
@@ -19,31 +21,17 @@ pub enum Builtin {
     Rune,
     Println,
     Int64,
+    Make,
+    Cap,
+    Append,
+    Copy,
 }
 
 impl Builtin {
     pub fn is_void(&self) -> bool {
         match &self {
-            Self::Print | Self::Println => true,
+            Self::Print | Self::Println | Self::Copy => true,
             _ => false,
-        }
-    }
-}
-
-impl From<u8> for Builtin {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Self::Print,
-            1 => Self::Type,
-            2 => Self::Bool,
-            3 => Self::Float,
-            4 => Self::Int,
-            5 => Self::String,
-            6 => Self::Length,
-            7 => Self::Byte,
-            8 => Self::Rune,
-            9 => Self::Println,
-            _ => panic!("Builtin::from: invalid byte"),
         }
     }
 }
@@ -61,6 +49,10 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "len" => Some(Builtin::Length),
         "rune" => Some(Builtin::Rune),
         "println" => Some(Builtin::Println),
+        "make" => Some(Builtin::Make),
+        "cap" => Some(Builtin::Cap),
+        "append" => Some(Builtin::Append),
+        "copy" => Some(Builtin::Copy),
         _ => None,
     }
 }
@@ -91,7 +83,7 @@ pub fn signature_from_t(t: DefineType) -> Option<DefineType> {
 }
 
 #[inline]
-pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, Error> {
+pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args),
         //Builtin::Type => call_type(args, gc),
@@ -104,8 +96,147 @@ pub fn call(builtin: Builtin, args: &[Object], _gc: &mut GC) -> Result<Object, E
         Builtin::Rune => call_rune(args),
         Builtin::Println => call_println(args),
         Builtin::Int64 => call_int64(args),
+        Builtin::Make => call_make(args, gc),
+        Builtin::Cap => call_cap(args),
+        Builtin::Append => call_append(args),
+        Builtin::Copy => call_copy(args),
         _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_copy(args: &[Object]) -> Result<Object, Error> {
+    assert_eq!(2, args.len());
+    let mut dst = args[0];
+    let src = args[1];
+
+    if dst.tag() == Type::Slice && src.tag() == Type::String {
+        let bytes = dst.as_slice_mut();
+        let src_str = src.as_str().as_bytes();
+        //this could be typed checked in the compiler
+        // to avoid runtime overhead
+        for b in src_str {
+            if bytes.capacity() == bytes.len() - 1 {
+                break;
+            }
+            bytes.push(Object::byte(*b));
+        }
+        return Ok(Object::null());
+    }
+
+    assert_eq!(dst.tag(), src.tag());
+
+    match dst.tag() {
+        Type::String => {
+            let dst_str = dst.as_string_mut();
+            let src_str = src.as_str();
+
+            for ch in src_str.chars() {
+                if dst_str.capacity() == dst_str.len() - 1 {
+                    break;
+                }
+                dst_str.push(ch);
+            }
+        }
+        Type::Slice => {
+            let dst_slice = dst.as_slice_mut();
+            let src_slice = src.as_slice();
+
+            for el in src_slice {
+                if dst_slice.capacity() == dst_slice.len() - 1 {
+                    break;
+                }
+                dst_slice.push(*el);
+            }
+        }
+        _ => unimplemented!("copy: {:#?}", dst.tag()),
+    }
+
+    Ok(Object::null())
+}
+
+fn call_append(args: &[Object]) -> Result<Object, Error> {
+    assert!(args.len() > 1);
+    let mut iter = args.iter();
+    let collection = iter.next().unwrap();
+
+    let i = match collection.tag() {
+        Type::Slice => {
+            while let Some(el) = iter.next() {
+                collection.as_slice_mut().push(*el);
+            }
+        }
+        _ => unimplemented!(),
+    };
+
+    Ok(*collection)
+}
+
+fn call_cap(args: &[Object]) -> Result<Object, Error> {
+    assert_eq!(1, args.len());
+    let obj = args[0];
+
+    let i = match obj.tag() {
+        Type::Slice => obj.as_slice().capacity(),
+        Type::Array => obj.as_vec().capacity(),
+        Type::Map => obj.as_map().len(),
+        Type::Null => 0,
+        _ => unimplemented!("cap: {:#?}", obj),
+    };
+
+    Ok(Int::from_isize(i as isize))
+}
+
+//slices, maps, or channels
+fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
+    let mut arg_iter = args.iter();
+    let t = arg_iter.next().unwrap();
+    let len = arg_iter.next();
+    let cap = arg_iter.next();
+
+    assert_eq!(Type::Type, t.tag());
+
+    let tv = unsafe { TypeValue::read(t) };
+
+    let obj = match tv.value {
+        Type::Slice => {
+            let p = tv.inner.unwrap();
+            let inner = unsafe { TypeValue::read(&p) };
+
+            let l = len.unwrap().as_isize();
+
+            if l < 0 {
+                panic!("len can't be negative");
+            }
+
+            let mut v = Vec::with_capacity(
+                cap.map(|a| {
+                    let i = a.as_isize();
+
+                    if i < l {
+                        panic!("len can't be greater than the cap");
+                    }
+
+                    i
+                })
+                .unwrap_or(l) as usize,
+            );
+
+            let def_value = match inner.value {
+                Type::String => Object::string("", gc),
+                Type::Int => Object::int(0),
+                _ => unimplemented!(),
+            };
+
+            for _ in 0..l {
+                v.push(def_value);
+            }
+
+            Slice::from_vec(v)
+        }
+        _ => panic!(),
+    };
+
+    Ok(obj)
 }
 
 fn call_int64(args: &[Object]) -> Result<Object, Error> {
@@ -170,7 +301,9 @@ fn call_length(args: &[Object]) -> Result<Object, Error> {
     let length = match obj.tag() {
         Type::String => obj.as_str().chars().count() - 2,
         Type::Array => obj.as_vec().len(),
+        Type::Slice => obj.as_slice().len(),
         Type::Map => obj.as_map().len(),
+        Type::Null => 0,
         _ => {
             return Err(Error::TypeError(format!(
                 "type doesn't support len {}",

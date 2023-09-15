@@ -939,7 +939,16 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                     index.tag()
                 )));
             }
-            index_get_array(let_obj, index.as_isize())
+            index_get_array(let_obj.as_vec(), index.as_isize())
+        }
+        Type::Slice => {
+            if index.tag() != Type::Int {
+                return Err(Error::TypeError(format!(
+                    "expected int index: {}",
+                    index.tag()
+                )));
+            }
+            index_get_array(let_obj.as_slice(), index.as_isize())
         }
         Type::String => {
             if index.tag() != Type::Int {
@@ -990,8 +999,7 @@ fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), E
     Ok(())
 }
 
-fn index_get_array(obj: Object, mut index: isize) -> Result<Object, Error> {
-    let array = obj.as_vec();
+fn index_get_array(array: &Vec<Object>, mut index: isize) -> Result<Object, Error> {
     if index < 0 {
         index += array.len() as isize;
     }
@@ -1031,6 +1039,7 @@ fn index_set(mut left: Object, index: Object, value: Object) -> Result<(), Error
     }
     match left.tag() {
         Type::Array => index_set_array(left.as_vec_mut(), index.as_isize(), value)?,
+        Type::Slice => index_set_array(left.as_slice_mut(), index.as_isize(), value)?,
         Type::String => index_set_string(left.as_string_mut(), index.as_isize(), value)?,
         Type::Struct => index_set_struct(left, index.as_isize() as usize, value)?,
         Type::Ref => index_set(left.as_ref().value, index, value)?,

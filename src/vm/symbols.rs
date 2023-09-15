@@ -1,6 +1,8 @@
 use crate::parser::ast::{ArrayType, BasicLit, Expression, Ident};
 use crate::parser::token::LitKind;
 use crate::vm::compiler::compiler::Compiler;
+use crate::vm::object::structure::TypeValue;
+use crate::vm::object::Object;
 use crate::vm::object::Type;
 use crate::vm::Error;
 
@@ -88,6 +90,7 @@ pub enum DefineType {
         inner_type: Box<Self>,
         len: usize,
     },
+    Slice(Box<Self>),
     Map(Box<Self>, Box<Self>),
     Iter(Box<Self>),
     Ref(Box<Self>),
@@ -133,6 +136,29 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
+    pub fn to_object(self) -> Object {
+        match self {
+            DefineType::Type(dt, t) => match *dt.clone() {
+                DefineType::String => TypeValue::object(Type::String, None),
+                DefineType::Int => TypeValue::object(Type::Int, None),
+                _ => dt.to_object(),
+            },
+            DefineType::Slice(inner) => {
+                let inner = inner.to_object();
+                TypeValue::object(Type::Slice, Some(inner))
+            }
+            // DefineType::Array { len, inner_type } => Expression::TypeArray(ArrayType {
+            //     pos: (0, 0),
+            //     len: Box::new(Expression::BasicLit(BasicLit {
+            //         pos: 0,
+            //         kind: LitKind::Integer,
+            //         value: format!("{}", len),
+            //     })),
+            //     typ: Box::new(inner_type.to_expression()),
+            // }),
+            _ => unimplemented!("DefineType::to_object {:#?}", self),
+        }
+    }
     pub fn to_expression(self) -> Expression {
         match self {
             DefineType::Type(_, t) => Expression::Ident(Ident {

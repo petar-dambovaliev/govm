@@ -87,7 +87,12 @@ impl CallType {
                 }
             }
             Expression::Ident(id) => {
-                let mut t = c.symbols.resolve(&id.name).unwrap().get_type().strip_var();
+                let mut t = c
+                    .symbols
+                    .resolve(&id.name)
+                    .unwrap_or_else(|| panic!("unresolved: {:#?}", id))
+                    .get_type()
+                    .strip_var();
 
                 if !t.is_type() {
                     assert!(t.is_func());

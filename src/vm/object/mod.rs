@@ -8,7 +8,7 @@ pub mod string;
 pub mod structure;
 
 use crate::vm::gc::GC;
-use crate::vm::object::collections::{Array, Map, ObjIter};
+use crate::vm::object::collections::{Array, Map, ObjIter, Slice};
 use crate::vm::object::float::{Float, Float32, Float64};
 use crate::vm::object::function::Closure;
 use crate::vm::object::int::{
@@ -90,6 +90,7 @@ pub enum Type {
     Closure,
     Interface,
     Type,
+    Slice,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -462,6 +463,18 @@ impl Object {
     }
 
     #[inline]
+    pub fn as_slice(&self) -> &Vec<Object> {
+        assert_eq!(self.tag(), Type::Slice);
+        unsafe { Slice::read(self) }
+    }
+
+    #[inline]
+    pub fn as_slice_mut(&self) -> &mut Vec<Object> {
+        assert_eq!(self.tag(), Type::Slice);
+        unsafe { &mut self.get_mut::<Array>().value }
+    }
+
+    #[inline]
     pub fn as_iter(&mut self) -> &mut ObjIter {
         assert_eq!(self.tag(), Type::Iter);
         unsafe { ObjIter::read(self) }
@@ -733,7 +746,8 @@ impl PartialEq for Object {
             | Type::Rune
             | Type::Closure
             | Type::Interface
-            | Type::Type => {
+            | Type::Type
+            | Type::Slice => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     self.tag(),
@@ -779,7 +793,8 @@ impl PartialOrd for Object {
             | Type::Struct
             | Type::Closure
             | Type::Interface
-            | Type::Type => {
+            | Type::Type
+            | Type::Slice => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -944,6 +959,17 @@ impl Display for Object {
                 }
                 f.write_char(']')?;
             }
+            Type::Slice => {
+                let values = unsafe { self.as_vec_unchecked() };
+                f.write_char('[')?;
+                for (i, obj) in values.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    std::fmt::Display::fmt(&obj, f)?;
+                }
+                f.write_char(']')?;
+            }
             Type::Struct => {
                 let strct = unsafe { self.as_struct() };
 
@@ -1052,6 +1078,7 @@ impl Display for Type {
             Type::Complex128 => "complex128",
             Type::Interface => "interface",
             Type::Type => "type",
+            Type::Slice => "slice",
         };
         f.write_str(str)
     }

@@ -74,7 +74,7 @@ impl Compiler {
             DefineType::Type(Box::new(DefineType::String), Type::String),
             false,
         );
-        let idx = self.add_constant(TypeValue::object(Type::String));
+        let idx = self.add_constant(TypeValue::object(Type::String, None));
         self.emit_opcode(OpCode::Const);
         self.emit_u16(idx);
         self.emit_opcode(OpCode::SetGlobal);
@@ -87,7 +87,7 @@ impl Compiler {
             false,
         );
 
-        let idx = self.add_constant(TypeValue::object(Type::Bool));
+        let idx = self.add_constant(TypeValue::object(Type::Bool, None));
         self.emit_opcode(OpCode::Const);
         self.emit_u16(idx);
         self.emit_opcode(OpCode::SetGlobal);
@@ -335,6 +335,10 @@ impl Compiler {
                     inner_type: Box::new(inner),
                     len: len as usize,
                 }
+            }
+            Expression::TypeSlice(ts) => {
+                let inner = self.expression_to_define_type(&ts.typ);
+                DefineType::Slice(Box::new(inner))
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
@@ -2152,7 +2156,8 @@ impl Compiler {
             DefineType::Ref(_)
             | DefineType::Func { .. }
             | DefineType::Map(_, _)
-            | DefineType::Null => Expression::Ident(Ident {
+            | DefineType::Null
+            | DefineType::Slice(_) => Expression::Ident(Ident {
                 pos: 0,
                 name: "nil".to_string(),
             }),
@@ -3214,6 +3219,16 @@ impl Compiler {
                         return Ok(rt);
                     }
                 }
+            }
+            Expression::TypeSlice(_ts) => {
+                let rt = self.expression_to_define_type(expr);
+                let obj = rt.clone().to_object();
+                //panic!("{:#?}", rt);
+                let idx = self.add_constant(obj);
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
+
+                return Ok(rt);
             }
             _ => {
                 return Err(Error::SyntaxError(format!(
