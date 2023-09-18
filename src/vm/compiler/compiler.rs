@@ -567,7 +567,6 @@ impl Compiler {
                     // assert if the function is void but there is a return
                     //assert_eq!(rts.is_none());
                 }
-
                 let ctx = self.func_contexts.pop().unwrap();
 
                 if !decl_r_types.is_empty() {
@@ -1495,20 +1494,33 @@ impl Compiler {
                     _ => panic!("only ident allowed inc/dec"),
                 };
 
-                let (s, t) = self.symbols.resolve(&name.name).unwrap().as_local();
+                let r = self.symbols.resolve(&name.name).unwrap();
 
-                let op = match (incdec.op, s.scope) {
-                    (Operator::Inc, Scope::Global) => OpCode::IncGlobal,
-                    (Operator::Inc, Scope::Local) => OpCode::IncLocal,
-                    _ => unimplemented!("unimplemented op: {:#?}", incdec.op),
+                let (index, setop, incop, t) = match r {
+                    Resolved::Enclosed {
+                        addr,
+                        level,
+                        heap_addr,
+                        t,
+                    } => {
+                        self.symbols.add_escaped(addr, level);
+                        (heap_addr, OpCode::GetEnclosed, OpCode::IncLocal, t)
+                    }
+                    Resolved::Local((symbol, t)) => match symbol.scope {
+                        Scope::Local => (symbol.index, OpCode::SetLocal, OpCode::IncLocal, t),
+                        Scope::Global => (symbol.index, OpCode::SetGlobal, OpCode::IncGlobal, t),
+                    },
                 };
+
+                self.emit_opcode(setop);
+                self.emit_u16(index);
 
                 if !t.strip_var().is_numeric() {
                     panic!("cannot use inc/dec operators on {:#?}", t);
                 }
 
-                self.emit_opcode(op);
-                self.emit_u16(s.index);
+                self.emit_opcode(incop);
+                self.emit_u16(index);
             }
             Statement::Empty(_) => {}
             Statement::Range(rng) => {
@@ -3162,6 +3174,7 @@ impl Compiler {
                         break;
                     }
                 }
+
                 terminates = self.compile_block_statement(&f.body.list)?;
 
                 let ctx = self.func_contexts.pop().unwrap();

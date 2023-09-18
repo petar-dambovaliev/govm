@@ -154,7 +154,7 @@ impl Object {
                 let inner = interface.value.deep_copy();
                 Interface::object(interface.name.clone(), interface.methods.clone(), inner)
             }
-            Type::Type | Type::Function | Type::Null | Type::String => self.clone(),
+            Type::Type | Type::Function | Type::Null | Type::String | Type::Closure => self.clone(),
             _ => unimplemented!("{:#?}", self.tag()),
         }
     }

@@ -727,7 +727,7 @@ impl Resolved {
 
     pub fn as_local(&self) -> (Symbol, DefineType) {
         match &self {
-            Self::Enclosed { .. } => panic!(""),
+            Self::Enclosed { .. } => panic!("as_local: {:#?}", self),
             Self::Local(s) => s.clone(),
         }
     }

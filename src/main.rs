@@ -15,22 +15,24 @@ fn main() {
         r#"
 package main
 
-func sum(nums ...int) {
-    print(nums, " ")
-    total := 0
-
-    for _, num := range nums {
-        total += num
+func intSeq() func() int {
+    i := 0
+    return func() int {
+        i++
+        return i
     }
-    println(total)
 }
 
 func main() {
-    sum(1, 2)
-    sum(1, 2, 3)
 
-    nums := []int{1, 2, 3, 4}
-    sum(nums...)
+    nextInt := intSeq()
+
+    println(nextInt())
+    println(nextInt())
+    println(nextInt())
+     
+    newInts := intSeq()
+    println(newInts())
 }
     "#,
     );
