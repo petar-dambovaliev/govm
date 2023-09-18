@@ -15,42 +15,35 @@ fn main() {
         r#"
 package main
 
+import "fmt"
+
 func main() {
 
-    m := make(map[string]int)
+    nums := []int{2, 3, 4}
+    sum := 0
+    for _, num := range nums {
+        sum += num
+    }
+    println("sum:", sum)
 
-    m["k1"] = 7
-    m["k2"] = 13
+    for i, num := range nums {
+        if num == 3 {
+            println("index:", i)
+        }
+    }
 
-    println("map:", m)
-    
-    v1 := m["k1"]
-    println("v1:", v1)
-    
-    v3 := m["k3"]
-    println("v3:", v3)
-    
-    println("len:", len(m))
-    
-    delete(m, "k2")
-    println("map:", m)
-    
-    clear(m)
-    println("map:", m)
-    
-    _, prs := m["k2"]
-    println("prs:", prs)
-    
-    n := map[string]int{"foo": 1, "bar": 2}
-    println("map:", n)
-    
-    n2 := map[string]int{"foo": 1, "bar": 2}
-    
-    
-    
-    // if maps.Equal(n, n2) {
-    //     println("n == n2")
-    // }
+    kvs := map[string]string{"a": "apple", "b": "banana"}
+    for k, v := range kvs {
+        println(k, v)
+    }
+
+    for k := range kvs {
+        println("key:", k)
+    }
+
+    for i, c := range "go" {
+        println(i, c)
+    }
 }
     "#,
     );

@@ -1,9 +1,11 @@
 use crate::vm::gc::GC;
+use crate::vm::object::rune::Rune;
 use crate::vm::object::{allocate, Header, Object, Type};
 use std::alloc::{dealloc, Layout};
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 use std::ptr::drop_in_place;
+use std::str::Chars;
 
 macro_rules! init {
     ($field: expr => $value: expr) => {
@@ -100,6 +102,24 @@ impl Slice {
 pub enum IterType {
     Map(IntoIter<Object, Object>),
     Array(std::iter::Enumerate<std::vec::IntoIter<Object>>),
+    String(RuneIter),
+}
+
+pub struct RuneIter {
+    s: Object,
+    i: usize,
+}
+
+impl RuneIter {
+    pub fn next(&mut self) -> (Object, Object) {
+        let s = self.s.as_string_mut();
+        let r = match s.chars().nth(self.i) {
+            Some(ch) => (Object::int(self.i as isize), Rune::from_char(ch)),
+            None => (Object::null(), Object::null()),
+        };
+        self.i += 1;
+        r
+    }
 }
 
 #[repr(C)]
@@ -120,6 +140,7 @@ impl ObjIter {
                 .next()
                 .map(|(a, b)| (Object::int(a as isize), b))
                 .unwrap_or((Object::null(), Object::null())),
+            IterType::String(iter) => iter.next(),
         }
     }
 
@@ -127,6 +148,7 @@ impl ObjIter {
         match obj.tag() {
             Type::Map => Self::from_map(obj.as_map().clone()),
             Type::Array => Self::from_vec(obj.as_vec().clone()),
+            Type::String => Self::from_str(obj),
             _ => panic!("not an iterator: {:#?}", obj),
         }
     }
@@ -144,6 +166,15 @@ impl ObjIter {
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         init!(obj.value => IterType::Array(vec.into_iter().enumerate()));
+        ptr
+    }
+
+    pub fn from_str(s: Object) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+
+        init!(obj.value => IterType::String(RuneIter{i:0, s}));
         ptr
     }
 }

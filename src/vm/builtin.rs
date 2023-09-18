@@ -33,7 +33,7 @@ pub enum Builtin {
 impl Builtin {
     pub fn is_void(&self) -> bool {
         match &self {
-            Self::Print | Self::Println | Self::Copy | Self::Delete => true,
+            Self::Print | Self::Println | Self::Copy | Self::Delete | Self::Clear => true,
             _ => false,
         }
     }
