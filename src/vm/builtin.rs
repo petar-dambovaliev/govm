@@ -114,11 +114,16 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
         let src_str = src.as_str().as_bytes();
         //this could be typed checked in the compiler
         // to avoid runtime overhead
+        let mut i = 0;
         for b in src_str {
             if bytes.capacity() == bytes.len() - 1 {
                 break;
             }
-            bytes.push(Object::byte(*b));
+            if i >= bytes.len() {
+                break;
+            }
+            bytes[i] = Object::byte(*b);
+            i += 1;
         }
         return Ok(Object::null());
     }
@@ -141,11 +146,16 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
             let dst_slice = dst.as_slice_mut();
             let src_slice = src.as_slice();
 
+            let mut i = 0;
             for el in src_slice {
                 if dst_slice.capacity() == dst_slice.len() - 1 {
                     break;
                 }
-                dst_slice.push(*el);
+                if i >= dst_slice.len() {
+                    break;
+                }
+                dst_slice[i] = *el;
+                i += 1;
             }
         }
         _ => unimplemented!("copy: {:#?}", dst.tag()),
@@ -224,7 +234,11 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
             let def_value = match inner.value {
                 Type::String => Object::string("", gc),
                 Type::Int => Object::int(0),
-                _ => unimplemented!(),
+                Type::Slice => call_make(
+                    &[TypeValue::object(Type::Slice, inner.inner), *len.unwrap()],
+                    gc,
+                )?,
+                _ => unimplemented!("{:#?}", inner.value),
             };
 
             for _ in 0..l {
@@ -254,14 +268,12 @@ fn call_int64(args: &[Object]) -> Result<Object, Error> {
 
 fn call_println(args: &[Object]) -> Result<Object, Error> {
     if !args.is_empty() {
-        let mut args = args.iter();
+        let args = args.iter();
 
-        let mut output = Vec::with_capacity(args.len());
+        //let mut output = Vec::with_capacity(args.len());
         for arg in args {
-            output.push(format!("{:#?}({:#?})", arg.tag(), arg));
+            print!("{} ", arg);
         }
-
-        print!("{:#?}", output);
     }
     println!();
     Ok(Object::null())

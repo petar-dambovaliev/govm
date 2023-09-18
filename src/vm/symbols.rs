@@ -650,7 +650,12 @@ impl Context {
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
 
-            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+            if let Some((index, _)) = scope
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_index, n)| n.0 == name)
+            {
                 return Some((
                     Symbol {
                         index: (abs_index + index).try_into().unwrap(),

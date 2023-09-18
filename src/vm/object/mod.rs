@@ -145,6 +145,18 @@ unsafe impl Sync for Object {}
 unsafe impl Send for Object {}
 
 impl Object {
+    pub(crate) fn deep_copy(&self) -> Object {
+        match self.tag() {
+            Type::Int => Int::from_isize(self.as_int().value),
+            Type::Interface => {
+                let interface = unsafe { Interface::read(self) };
+                let inner = interface.value.deep_copy();
+                Interface::object(interface.name.clone(), interface.methods.clone(), inner)
+            }
+            Type::Type | Type::Function | Type::Null | Type::String => self.clone(),
+            _ => unimplemented!("{:#?}", self.tag()),
+        }
+    }
     /// Creates a new object from the value (or address) given with the given type mask applied
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {
@@ -890,6 +902,7 @@ macro_rules! impl_cmp {
                 }
             }
 
+            //println!("{:#?} < {:#?}", self, rhs);
             // Delegate actual comparison to PartialOrd/PartialEq implementation
             Ok(Object::bool(self $op rhs,))
         }

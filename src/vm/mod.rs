@@ -16,7 +16,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::collections::{Map, ObjIter};
+use crate::vm::object::collections::{Map, ObjIter, Slice};
 use crate::vm::object::r#ref::Ref;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
@@ -415,7 +415,51 @@ impl VM {
             // }
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
+
+            // if debug_constants[6].as_isize() != constants[6].as_isize() {
+            //     panic!("last instruction wrote to const");
+            // }
+
+            // println!(
+            //     "instr=>{:#?} const6=>{}",
+            //     self.peek_next(),
+            //     constants[6].as_isize()
+            // );
             match self.next() {
+                OpCode::Slice => {
+                    let num = self.read_u8();
+
+                    match num {
+                        0 => {
+                            let slice = self.pop();
+                            self.push(Slice::from_slice(&slice.as_slice()[..]));
+                        }
+                        1 => {
+                            let start = self.pop();
+                            let slice = self.pop();
+                            self.push(Slice::from_slice(
+                                &slice.as_slice()[start.as_isize() as usize..],
+                            ));
+                        }
+                        2 => {
+                            let end = self.pop();
+                            let slice = self.pop();
+                            self.push(Slice::from_slice(
+                                &slice.as_slice()[..end.as_isize() as usize],
+                            ));
+                        }
+                        3 => {
+                            let end = self.pop();
+                            let start = self.pop();
+                            let slice = self.pop();
+                            self.push(Slice::from_slice(
+                                &slice.as_slice()
+                                    [start.as_isize() as usize..end.as_isize() as usize],
+                            ));
+                        }
+                        i => unreachable!("{:#?}", i),
+                    }
+                }
                 OpCode::IncLocal => {
                     let id = self.read_u16();
                     let val = &mut self.stack[self.bp as usize + id as usize];
@@ -543,7 +587,7 @@ impl VM {
                     let idx = self.read_u16();
                     let value = constants[idx as usize];
                     //println!("const: {:#?} tag: {:#?}", value, value.tag());
-                    self.push(value);
+                    self.push(value.deep_copy());
                 }
                 OpCode::Deref => {
                     let val = self.pop();
@@ -577,15 +621,24 @@ impl VM {
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    //println!("setlocal: {:#?}", idx);
+                    if idx == 1 {
+                        // println!(
+                        //     "setlocal: {:#?} to {:#?} stack {:#?}",
+                        //     idx + self.bp,
+                        //     value,
+                        //     self.stack
+                        // );
+                    }
+                    //println!("setlocal: {:#?} to {:#?}", idx + self.bp, value);
                     //println!("id: {:#?} bp: {:#?}", idx, self.bp);
-                    self.set_local(idx, value);
+                    self.set_local(idx, value.clone());
                 }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
                     //println!("GetLocal-before: {:#?}", self.stack);
                     //println!("id: {} bp: {}", idx, self.bp);
                     let value = self.get_local(idx);
+                    //println!("getlocal: id {:#?} value {:#?}", idx + self.bp, self.stack);
                     self.push(value);
                     //println!("GetLocal-after: {:#?}", self.stack);
                 }

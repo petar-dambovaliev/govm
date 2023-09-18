@@ -2287,8 +2287,12 @@ impl Compiler {
                 //todo typecheck return and args on builtins
                 if let Expression::Ident(name) = call.func.as_ref() {
                     if let Some(builtin) = builtin::resolve(&name.name) {
+                        let mut first = None;
                         for a in &call.args {
-                            self.compile_expression(a)?;
+                            let t = self.compile_expression(a)?;
+                            if first.is_none() {
+                                first = Some(t);
+                            }
                         }
 
                         let is_void = builtin.is_void();
@@ -2300,7 +2304,7 @@ impl Compiler {
                             //panic!("{:#?}", 123);
                             self.emit_opcode(OpCode::Pop);
                         }
-                        break 'compile_call;
+                        return Ok(first.unwrap());
                     }
                 }
 
@@ -2741,7 +2745,7 @@ impl Compiler {
                         match &v.val {
                             Element::Expr(el_expr) => {
                                 let expr_t = self.compile_expression(el_expr)?;
-                                assert_eq!(slice_t, expr_t);
+                                assert_eq!(slice_t.strip_type(), expr_t);
                                 if let Some(expected_t) = &el_t {
                                     assert_eq!(expected_t, &expr_t);
                                 } else {
@@ -2957,7 +2961,6 @@ impl Compiler {
                         } else {
                             OpCode::GetLocal
                         };
-                        //panic!("{:#?}", symbol);
 
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
@@ -3229,6 +3232,44 @@ impl Compiler {
                 self.emit_u16(idx);
 
                 return Ok(rt);
+            }
+            Expression::Slice(slice) => {
+                let t = self.compile_expression(&slice.left)?;
+                match t.strip_var() {
+                    DefineType::Slice(_) | DefineType::Array { .. } => {}
+                    tt => panic!("expected slice or array got {:#?}", tt),
+                }
+
+                let mut index_iter = slice.index.iter();
+
+                let mut index = 0;
+                if let Some(from) = index_iter.next().unwrap() {
+                    let ind_t = self.compile_expression(from.as_ref())?;
+
+                    if !ind_t.is_numeric() {
+                        panic!("slicing can be done with integers only");
+                    }
+
+                    index = 1;
+                }
+
+                let mut end = 0;
+                if let Some(from) = index_iter.next().unwrap() {
+                    let ind_t = self.compile_expression(from.as_ref())?;
+
+                    if !ind_t.is_numeric() {
+                        panic!("slicing can be done with integers only");
+                    }
+
+                    if index == 0 {
+                        index = 2;
+                    } else {
+                        index = 3;
+                    }
+                }
+
+                self.emit_opcode(OpCode::Slice);
+                self.emit_u8(index);
             }
             _ => {
                 return Err(Error::SyntaxError(format!(
