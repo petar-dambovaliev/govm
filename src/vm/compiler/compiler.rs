@@ -340,6 +340,10 @@ impl Compiler {
                 let inner = self.expression_to_define_type(&ts.typ);
                 DefineType::Slice(Box::new(inner))
             }
+            Expression::Ellipsis(variadic) => {
+                let inner = self.expression_to_define_type(variadic.elt.as_ref().unwrap().as_ref());
+                DefineType::Variadic(Box::new(inner))
+            }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
     }
@@ -2325,11 +2329,35 @@ impl Compiler {
 
                 let rt = match ct {
                     CallType::Func { func_dt, .. } => {
-                        let (_, _, arg_types, rts) = func_dt.as_func();
+                        let (_, _, mut arg_types, rts) = func_dt.as_func();
                         let rts = rts.type_to_val_t();
-                        assert_eq!(arg_types.len(), call.args.len());
+                        //println!("{:#?}", arg_types);
+                        //assert_eq!(arg_types.len(), call.args.len());
+                        let (is_variadic, variadic_len) = if let Some(last) =
+                            arg_types.last().cloned()
+                        {
+                            let (_, dt) = last.as_named().unwrap();
+                            if dt.is_variadic() {
+                                arg_types.pop();
+                                let v_t = dt.as_variadic();
+                                let mut length = 0;
 
-                        for (a, t) in call.args.iter().zip(arg_types) {
+                                while arg_types.len() < call.args.len() {
+                                    length += 1;
+                                    arg_types.push(ContextType::Named("".to_string(), v_t.clone()))
+                                }
+
+                                (true, length)
+                            } else {
+                                (false, 0)
+                            }
+                        } else {
+                            (false, 0)
+                        };
+
+                        let variadic_start = arg_types.len() - variadic_len;
+
+                        for (i, (a, t)) in call.args.iter().zip(arg_types).enumerate() {
                             let got = self.compile_expression(a)?;
                             let expected = t.as_named().unwrap().1;
 
@@ -2340,14 +2368,44 @@ impl Compiler {
                                 self.emit_opcode(OpCode::Upcast);
                                 self.emit_u16(s.index);
                             } else {
-                                assert_eq!(t.as_named().unwrap().1, got.strip_var());
+                                let got = got.strip_var();
+                                let t = t.as_named().unwrap().1.strip_type();
+
+                                if is_variadic && i >= variadic_start {
+                                    match got {
+                                        DefineType::Array { inner_type, .. } => {
+                                            assert_eq!(t, inner_type.strip_type());
+                                        }
+                                        DefineType::Slice(inner_type) => {
+                                            assert_eq!(t, inner_type.strip_type());
+                                        }
+                                        got_t => assert_eq!(t, got_t),
+                                    }
+                                } else {
+                                    assert_eq!(t, got);
+                                }
                             }
+                        }
+
+                        if is_variadic {
+                            self.emit_opcode(OpCode::Variadic);
+                            //panic!("{}", variadic_len);
+                            self.emit_u16(variadic_len as u16);
                         }
                         self.compile_expression(call.func.as_ref())?;
 
                         self.emit_opcode(OpCode::Call);
                         let arg_len: u8 = call.args.len().try_into().unwrap();
-                        self.emit_u8(arg_len);
+
+                        let v_len = if is_variadic && variadic_len > 0 {
+                            variadic_len - 1
+                        } else {
+                            0
+                        };
+
+                        //println!("{}-{}", arg_len, v_len);
+
+                        self.emit_u8(arg_len - v_len as u8);
 
                         rts
                     }

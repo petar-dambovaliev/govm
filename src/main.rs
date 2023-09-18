@@ -15,35 +15,22 @@ fn main() {
         r#"
 package main
 
-import "fmt"
+func sum(nums ...int) {
+    print(nums, " ")
+    total := 0
+
+    for _, num := range nums {
+        total += num
+    }
+    println(total)
+}
 
 func main() {
+    sum(1, 2)
+    sum(1, 2, 3)
 
-    nums := []int{2, 3, 4}
-    sum := 0
-    for _, num := range nums {
-        sum += num
-    }
-    println("sum:", sum)
-
-    for i, num := range nums {
-        if num == 3 {
-            println("index:", i)
-        }
-    }
-
-    kvs := map[string]string{"a": "apple", "b": "banana"}
-    for k, v := range kvs {
-        println(k, v)
-    }
-
-    for k := range kvs {
-        println("key:", k)
-    }
-
-    for i, c := range "go" {
-        println(i, c)
-    }
+    nums := []int{1, 2, 3, 4}
+    sum(nums...)
 }
     "#,
     );

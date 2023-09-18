@@ -8,7 +8,7 @@ pub mod string;
 pub mod structure;
 
 use crate::vm::gc::GC;
-use crate::vm::object::collections::{Array, Map, ObjIter, Slice};
+use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float, Float32, Float64};
 use crate::vm::object::function::Closure;
 use crate::vm::object::int::{
@@ -91,6 +91,7 @@ pub enum Type {
     Interface,
     Type,
     Slice,
+    Variadic,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -759,7 +760,8 @@ impl PartialEq for Object {
             | Type::Closure
             | Type::Interface
             | Type::Type
-            | Type::Slice => {
+            | Type::Slice
+            | Type::Variadic => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     self.tag(),
@@ -806,7 +808,8 @@ impl PartialOrd for Object {
             | Type::Closure
             | Type::Interface
             | Type::Type
-            | Type::Slice => {
+            | Type::Slice
+            | Type::Variadic => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -1048,6 +1051,17 @@ impl Display for Object {
                 f.write_str(&t.value.to_string())?;
                 f.write_char(')')?;
             }
+            Type::Variadic => {
+                let values = unsafe { Variadic::read(&self) };
+                f.write_char('[')?;
+                for (i, obj) in values.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    std::fmt::Display::fmt(&obj, f)?;
+                }
+                f.write_char(']')?;
+            }
         }
         Ok(())
     }
@@ -1092,6 +1106,7 @@ impl Display for Type {
             Type::Interface => "interface",
             Type::Type => "type",
             Type::Slice => "slice",
+            Type::Variadic => "variadic",
         };
         f.write_str(str)
     }

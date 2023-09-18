@@ -148,8 +148,13 @@ impl ObjIter {
         match obj.tag() {
             Type::Map => Self::from_map(obj.as_map().clone()),
             Type::Array => Self::from_vec(obj.as_vec().clone()),
+            Type::Slice => Self::from_vec(obj.as_vec().clone()),
             Type::String => Self::from_str(obj),
-            _ => panic!("not an iterator: {:#?}", obj),
+            Type::Variadic => {
+                let v = unsafe { Variadic::read(&obj) };
+                Self::from_vec(v.clone())
+            }
+            t => panic!("not an iterator: t: {:#?} obj:{:#?}", t, obj),
         }
     }
 
@@ -176,5 +181,35 @@ impl ObjIter {
 
         init!(obj.value => IterType::String(RuneIter{i:0, s}));
         ptr
+    }
+}
+
+#[repr(C)]
+pub struct Variadic {
+    header: Header,
+    pub(crate) value: Vec<Object>,
+}
+
+impl Variadic {
+    pub(crate) unsafe fn read(ptr: &Object) -> &Vec<Object> {
+        ptr.get::<Self>().value.as_ref()
+    }
+
+    /// Drops and deallocate this NlArray struct and its value
+    pub(crate) unsafe fn destroy(ptr: Object) {
+        drop_in_place(ptr.as_ptr() as *mut Self);
+        dealloc(ptr.as_ptr(), Layout::new::<Self>());
+    }
+
+    pub fn from_vec(vec: Vec<Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Variadic);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => vec);
+        ptr
+    }
+
+    pub(crate) fn from_slice(slice: &[Object]) -> Object {
+        Self::from_vec(slice.to_vec())
     }
 }

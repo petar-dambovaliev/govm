@@ -4,7 +4,7 @@ pub mod gc;
 pub mod object;
 pub mod symbols;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 //use std::default::Default;
 use std::fmt::Debug;
 
@@ -16,7 +16,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
-use crate::vm::object::collections::{Map, ObjIter, Slice};
+use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::r#ref::Ref;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
@@ -371,6 +371,7 @@ impl VM {
             }};
         }
 
+        let debug_constants = constants.clone();
         //#[cfg(feature = "debug")]
         //let mut debug_pause = 0;
 
@@ -426,6 +427,31 @@ impl VM {
             //     constants[6].as_isize()
             // );
             match self.next() {
+                OpCode::Variadic => {
+                    let num = self.read_u16() as usize;
+
+                    let mut args = VecDeque::with_capacity(num);
+                    for _ in 0..num {
+                        args.push_front(self.pop());
+                    }
+
+                    if num == 1 {
+                        match args[0].tag() {
+                            Type::Slice => {
+                                let args = args[0].as_slice();
+                                self.push(Variadic::from_vec(args.clone()));
+                            }
+                            Type::Array => {
+                                let arr = unsafe { Array::read(&args[0]) };
+                                self.push(Variadic::from_vec(arr.clone()));
+                            }
+                            _ => unimplemented!(),
+                        }
+                    } else {
+                        let vec: Vec<Object> = Vec::from(args);
+                        self.push(Variadic::from_vec(vec));
+                    }
+                }
                 OpCode::Slice => {
                     let num = self.read_u8();
 

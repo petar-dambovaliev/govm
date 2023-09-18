@@ -102,6 +102,7 @@ pub enum DefineType {
         name: String,
         methods: Vec<Self>,
     },
+    Variadic(Box<Self>),
 }
 
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
@@ -482,6 +483,20 @@ impl DefineType {
         match &self {
             Self::Var(_) => true,
             _ => false,
+        }
+    }
+
+    pub fn is_variadic(&self) -> bool {
+        match &self {
+            Self::Variadic(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn as_variadic(&self) -> DefineType {
+        match &self {
+            Self::Variadic(t) => *t.clone(),
+            _ => panic!(),
         }
     }
 
