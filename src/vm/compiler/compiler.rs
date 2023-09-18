@@ -926,6 +926,7 @@ impl Compiler {
             Statement::For(forstmt) => {
                 self.emit_opcode(OpCode::Null);
 
+                self.symbols.enter_scope();
                 let label = self.label_contexts.get(&(forstmt.pos, 0)).cloned();
 
                 if let Some(init) = &forstmt.init {
@@ -1003,6 +1004,8 @@ impl Compiler {
                     || forstmt.body.list.is_empty())
                     && forstmt.cond.is_none()
                     && ctx.break_instructions.is_empty();
+
+                self.symbols.leave_scope();
 
                 return Ok(Some(loop_terminates));
             }
