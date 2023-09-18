@@ -16,15 +16,41 @@ fn main() {
 package main
 
 func main() {
-    twoD := make([][]int, 3)
-    for i := 0; i < 3; i++ {
-        innerLen := i + 1
-        twoD[i] = make([]int, innerLen)
-        for j := 0; j < innerLen; j++ {
-            twoD[i][j] = i + j
-        }
-    }
-    println("2d: ", twoD)
+
+    m := make(map[string]int)
+
+    m["k1"] = 7
+    m["k2"] = 13
+
+    println("map:", m)
+    
+    v1 := m["k1"]
+    println("v1:", v1)
+    
+    v3 := m["k3"]
+    println("v3:", v3)
+    
+    println("len:", len(m))
+    
+    delete(m, "k2")
+    println("map:", m)
+    
+    clear(m)
+    println("map:", m)
+    
+    _, prs := m["k2"]
+    println("prs:", prs)
+    
+    n := map[string]int{"foo": 1, "bar": 2}
+    println("map:", n)
+    
+    n2 := map[string]int{"foo": 1, "bar": 2}
+    
+    
+    
+    // if maps.Equal(n, n2) {
+    //     println("n == n2")
+    // }
 }
     "#,
     );

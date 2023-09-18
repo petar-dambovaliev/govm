@@ -951,8 +951,13 @@ impl VM {
                 OpCode::IndexGet => {
                     let index = self.pop();
                     let left = self.pop();
-                    let result = index_get(left, index, gc)?;
-                    self.push(result);
+                    let (obj, found) = index_get(left, index, gc)?;
+
+                    self.push(obj);
+
+                    if let Some(b) = found {
+                        self.push(Object::bool(b))
+                    }
                 }
                 OpCode::IntoIter => {
                     let obj = self.pop();
@@ -978,13 +983,13 @@ impl VM {
     }
 }
 
-fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> {
+fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
     let let_obj = match left.tag() {
         Type::Ref => left.as_ref().value,
         _ => left,
     };
 
-    let result = match let_obj.tag() {
+    match let_obj.tag() {
         Type::Array => {
             if index.tag() != Type::Int {
                 return Err(Error::TypeError(format!(
@@ -992,7 +997,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                     index.tag()
                 )));
             }
-            index_get_array(let_obj.as_vec(), index.as_isize())
+            Ok((index_get_array(let_obj.as_vec(), index.as_isize())?, None))
         }
         Type::Slice => {
             if index.tag() != Type::Int {
@@ -1001,7 +1006,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                     index.tag()
                 )));
             }
-            index_get_array(let_obj.as_slice(), index.as_isize())
+            Ok((index_get_array(let_obj.as_slice(), index.as_isize())?, None))
         }
         Type::String => {
             if index.tag() != Type::Int {
@@ -1011,19 +1016,15 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<Object, Error> 
                 )));
             }
 
-            index_get_string(let_obj, index.as_isize(), gc)
+            Ok((index_get_string(let_obj, index.as_isize(), gc)?, None))
         }
         Type::Map => index_get_map(let_obj, index, gc),
-        Type::Struct => index_get_struct(let_obj, index, gc),
-        _ => {
-            return Err(Error::TypeError(format!(
-                "object cannot be indexed: {}",
-                left.tag()
-            )))
-        }
-    }?;
-
-    Ok(result)
+        Type::Struct => Ok((index_get_struct(let_obj, index, gc)?, None)),
+        _ => Err(Error::TypeError(format!(
+            "object cannot be indexed: {}",
+            left.tag()
+        ))),
+    }
 }
 
 fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
@@ -1037,10 +1038,15 @@ fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Err
     Ok(strct.values[i as usize].clone())
 }
 
-fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
+fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
     let map = obj.as_map();
-    let res = map.get(&key).cloned().unwrap_or(Object::null());
-    Ok(res)
+    //todo create default value if not found
+    //let map_obj = unsafe{Map::read(&obj)};
+    let r = match map.get(&key).cloned() {
+        Some(v) => (v, Some(true)),
+        None => (Object::null(), Some(false)),
+    };
+    Ok(r)
 }
 
 fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), Error> {

@@ -308,13 +308,13 @@ impl Compiler {
                 let mut k = self.expression_to_define_type(map.key.as_ref());
                 let mut v = self.expression_to_define_type(map.val.as_ref());
 
-                if k.is_type() {
-                    k = k.as_type().0;
-                }
-
-                if v.is_type() {
-                    v = v.as_type().0;
-                }
+                // if k.is_type() {
+                //     k = k.as_type().0;
+                // }
+                //
+                // if v.is_type() {
+                //     v = v.as_type().0;
+                // }
 
                 DefineType::Map(Box::new(k), Box::new(v))
             }
@@ -1064,13 +1064,18 @@ impl Compiler {
             }
             Statement::Assign(assign) => {
                 if assign.left.len() > 1 && assign.right.len() == 1 {
-                    let dt = self.compile_expression(assign.right.first().unwrap())?;
+                    let first = assign.right.first().unwrap();
+                    let dt = self.compile_expression(first)?;
 
                     let (ret, is_type_assert) = match dt {
-                        DefineType::Func { rt: ret, .. } => (ret, false),
+                        DefineType::Func { rt: ret, .. } => (ret, Some(false)),
                         DefineType::Tuple(_) => {
-                            //assert_eq!(2, assign.left.len());
-                            (Box::new(dt.clone()), true)
+                            if let Expression::Index(_) = first {
+                                (Box::new(dt.clone()), None)
+                            } else {
+                                //assert_eq!(2, assign.left.len());
+                                (Box::new(dt.clone()), Some(true))
+                            }
                         }
                         _ => panic!("expected a func: got {:#?}", dt),
                     };
@@ -1093,7 +1098,8 @@ impl Compiler {
                                     ct.is_invar(),
                                 );
 
-                                if is_type_assert && i == assign.left.len() - 1 {
+                                if is_type_assert.unwrap_or_default() && i == assign.left.len() - 1
+                                {
                                     let def_expr = self.make_type_default_val(ct.clone());
                                     self.compile_expression(&def_expr)?;
                                     self.emit_opcode(OpCode::SetDefault);
@@ -1184,7 +1190,11 @@ impl Compiler {
                                 // s := i.(string)
                                 DefineType::Tuple(tuple) => {
                                     assert_eq!(2, tuple.len());
-                                    self.emit_opcode(OpCode::PanicIfFalse);
+                                    if let Expression::Index(_) = right {
+                                        self.emit_opcode(OpCode::Pop);
+                                    } else {
+                                        self.emit_opcode(OpCode::PanicIfFalse);
+                                    }
                                     tuple[0].clone()
                                 }
                                 _ => rt,
@@ -1213,7 +1223,7 @@ impl Compiler {
                                     false,
                                 ),
                                 Expression::Index(ind) => {
-                                    self.compile_expression(ind.left.as_ref())?;
+                                    let t = self.compile_expression(ind.left.as_ref())?;
                                     self.compile_expression(ind.index.as_ref())?;
                                     self.compile_expression(right)?;
                                     self.emit_opcode(OpCode::IndexSet);
@@ -2415,7 +2425,13 @@ impl Compiler {
                 return Ok(rt);
             }
             Expression::TypeMap(tm) => {
-                panic!("{:#?}", tm);
+                let rt = self.expression_to_define_type(expr);
+                let obj = rt.clone().to_object();
+                let idx = self.add_constant(obj);
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
+
+                return Ok(rt);
             }
             Expression::Operation(op) => {
                 match op.op {
@@ -2939,9 +2955,18 @@ impl Compiler {
                 panic!("unknown composite lit {:#?}", clit);
             }
             Expression::Index(ind) => {
-                self.compile_expression(&ind.left)?;
+                let t = self.compile_expression(&ind.left)?;
                 self.compile_expression(&ind.index)?;
                 self.emit_opcode(OpCode::IndexGet);
+
+                let rt = match t.strip_var() {
+                    DefineType::Array { inner_type, .. } => *inner_type,
+                    DefineType::Slice(inner_type) => *inner_type,
+                    DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
+                    k => unimplemented!("{:#?}", k),
+                };
+
+                return Ok(rt);
             }
             Expression::Ident(ident) => {
                 if &ident.name == "true" {

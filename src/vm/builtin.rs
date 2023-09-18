@@ -1,11 +1,12 @@
 use super::{Error, Object};
 use crate::vm::gc::GC;
-use crate::vm::object::collections::Slice;
+use crate::vm::object::collections::{Map, Slice};
 use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
@@ -25,12 +26,14 @@ pub enum Builtin {
     Cap,
     Append,
     Copy,
+    Delete,
+    Clear,
 }
 
 impl Builtin {
     pub fn is_void(&self) -> bool {
         match &self {
-            Self::Print | Self::Println | Self::Copy => true,
+            Self::Print | Self::Println | Self::Copy | Self::Delete => true,
             _ => false,
         }
     }
@@ -53,6 +56,8 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "cap" => Some(Builtin::Cap),
         "append" => Some(Builtin::Append),
         "copy" => Some(Builtin::Copy),
+        "delete" => Some(Builtin::Delete),
+        "clear" => Some(Builtin::Clear),
         _ => None,
     }
 }
@@ -100,8 +105,39 @@ pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Er
         Builtin::Cap => call_cap(args),
         Builtin::Append => call_append(args),
         Builtin::Copy => call_copy(args),
+        Builtin::Delete => call_delete(args),
+        Builtin::Clear => call_clear(args),
         _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_clear(args: &[Object]) -> Result<Object, Error> {
+    assert_eq!(args.len(), 1);
+
+    let mut iter = args.iter();
+    let collection = iter.next().unwrap();
+
+    match collection.tag() {
+        Type::Map => {
+            let m = unsafe { Map::read_mut(collection) };
+            m.clear();
+        }
+        t => unimplemented!("builtin::clear: {:#?}", t),
+    }
+
+    Ok(Object::null())
+}
+
+fn call_delete(args: &[Object]) -> Result<Object, Error> {
+    assert_eq!(args.len(), 2);
+
+    let mut iter = args.iter();
+    let collection = iter.next().unwrap();
+    let m = unsafe { Map::read_mut(collection) };
+
+    let k = iter.next().unwrap();
+    m.remove(k);
+    Ok(Object::null())
 }
 
 fn call_copy(args: &[Object]) -> Result<Object, Error> {
@@ -209,7 +245,7 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
 
     let obj = match tv.value {
         Type::Slice => {
-            let p = tv.inner.unwrap();
+            let p = tv.inner_k.unwrap();
             let inner = unsafe { TypeValue::read(&p) };
 
             let l = len.unwrap().as_isize();
@@ -235,7 +271,7 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
                 Type::String => Object::string("", gc),
                 Type::Int => Object::int(0),
                 Type::Slice => call_make(
-                    &[TypeValue::object(Type::Slice, inner.inner), *len.unwrap()],
+                    &[TypeValue::object(Type::Slice, inner.inner_k), *len.unwrap()],
                     gc,
                 )?,
                 _ => unimplemented!("{:#?}", inner.value),
@@ -246,6 +282,13 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
             }
 
             Slice::from_vec(v)
+        }
+        Type::Map => {
+            let _k = unsafe { TypeValue::read(&tv.inner_k.unwrap()) };
+            let _v = unsafe { TypeValue::read(&tv.inner_v.unwrap()) };
+
+            let m: BTreeMap<Object, Object> = BTreeMap::new();
+            Map::from_map(m, gc)
         }
         _ => panic!(),
     };

@@ -20,6 +20,13 @@ pub struct Map {
 }
 
 impl Map {
+    pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut BTreeMap<Object, Object> {
+        &mut ptr.get_mut::<Self>().value
+    }
+
+    pub(crate) unsafe fn read(ptr: &Object) -> &Self {
+        &ptr.get::<Self>()
+    }
     pub(crate) fn from_map(map: BTreeMap<Object, Object>, gc: &mut GC) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Map);
         let obj = unsafe { ptr.get_mut::<Self>() };

@@ -73,7 +73,8 @@ impl Interface {
 pub struct TypeValue {
     header: Header,
     pub(crate) value: Type,
-    pub inner: Option<Object>,
+    pub inner_k: Option<Object>,
+    pub inner_v: Option<Object>,
 }
 
 impl TypeValue {
@@ -85,12 +86,23 @@ impl TypeValue {
         ptr.get_mut::<Self>()
     }
 
-    pub fn object(value: Type, inner: Option<Object>) -> Object {
+    pub fn object(value: Type, inner_k: Option<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Type);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
         init!(obj.value => value);
-        init!(obj.inner => inner);
+        init!(obj.inner_k => inner_k);
+        init!(obj.inner_v => None);
+        ptr
+    }
+
+    pub fn object_map(value: Type, inner_k: Option<Object>, inner_v: Option<Object>) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Type);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+        obj.header.marked = false;
+        init!(obj.value => value);
+        init!(obj.inner_k => inner_k);
+        init!(obj.inner_v => inner_v);
         ptr
     }
 }

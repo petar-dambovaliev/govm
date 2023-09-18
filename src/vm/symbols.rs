@@ -147,6 +147,12 @@ impl DefineType {
                 let inner = inner.to_object();
                 TypeValue::object(Type::Slice, Some(inner))
             }
+            DefineType::Map(k, v) => {
+                let k_obj = k.to_object();
+                let v_obj = v.to_object();
+
+                TypeValue::object_map(Type::Map, Some(k_obj), Some(v_obj))
+            }
             // DefineType::Array { len, inner_type } => Expression::TypeArray(ArrayType {
             //     pos: (0, 0),
             //     len: Box::new(Expression::BasicLit(BasicLit {
