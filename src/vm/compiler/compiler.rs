@@ -1138,15 +1138,7 @@ impl Compiler {
                                     ))?;
 
                                 let (index, setop) = match resolved {
-                                    Resolved::Enclosed {
-                                        addr,
-                                        level,
-                                        heap_addr,
-                                        ..
-                                    } => {
-                                        self.symbols.add_escaped(addr, level);
-                                        (heap_addr, OpCode::SetEnclosed)
-                                    }
+                                    Resolved::Enclosed((s, _)) => (s.index, OpCode::SetCaptured),
                                     Resolved::Local((symbol, _)) => match symbol.scope {
                                         Scope::Local => (symbol.index, OpCode::SetLocal),
                                         Scope::Global => (symbol.index, OpCode::SetGlobal),
@@ -1291,13 +1283,13 @@ impl Compiler {
                             }
 
                             let (index, setop, expect_t) = match resolved {
-                                Resolved::Enclosed { heap_addr, t, .. } => {
+                                Resolved::Enclosed((s, t)) => {
                                     let write_op = if is_deref {
                                         OpCode::EnclosedPtrWrite
                                     } else {
-                                        OpCode::SetEnclosed
+                                        OpCode::SetCaptured
                                     };
-                                    (heap_addr, write_op, t.strip_var())
+                                    (s.index, write_op, t.strip_var())
                                 }
                                 Resolved::Local((symbol, t)) => match symbol.scope {
                                     Scope::Local => {
@@ -1497,14 +1489,8 @@ impl Compiler {
                 let r = self.symbols.resolve(&name.name).unwrap();
 
                 let (index, setop, incop, t) = match r {
-                    Resolved::Enclosed {
-                        addr,
-                        level,
-                        heap_addr,
-                        t,
-                    } => {
-                        self.symbols.add_escaped(addr, level);
-                        (heap_addr, OpCode::GetEnclosed, OpCode::IncLocal, t)
+                    Resolved::Enclosed((s, t)) => {
+                        (s.index, OpCode::GetCaptured, OpCode::IncLocal, t)
                     }
                     Resolved::Local((symbol, t)) => match symbol.scope {
                         Scope::Local => (symbol.index, OpCode::SetLocal, OpCode::IncLocal, t),
@@ -2729,15 +2715,7 @@ impl Compiler {
                     )))?;
 
                 let (index, getop) = match resolved {
-                    Resolved::Enclosed {
-                        addr,
-                        level,
-                        heap_addr,
-                        ..
-                    } => {
-                        self.symbols.add_escaped(addr, level);
-                        (heap_addr, OpCode::GetEnclosed)
-                    }
+                    Resolved::Enclosed((s, _)) => (s.index, OpCode::GetCaptured),
                     Resolved::Local((symbol, _)) => match symbol.scope {
                         Scope::Local => (symbol.index, OpCode::GetLocal),
                         Scope::Global => (symbol.index, OpCode::GetGlobal),
@@ -3065,16 +3043,10 @@ impl Compiler {
 
                         return Ok(dt);
                     }
-                    Some(Resolved::Enclosed {
-                        addr,
-                        level,
-                        heap_addr,
-                        t,
-                    }) => {
-                        self.symbols.add_escaped(addr, level);
+                    Some(Resolved::Enclosed((s, t))) => {
                         // enclosed symbols cannot be global
-                        self.emit_opcode(OpCode::GetEnclosed);
-                        self.emit_u16(heap_addr);
+                        self.emit_opcode(OpCode::GetCaptured);
+                        self.emit_u16(s.index);
 
                         return Ok(t);
                     }
@@ -3248,19 +3220,41 @@ impl Compiler {
                 let ctx = self.symbols.leave_context();
 
                 let num_locals = ctx.max_size();
-                for addr in self.symbols.contexts.last().unwrap().escaped.clone() {
-                    self.emit_opcode(OpCode::Escape);
-                    self.emit_u16(addr);
-                }
 
                 // Create function object and store as constant
                 let obj = Closure::object(
                     pos_start_function.try_into().unwrap(),
                     num_locals.try_into().unwrap(),
+                    vec![Object::null(); ctx.captured.len()],
                 );
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
+
+                for (i, v) in ctx.captured.iter().enumerate() {
+                    if let Some(r) = self.symbols.resolve(&v) {
+                        match r {
+                            Resolved::Local((s, _t)) => {
+                                let op = match s.scope {
+                                    Scope::Local => OpCode::GetLocal,
+                                    Scope::Global => OpCode::GetGlobal,
+                                };
+                                self.emit_opcode(op);
+                                self.emit_u16(s.index);
+
+                                self.emit_opcode(OpCode::Propagate);
+                                self.emit_u16(i.try_into().unwrap());
+                            }
+                            Resolved::Enclosed((s, _t)) => {
+                                self.emit_opcode(OpCode::GetCaptured);
+                                self.emit_u16(s.index);
+
+                                self.emit_opcode(OpCode::Propagate);
+                                self.emit_u16(i.try_into().unwrap());
+                            }
+                        }
+                    }
+                }
 
                 return Ok(DefineType::Func {
                     name: "".to_string(),

@@ -46,7 +46,6 @@ pub struct VM {
     ip: usize,
     bp: u16,
     closure_ctx: Vec<Object>,
-    escaped: Vec<Object>,
 }
 
 impl VM {
@@ -88,7 +87,6 @@ impl VM {
             ip: 0,
             bp: 0,
             closure_ctx: Vec::with_capacity(10),
-            escaped: Vec::with_capacity(128),
         }
     }
 
@@ -154,24 +152,9 @@ impl VM {
         self.globals.swap(src_idx as usize, dst_idx as usize);
     }
 
-    // fn get_propagate(&mut self, rel_idx: u16) -> Object {
-    //     let obj = self.closure_ctx.last_mut().unwrap();
-    //     let closure = obj.as_closure();
-    //
-    //     closure.propagate_objects[rel_idx as usize]
-    // }
-    fn get_enclosed(&mut self, rel_idx: u16) -> Object {
-        self.escaped[rel_idx as usize]
-    }
-    #[inline(always)]
-    fn set_local_enclosed(&mut self, rel_idx: u16, value: Object) {
-        self.escaped[rel_idx as usize] = value;
-    }
-
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        println!("123");
-        let ptr = self.escaped[rel_idx as usize].as_ref_mut();
+        let ptr = self.closure_ctx[rel_idx as usize].as_ref_mut();
         assert_eq!(ptr.value.tag(), value.tag());
 
         let (ptr_inner, val_inner) = match ptr.value.tag() {
@@ -417,10 +400,6 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
 
-            // if debug_constants[6].as_isize() != constants[6].as_isize() {
-            //     panic!("last instruction wrote to const");
-            // }
-
             // println!(
             //     "instr=>{:#?} const6=>{}",
             //     self.peek_next(),
@@ -620,10 +599,13 @@ impl VM {
                     let r = val.as_ref();
                     self.push(r.value);
                 }
-                OpCode::Escape => {
+                OpCode::Propagate => {
                     let idx = self.read_u16();
-                    let value = self.get_local(idx);
-                    self.escaped.push(value);
+                    let value = self.pop();
+                    let closure = self.pop_ref_mut().as_closure_mut();
+
+                    let c = unsafe { closure.captured.get_unchecked_mut(idx as usize) };
+                    *c = value;
                 }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
@@ -668,15 +650,18 @@ impl VM {
                     self.push(value);
                     //println!("GetLocal-after: {:#?}", self.stack);
                 }
-                OpCode::SetEnclosed => {
+                OpCode::SetCaptured => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    self.set_local_enclosed(idx, value);
+                    let closure = self.closure_ctx.last_mut().unwrap().as_closure_mut();
+                    let c = unsafe { closure.captured.get_unchecked_mut(idx as usize) };
+                    *c = value;
                 }
-                OpCode::GetEnclosed => {
+                OpCode::GetCaptured => {
                     let idx = self.read_u16();
-                    let value = self.get_enclosed(idx);
-                    self.push(value);
+                    let closure = self.closure_ctx.last().unwrap().as_closure();
+                    let c = unsafe { closure.captured.get_unchecked(idx as usize) };
+                    self.push(c.clone());
                 }
                 OpCode::EnclosedPtrWrite => {
                     let idx = self.read_u16();

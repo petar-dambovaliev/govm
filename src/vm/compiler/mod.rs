@@ -36,8 +36,8 @@ pub(crate) enum OpCode {
     ReturnValue,
     Call,
     CallBuiltin,
-    GetEnclosed,
-    SetEnclosed,
+    GetCaptured,
+    SetCaptured,
     GetLocal,
     SetLocal,
     GetGlobal,
@@ -72,7 +72,7 @@ pub(crate) enum OpCode {
     SwapGL,
     SwapLG,
     SwapGG,
-    Escape,
+    Propagate,
     Deref,
     Upcast,
     Downcast,
@@ -146,12 +146,12 @@ impl OpCode {
             | OpCode::GetGlobal
             | OpCode::SetGlobal
             | OpCode::GetLocal
-            | OpCode::GetEnclosed
-            | OpCode::SetEnclosed
+            | OpCode::GetCaptured
+            | OpCode::SetCaptured
             | OpCode::LocalPtrWrite
             | OpCode::GlobalPtrWrite
             | OpCode::EnclosedPtrWrite
-            | OpCode::Escape => &[2],
+            | OpCode::Propagate => &[2],
 
             // OpCodes with no operands
             OpCode::Pop
@@ -351,8 +351,8 @@ impl Display for OpCode {
             Self::CallBuiltin => "CallBuiltin",
             Self::GetLocal => "GetLocal",
             Self::SetLocal => "SetLocal",
-            Self::GetEnclosed => "GetEnclosed",
-            Self::SetEnclosed => "SetEnclosed",
+            Self::GetCaptured => "GetEnclosed",
+            Self::SetCaptured => "SetEnclosed",
             Self::GetGlobal => "GetGlobal",
             Self::SetGlobal => "SetGlobal",
             Self::GtLocalConst => "GtLocalConst",
@@ -385,7 +385,7 @@ impl Display for OpCode {
             Self::SwapGL => "SwapGL",
             Self::SwapLG => "SwapLG",
             Self::SwapGG => "SwapGG",
-            Self::Escape => "Escape",
+            Self::Propagate => "Escape",
             Self::Deref => "Deref",
             Self::Upcast => "Icast",
             Self::Downcast => "Downcast",

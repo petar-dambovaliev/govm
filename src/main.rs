@@ -24,13 +24,12 @@ func intSeq() func() int {
 }
 
 func main() {
-
     nextInt := intSeq()
 
     println(nextInt())
     println(nextInt())
     println(nextInt())
-     
+
     newInts := intSeq()
     println(newInts())
 }

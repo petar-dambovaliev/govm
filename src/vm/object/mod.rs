@@ -506,7 +506,7 @@ impl Object {
     }
 
     #[inline]
-    pub fn as_closure(&mut self) -> &Closure {
+    pub fn as_closure(&self) -> &Closure {
         assert_eq!(self.tag(), Type::Closure);
         unsafe { Closure::read(self) }
     }

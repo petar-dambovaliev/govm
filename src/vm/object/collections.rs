@@ -5,7 +5,6 @@ use std::alloc::{dealloc, Layout};
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 use std::ptr::drop_in_place;
-use std::str::Chars;
 
 macro_rules! init {
     ($field: expr => $value: expr) => {

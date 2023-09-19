@@ -13,7 +13,6 @@ pub(crate) struct SymbolTable {
     /// any context that follows is a local (to a function) context.
     /// There can be more than one local context as functions can be nested inside other functions.
     pub contexts: Vec<Context>,
-    heap_addr: u16,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -623,7 +622,8 @@ pub(crate) struct Context {
     max_size: usize,
     pub symbols: Vec<Vec<(String, DefineType)>>,
     pub is_closure: bool,
-    pub escaped: Vec<u16>,
+    pub captured: Vec<String>,
+    pub propagate: Vec<Vec<String>>,
 }
 
 impl Context {
@@ -633,7 +633,8 @@ impl Context {
             max_size: 0,
             symbols: vec![Vec::new()],
             is_closure,
-            escaped: Vec::new(),
+            captured: Vec::new(),
+            propagate: Vec::new(),
         }
     }
 
@@ -707,27 +708,20 @@ impl Context {
 
 #[derive(Debug)]
 pub enum Resolved {
-    //addr, level, heap_addr, type
-    Enclosed {
-        addr: u16,
-        level: usize,
-        heap_addr: u16,
-        t: DefineType,
-    },
+    Enclosed((Symbol, DefineType)),
     Local((Symbol, DefineType)),
 }
 
 impl Resolved {
     pub fn get_type(&self) -> DefineType {
         match &self {
-            Self::Enclosed { t, .. } => t.clone(),
-            Self::Local((_, t)) => t.clone(),
+            Self::Local((_, t)) | Self::Enclosed((_, t)) => t.clone(),
         }
     }
 
     pub fn as_local(&self) -> (Symbol, DefineType) {
         match &self {
-            Self::Enclosed { .. } => panic!("as_local: {:#?}", self),
+            Self::Enclosed(_) => panic!("as_local: {:#?}", self),
             Self::Local(s) => s.clone(),
         }
     }
@@ -738,18 +732,13 @@ impl SymbolTable {
     pub fn new() -> Self {
         SymbolTable {
             contexts: vec![Context::new(Scope::Global, false)],
-            heap_addr: 0,
         }
     }
 
-    pub fn add_escaped(&mut self, addr: u16, level: usize) {
-        for (i, ctx) in self.contexts.iter_mut().rev().enumerate() {
-            if i == level {
-                ctx.escaped.push(addr);
-                return;
-            }
+    pub fn add_captured(&mut self, s: String) {
+        if !self.current_context().captured.contains(&s) {
+            self.current_context().captured.push(s);
         }
-        panic!("bad level");
     }
 
     /// Returns a mutable reference to the current context
@@ -795,14 +784,35 @@ impl SymbolTable {
                 // put it in the enclosed symbols
 
                 if i != 0 {
-                    let r = Some(Resolved::Enclosed {
-                        addr: s.0.index,
-                        level: i,
-                        heap_addr: self.heap_addr,
-                        t: s.1,
-                    });
-                    self.heap_addr += 1;
-                    return r;
+                    for (k, ctxk) in self.contexts.iter_mut().rev().enumerate() {
+                        let exists = ctxk.captured.iter().find(|&a| a == name).is_some();
+
+                        if !exists {
+                            ctxk.captured.push(name.to_string());
+                        }
+
+                        if k == i {
+                            break;
+                        }
+                    }
+
+                    if let Some(st) = self
+                        .current_context()
+                        .captured
+                        .iter()
+                        .position(|a| a == name)
+                    {
+                        let r = Resolved::Enclosed((
+                            Symbol {
+                                scope: Scope::Local,
+                                index: st.try_into().unwrap(),
+                                invar: false,
+                            },
+                            s.1.clone(),
+                        ));
+
+                        return Some(r);
+                    }
                 }
                 return Some(Resolved::Local(s));
             }
