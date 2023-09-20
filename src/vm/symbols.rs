@@ -597,6 +597,12 @@ impl DefineType {
 }
 
 impl ContextType {
+    pub fn get_type(&self) -> DefineType {
+        match self {
+            Self::Unnamed(t) => t.clone(),
+            Self::Named(_, t) => t.clone(),
+        }
+    }
     pub fn as_named(&self) -> Result<(String, DefineType), Error> {
         match &self {
             Self::Named(s, t) => Ok((s.clone(), t.clone())),

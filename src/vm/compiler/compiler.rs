@@ -377,7 +377,7 @@ impl Compiler {
                         }
 
                         if let Some(dtp) = &declared_tp {
-                            if rt.is_nil() && dtp.is_ref() {
+                            if rt.is_nil() && (dtp.is_ref() || dtp.is_func()) {
                                 rt = dtp.clone();
                             }
                         }
@@ -2334,7 +2334,7 @@ impl Compiler {
                         let (is_variadic, variadic_len) = if let Some(last) =
                             arg_types.last().cloned()
                         {
-                            let (_, dt) = last.as_named().unwrap();
+                            let dt = last.get_type();
                             if dt.is_variadic() {
                                 arg_types.pop();
                                 let v_t = dt.as_variadic();
@@ -2357,7 +2357,7 @@ impl Compiler {
 
                         for (i, (a, t)) in call.args.iter().zip(arg_types).enumerate() {
                             let got = self.compile_expression(a)?;
-                            let expected = t.as_named().unwrap().1;
+                            let expected = t.get_type();
 
                             if expected.is_interface() && got.implements(&expected, self) {
                                 let (name, _) = expected.as_interface();
@@ -2367,7 +2367,7 @@ impl Compiler {
                                 self.emit_u16(s.index);
                             } else {
                                 let got = got.strip_var();
-                                let t = t.as_named().unwrap().1.strip_type();
+                                let t = t.get_type().strip_type();
 
                                 if is_variadic && i >= variadic_start {
                                     match got {
@@ -3189,7 +3189,7 @@ impl Compiler {
                                 let tuple = ret_type.as_tuple();
                                 assert_eq!(expected_t, tuple[0]);
                             } else {
-                                assert_eq!(expected_t, ret_type);
+                                assert_eq!(expected_t.strip_type(), ret_type.strip_type());
                             }
                         }
                     }

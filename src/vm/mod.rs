@@ -660,6 +660,7 @@ impl VM {
                 OpCode::GetCaptured => {
                     let idx = self.read_u16();
                     let closure = self.closure_ctx.last().unwrap().as_closure();
+
                     let c = unsafe { closure.captured.get_unchecked(idx as usize) };
                     self.push(c.clone());
                 }

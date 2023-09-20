@@ -3,6 +3,7 @@ use crate::vm::builtin::signature_from_t;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::symbols::DefineType;
 
+#[derive(Debug)]
 pub enum CallType {
     Func {
         name: String,
@@ -93,6 +94,8 @@ impl CallType {
                     .unwrap_or_else(|| panic!("unresolved: {:#?}", id))
                     .get_type()
                     .strip_var();
+
+                //panic!("{:#?}", t);
 
                 if !t.is_type() {
                     assert!(t.is_func());
