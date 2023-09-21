@@ -15,6 +15,7 @@ pub struct Struct {
     pub(crate) name: String,
     pub values: Vec<Object>,
     pub method_dispatch: Vec<(String, usize)>,
+    pub is_anonymous: bool,
 }
 
 impl Struct {
@@ -30,10 +31,12 @@ impl Struct {
         name: String,
         values: Vec<Object>,
         method_dispatch: Vec<(String, usize)>,
+        is_anonymous: bool,
     ) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
+        obj.is_anonymous = is_anonymous;
         init!(obj.values => values);
         init!(obj.method_dispatch => method_dispatch);
         init!(obj.name => name);

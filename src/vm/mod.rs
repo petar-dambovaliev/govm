@@ -1018,8 +1018,12 @@ impl VM {
                     let strct = self.pop_ref_mut();
                     let strct = strct.as_struct();
 
-                    let obj =
-                        Struct::object(strct.name.clone(), fields, strct.method_dispatch.clone());
+                    let obj = Struct::object(
+                        strct.name.clone(),
+                        fields,
+                        strct.method_dispatch.clone(),
+                        strct.is_anonymous,
+                    );
                     self.push(obj);
                 }
                 OpCode::IndexGet => {

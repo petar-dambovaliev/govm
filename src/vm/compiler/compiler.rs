@@ -32,6 +32,7 @@ pub struct Compiler {
     func_contexts: Vec<FuncContext>,
     label_contexts: AHashMap<(usize, usize), String>,
     gc: GC,
+    anonymous_struct: usize,
 }
 
 impl Compiler {
@@ -46,6 +47,7 @@ impl Compiler {
             func_contexts: Vec::new(),
             label_contexts: AHashMap::new(),
             gc: GC::new(),
+            anonymous_struct: 0,
         }
     }
 
@@ -348,6 +350,20 @@ impl Compiler {
             Expression::Ellipsis(variadic) => {
                 let inner = self.expression_to_define_type(variadic.elt.as_ref().unwrap().as_ref());
                 DefineType::Variadic(Box::new(inner))
+            }
+            Expression::TypeStruct(st) => {
+                let mut fields = Vec::with_capacity(st.fields.len());
+                for field in &st.fields {
+                    fields.push(ContextType::Named(
+                        field.name.first().unwrap().name.clone(),
+                        self.expression_to_define_type(&field.typ),
+                    ));
+                }
+                DefineType::Struct {
+                    name: format!("anonymous_struct {}", self.anonymous_struct),
+                    fields,
+                    methods: vec![],
+                }
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
@@ -656,8 +672,8 @@ impl Compiler {
                                 assert_eq!(expected_t, tuple[0]);
                             } else {
                                 assert_eq!(
-                                    expected_t,
-                                    ret_type.strip_tuple_type(),
+                                    expected_t.strip_type(),
+                                    ret_type.strip_type(),
                                     "{:#?}",
                                     f.name.name
                                 );
@@ -882,7 +898,8 @@ impl Compiler {
 
                                 assert!(updated);
 
-                                let obj = Struct::object(name.to_string(), field_values, vec![]);
+                                let obj =
+                                    Struct::object(name.to_string(), field_values, vec![], false);
                                 let idx = self.add_constant(obj);
                                 self.emit_opcode(OpCode::Const);
                                 self.emit_u16(idx);
@@ -2408,7 +2425,7 @@ impl Compiler {
                                         got_t => assert_eq!(t, got_t),
                                     }
                                 } else {
-                                    assert_eq!(t, got);
+                                    assert_eq!(t.strip_type(), got);
                                 }
                             }
                         }
@@ -2891,20 +2908,6 @@ impl Compiler {
 
                     //sort by order of definition
                     let mut clit_values = clit.val.values.clone();
-                    clit_values.sort_by_key(|val| {
-                        inner_types
-                            .iter()
-                            .map(|inner_type| inner_type.as_named().unwrap())
-                            .position(|x| {
-                                let k_el = val.key.as_ref().unwrap();
-                                let k = match k_el {
-                                    Element::Expr(expr) => expr.as_ident().unwrap().clone(),
-                                    _ => panic!("ident"),
-                                };
-
-                                x.0 == k.name.as_str()
-                            })
-                    });
 
                     let key_required = clit
                         .val
@@ -2912,6 +2915,33 @@ impl Compiler {
                         .first()
                         .map(|a| a.key.is_some())
                         .unwrap_or_default();
+
+                    if key_required {
+                        clit_values.sort_by_key(|val| {
+                            inner_types
+                                .iter()
+                                .map(|inner_type| inner_type.as_named().unwrap())
+                                .position(|x| {
+                                    assert_eq!(key_required, val.key.is_some(), "val: {:#?}", val);
+                                    let k_el = val.key.as_ref().unwrap();
+                                    let k = match k_el {
+                                        Element::Expr(expr) => expr.as_ident().unwrap().clone(),
+                                        _ => panic!("ident"),
+                                    };
+
+                                    x.0 == k.name.as_str()
+                                })
+                        });
+                    } else {
+                        assert_eq!(inner_types.len(), clit_values.len());
+
+                        for (clit_value, ct) in clit_values.iter_mut().zip(inner_types.clone()) {
+                            clit_value.key = Some(Element::Expr(Expression::Ident(Ident {
+                                pos: 0,
+                                name: ct.as_named().unwrap().0,
+                            })));
+                        }
+                    }
 
                     for inner_type in inner_types.iter().rev() {
                         let (kk, inner_type) = inner_type.as_named().unwrap();
@@ -2931,8 +2961,6 @@ impl Compiler {
 
                         match found {
                             Some(kel) => {
-                                assert_eq!(key_required, kel.key.is_some());
-
                                 //compile values
                                 let el_expr = match &kel.val {
                                     Element::Expr(expr) => expr.clone(),
@@ -2947,7 +2975,7 @@ impl Compiler {
                                 };
 
                                 if !(in_t.is_nullable() && rt.is_nil()) {
-                                    assert_eq!(in_t, rt, "{:#?}", el_expr);
+                                    assert_eq!(in_t, rt.strip_var().strip_type(), "{:#?}", el_expr);
                                 }
                             }
                             None => {
@@ -3008,7 +3036,7 @@ impl Compiler {
                         match &v.val {
                             Element::Expr(el_expr) => {
                                 let expr_t = self.compile_expression(el_expr)?;
-                                assert_eq!(slice_t.strip_tuple_type(), expr_t);
+                                assert_eq!(slice_t.strip_type(), expr_t);
                                 if let Some(expected_t) = &el_t {
                                     assert_eq!(expected_t, &expr_t);
                                 } else {
@@ -3028,6 +3056,99 @@ impl Compiler {
                     });
                 }
 
+                // anonymous struct literal
+                if let Expression::TypeStruct(ts) = clit.typ.as_ref() {
+                    let mut field_types = vec![];
+
+                    //todo tags
+                    for field in &ts.fields {
+                        let (inner_t, is_ref) = match &field.typ {
+                            Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
+                            _ => (field.typ.as_ident().unwrap(), false),
+                        };
+
+                        let r = self.symbols.resolve(&inner_t.name).unwrap().get_type();
+
+                        let dt = if is_ref {
+                            DefineType::Ref(Box::new(r.strip_type()))
+                        } else {
+                            r.strip_type()
+                        };
+
+                        for name in &field.name {
+                            field_types.push(ContextType::Named(
+                                name.name.as_str().to_string(),
+                                dt.clone(),
+                            ));
+                        }
+                    }
+
+                    let ftl = field_types.len();
+
+                    let mut field_values = Vec::with_capacity(ftl);
+
+                    for _ in 0..ftl {
+                        field_values.push(Object::null());
+                    }
+
+                    let name = format!("anonymous_struct {}", self.anonymous_struct);
+
+                    let symbol = self.symbols.define(
+                        &name,
+                        DefineType::Struct {
+                            name: name.to_string(),
+                            fields: field_types.clone(),
+                            methods: vec![],
+                        },
+                        false,
+                    );
+
+                    for field_type in &mut field_types {
+                        let (s, dt) = field_type.as_named().unwrap();
+                        let resolved = match dt {
+                            DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
+                            _ => dt,
+                        };
+
+                        *field_type = ContextType::Named(s, resolved);
+                    }
+
+                    let updated = self.symbols.update_dt(
+                        &name,
+                        DefineType::Struct {
+                            name: name.to_string(),
+                            fields: field_types,
+                            methods: vec![],
+                        },
+                    );
+
+                    assert!(updated);
+
+                    let obj = Struct::object(name.to_string(), field_values, vec![], true);
+                    let idx = self.add_constant(obj);
+                    self.emit_opcode(OpCode::Const);
+                    self.emit_u16(idx);
+
+                    let opcode = if symbol.scope == Scope::Global {
+                        OpCode::SetGlobal
+                    } else {
+                        OpCode::SetLocal
+                    };
+                    self.emit_opcode(opcode);
+                    self.emit_u16(symbol.index);
+
+                    self.emit_opcode(OpCode::Const);
+                    self.emit_u16(idx);
+
+                    let rt = self.compile_expression(&Expression::CompositeLit(CompositeLit {
+                        typ: Box::new(Expression::Ident(Ident { pos: 0, name })),
+                        val: clit.val.clone(),
+                    }))?;
+
+                    self.anonymous_struct += 1;
+                    return Ok(rt);
+                }
+
                 panic!("unknown composite lit {:#?}", clit);
             }
             Expression::Index(ind) => {
@@ -3035,12 +3156,20 @@ impl Compiler {
                 self.compile_expression(&ind.index)?;
                 self.emit_opcode(OpCode::IndexGet);
 
-                let rt = match t.strip_var() {
-                    DefineType::Array { inner_type, .. } => *inner_type,
-                    DefineType::Slice(inner_type) => *inner_type,
-                    DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
-                    k => unimplemented!("{:#?}", k),
-                };
+                fn check_t(i: usize, t: DefineType) -> DefineType {
+                    match t.strip_var() {
+                        DefineType::Array { inner_type, .. } => *inner_type,
+                        DefineType::Slice(inner_type) => *inner_type,
+                        DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
+                        DefineType::Struct { fields, .. } => fields[i].get_type(),
+                        DefineType::Ref(r) => DefineType::Ref(Box::new(check_t(i, *r))),
+                        k => unimplemented!("{:#?}", k),
+                    }
+                }
+
+                let i = ind.index.as_int_lit().unwrap() as usize;
+
+                let rt = check_t(i, t.strip_var());
 
                 return Ok(rt);
             }

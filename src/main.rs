@@ -15,35 +15,28 @@ fn main() {
         r#"
 package main
 
-// func fact(n int) int {
-//     if n == 0 {
-//         return 1
-//     }
-//     return n * fact(n-1)
-// }
+func foo(dog struct {
+	name   string
+	isGood bool
+}) struct {
+	name   string
+	isGood bool
+} {
 
-func fib1(n int) int {
-    if n < 2 {
-        return n
-    }
-
-    return fib1(n-1) + fib1(n-2)
+	return dog
 }
 
 func main() {
-    //println(fact(7))
+	dog := struct {
+		name   string
+		isGood bool
+	}{
+		"Rex",
+		true,
+	}
 
-    var fib func(n int) int
-    
-    fib = func(n int) int {
-        if n < 2 {
-            return n
-        }
-    
-        return fib(n-1) + fib(n-2)
-    }
-    println(fib1(30))
-    println(fib(30))
+	dog = foo(dog)
+	println(dog)
 }
     "#,
     );

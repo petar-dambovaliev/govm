@@ -376,15 +376,28 @@ impl DefineType {
         }
     }
     pub fn strip_type(&self) -> DefineType {
-        if let Self::Type(v, _) = self {
-            *v.clone()
-        } else {
-            self.clone()
-        }
-    }
-
-    pub fn strip_tuple_type(&self) -> DefineType {
         match self {
+            Self::Type(v, _) => *v.clone(),
+            Self::Ref(v) => Self::Ref(Box::new(v.strip_type())),
+            Self::Struct {
+                name,
+                fields,
+                methods,
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|f| {
+                        let field = f.as_named().unwrap();
+                        ContextType::Named(field.0, field.1.strip_type())
+                    })
+                    .collect();
+
+                Self::Struct {
+                    name: name.clone(),
+                    fields,
+                    methods: methods.clone(),
+                }
+            }
             Self::Tuple(v) => {
                 let mut tuple = vec![];
 
@@ -395,7 +408,7 @@ impl DefineType {
             }
             Self::Array { len, inner_type } => DefineType::Array {
                 len: *len,
-                inner_type: Box::new(inner_type.strip_tuple_type().strip_type()),
+                inner_type: Box::new(inner_type.strip_type()),
             },
             _ => self.clone(),
         }
@@ -624,7 +637,7 @@ impl ContextType {
 /// A context is a type of environment to store values in. This can be either a global context or a local (to a function) context.
 #[derive(Debug)]
 pub(crate) struct Context {
-    scope: Scope,
+    pub scope: Scope,
     max_size: usize,
     pub symbols: Vec<Vec<(String, DefineType)>>,
     pub is_closure: bool,

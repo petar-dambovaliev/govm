@@ -160,7 +160,12 @@ impl Object {
                 let inner = interface.value.deep_copy();
                 Interface::object(interface.name.clone(), interface.methods.clone(), inner)
             }
-            Type::Type | Type::Function | Type::Null | Type::String | Type::Closure => *self,
+            Type::Type
+            | Type::Function
+            | Type::Null
+            | Type::String
+            | Type::Closure
+            | Type::Struct => *self,
             _ => unimplemented!("{:#?}", self.tag()),
         }
     }
@@ -995,7 +1000,13 @@ impl Display for Object {
             Type::Struct => {
                 let strct = unsafe { self.as_struct() };
 
-                f.write_str(strct.name.as_str())?;
+                let name = if strct.is_anonymous {
+                    "struct"
+                } else {
+                    strct.name.as_str()
+                };
+
+                f.write_str(name)?;
                 f.write_char('{')?;
                 f.write_str("fields: (")?;
                 for (i, obj) in strct.values.iter().enumerate() {
