@@ -85,6 +85,7 @@ pub(crate) enum OpCode {
     IncGlobal,
     Slice,
     Variadic,
+    TypedNull,
     Halt,
 }
 
@@ -111,7 +112,8 @@ impl OpCode {
             | OpCode::Upcast
             | OpCode::IncLocal
             | OpCode::IncGlobal
-            | OpCode::Variadic => &[2],
+            | OpCode::Variadic
+            | OpCode::TypedNull => &[2],
 
             // OpCodes with 2 operands of 2 bytes
             OpCode::GtLocalConst
@@ -398,6 +400,7 @@ impl Display for OpCode {
             Self::IncGlobal => "IncGlobal",
             Self::Slice => "Slice",
             Self::Variadic => "Variadic",
+            Self::TypedNull => "TypedNull",
             Self::Halt => "Halt",
         };
         f.write_str(s)

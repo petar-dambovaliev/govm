@@ -100,6 +100,7 @@ impl Compiler {
         );
 
         self.constants.push(Object::null());
+
         let _ = self
             .symbols
             .define("_", DefineType::Var(Box::new(DefineType::Null)), false);
@@ -173,6 +174,10 @@ impl Compiler {
             DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
             false,
         );
+
+        let idx = self.add_constant(Closure::null());
+        self.emit_opcode(OpCode::Const);
+        self.emit_u16(idx);
 
         //self.constants.push(Rune::from_char(0 as char));
 
@@ -354,6 +359,7 @@ impl Compiler {
             Declaration::Variable(v) => {
                 for spec in &v.specs {
                     let mut declared_tp = None;
+                    let mut value_is_default = false;
                     let values = if spec.values.is_empty() {
                         let tp = self.expression_to_define_type(
                             spec.typ
@@ -365,6 +371,7 @@ impl Compiler {
                         for _ in 0..spec.name.len() {
                             defaults.push(self.make_type_default_val(tp.clone()));
                         }
+                        value_is_default = true;
                         defaults
                     } else {
                         spec.values.clone()
@@ -372,11 +379,31 @@ impl Compiler {
 
                     for (name, value) in spec.name.iter().zip(values.iter()) {
                         let mut rt = self.compile_expression(value)?;
+
                         if rt.is_invar() {
                             panic!("var cant be invar");
                         }
 
                         if let Some(dtp) = &declared_tp {
+                            if value_is_default && dtp.is_nullable() {
+                                self.emit_opcode(OpCode::TypedNull);
+
+                                let mut found_closure = false;
+                                for (ind, constant) in self.constants.iter().enumerate() {
+                                    if constant.tag() == Type::Closure {
+                                        let c = constant.as_closure();
+                                        if c.is_null {
+                                            self.emit_u16(ind.try_into().unwrap());
+                                            found_closure = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !found_closure {
+                                    panic!("could not find closure constant");
+                                }
+                            }
+
                             if rt.is_nil() && (dtp.is_ref() || dtp.is_func()) {
                                 rt = dtp.clone();
                             }
@@ -1291,22 +1318,23 @@ impl Compiler {
                                     };
                                     (s.index, write_op, t.strip_var())
                                 }
-                                Resolved::Local((symbol, t)) => match symbol.scope {
+                                Resolved::Local((symbol, mut t)) => match symbol.scope {
                                     Scope::Local => {
-                                        let write_op = if is_deref {
+                                        t = t.strip_var();
+                                        let write_op = if is_deref || t.is_func() {
                                             OpCode::LocalPtrWrite
                                         } else {
                                             OpCode::SetLocal
                                         };
-                                        (symbol.index, write_op, t.strip_var())
+                                        (symbol.index, write_op, t)
                                     }
                                     Scope::Global => {
-                                        let write_op = if is_deref {
+                                        let write_op = if is_deref || t.is_func() {
                                             OpCode::GlobalPtrWrite
                                         } else {
                                             OpCode::SetGlobal
                                         };
-                                        (symbol.index, write_op, t.strip_var())
+                                        (symbol.index, write_op, t)
                                     }
                                 },
                             };

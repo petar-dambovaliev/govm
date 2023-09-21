@@ -146,6 +146,12 @@ unsafe impl Sync for Object {}
 unsafe impl Send for Object {}
 
 impl Object {
+    pub fn typed_null(&self) -> Object {
+        match self.tag() {
+            Type::Closure => Closure::null(),
+            t => unimplemented!("typed_null: {:#?}", t),
+        }
+    }
     pub(crate) fn deep_copy(&self) -> Object {
         match self.tag() {
             Type::Int => Int::from_isize(self.as_int().value),
@@ -154,7 +160,7 @@ impl Object {
                 let inner = interface.value.deep_copy();
                 Interface::object(interface.name.clone(), interface.methods.clone(), inner)
             }
-            Type::Type | Type::Function | Type::Null | Type::String | Type::Closure => self.clone(),
+            Type::Type | Type::Function | Type::Null | Type::String | Type::Closure => *self,
             _ => unimplemented!("{:#?}", self.tag()),
         }
     }
@@ -1022,7 +1028,13 @@ impl Display for Object {
                 f.write_char('}')?;
             }
             Type::Closure => {
-                f.write_str("func(){}").expect("");
+                let closure = self.as_closure();
+
+                f.write_str(&format!(
+                    "func(): captured: {:#?} is_nil: {:#?}",
+                    closure.captured, closure.is_null
+                ))
+                .expect("");
             }
             Type::Iter => {
                 f.write_str("iter<k, v>").expect("");

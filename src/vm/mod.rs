@@ -154,44 +154,92 @@ impl VM {
 
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let ptr = self.closure_ctx[rel_idx as usize].as_ref_mut();
-        assert_eq!(ptr.value.tag(), value.tag());
+        let ctx = self.closure_ctx[rel_idx as usize];
 
-        let (ptr_inner, val_inner) = match ptr.value.tag() {
-            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
+        let mut ptr = match ctx.tag() {
+            Type::Ref => ctx.as_ref_mut().value,
+            Type::Closure => ctx,
             _ => panic!("not supported ptr write"),
         };
 
-        ptr_inner.value = val_inner;
+        assert_eq!(ptr.tag(), value.tag());
+
+        match ptr.tag() {
+            Type::Int => {
+                ptr.as_int_mut().value = value.as_isize();
+            }
+            Type::Closure => {
+                let c = ptr.as_closure_mut();
+                let v = value.as_closure();
+
+                c.is_null = v.is_null;
+                c.ip = v.ip;
+                c.captured = v.captured.clone();
+                c.num_locals = v.num_locals;
+            }
+            _ => panic!("not supported ptr write"),
+        }
     }
 
     #[inline(always)]
     fn local_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let ptr = self.stack[self.bp as usize + rel_idx as usize].as_ref_mut();
-        assert_eq!(ptr.value.tag(), value.tag());
+        let ctx = self.stack[self.bp as usize + rel_idx as usize];
 
-        let (ptr_inner, val_inner) = match ptr.value.tag() {
-            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
+        let mut ptr = match ctx.tag() {
+            Type::Ref => ctx.as_ref_mut().value,
+            Type::Closure => ctx,
             _ => panic!("not supported ptr write"),
         };
 
-        ptr_inner.value = val_inner;
+        assert_eq!(ptr.tag(), value.tag());
+
+        match ptr.tag() {
+            Type::Int => {
+                ptr.as_int_mut().value = value.as_isize();
+            }
+            Type::Closure => {
+                let c = ptr.as_closure_mut();
+                let v = value.as_closure();
+
+                c.is_null = v.is_null;
+                c.ip = v.ip;
+                c.captured = v.captured.clone();
+                c.num_locals = v.num_locals;
+            }
+            _ => panic!("not supported ptr write"),
+        }
     }
 
     #[inline(always)]
     fn global_ptr_write(&mut self, rel_idx: u16, value: Object) {
         if self.globals[rel_idx as usize].is_null() {
-            panic!("nil pointer dereference");
+            panic!("global_ptr_write: nil pointer dereference");
         }
-        let ptr = self.globals[rel_idx as usize].as_ref_mut();
-        assert_eq!(ptr.value.tag(), value.tag());
+        let ctx = self.globals[rel_idx as usize];
 
-        let (ptr_inner, val_inner) = match ptr.value.tag() {
-            Type::Int => (ptr.value.as_int_mut(), value.as_isize()),
-            _ => panic!("not supported ptr write"),
+        let mut ptr = match ctx.tag() {
+            Type::Ref => ctx.as_ref_mut().value,
+            Type::Closure => ctx,
+            _ => panic!("global_ptr_write: not supported ptr write"),
         };
 
-        ptr_inner.value = val_inner;
+        assert_eq!(ptr.tag(), value.tag());
+
+        match ptr.tag() {
+            Type::Int => {
+                ptr.as_int_mut().value = value.as_isize();
+            }
+            Type::Closure => {
+                let c = ptr.as_closure_mut();
+                let v = value.as_closure();
+
+                c.is_null = v.is_null;
+                c.ip = v.ip;
+                c.captured = v.captured.clone();
+                c.num_locals = v.num_locals;
+            }
+            _ => panic!("global_ptr_write: not supported ptr write"),
+        }
     }
 
     /// Reads a u16 value from the current position in the instructions array
@@ -406,6 +454,13 @@ impl VM {
             //     constants[6].as_isize()
             // );
             match self.next() {
+                OpCode::TypedNull => {
+                    let p = self.pop();
+                    //println!("popped: {:#?} {:#?}", p, p.as_ptr());
+                    let num = self.read_u16() as usize;
+                    let c = constants[num];
+                    self.push(c.typed_null());
+                }
                 OpCode::Variadic => {
                     let num = self.read_u16() as usize;
 
@@ -591,6 +646,9 @@ impl VM {
                 OpCode::Const => {
                     let idx = self.read_u16();
                     let value = constants[idx as usize];
+                    // if idx == 8 {
+                    //     println!("const: {:#?} tag: {:#?}", value, value.as_ptr());
+                    // }
                     //println!("const: {:#?} tag: {:#?}", value, value.tag());
                     self.push(value.deep_copy());
                 }
@@ -605,6 +663,7 @@ impl VM {
                     let closure = self.pop_ref_mut().as_closure_mut();
 
                     let c = unsafe { closure.captured.get_unchecked_mut(idx as usize) };
+                    //println!("propagate: {:#?}", value.as_ptr());
                     *c = value;
                 }
                 OpCode::SetGlobal => {
@@ -629,15 +688,15 @@ impl VM {
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    if idx == 1 {
-                        // println!(
-                        //     "setlocal: {:#?} to {:#?} stack {:#?}",
-                        //     idx + self.bp,
-                        //     value,
-                        //     self.stack
-                        // );
-                    }
-                    //println!("setlocal: {:#?} to {:#?}", idx + self.bp, value);
+                    // if idx == 0 {
+                    //     println!("setlocal: {:#?}", value.as_ptr(),);
+                    // }
+                    // println!(
+                    //     "setlocal: {:#?} to {:#?} {:#?}",
+                    //     idx + self.bp,
+                    //     value,
+                    //     value.as_ptr()
+                    // );
                     //println!("id: {:#?} bp: {:#?}", idx, self.bp);
                     self.set_local(idx, value.clone());
                 }
@@ -839,6 +898,9 @@ impl VM {
                         Type::Closure => {
                             self.closure_ctx.push(obj);
                             let closure = obj.as_closure();
+                            if closure.is_null {
+                                panic!("closure is nil: {:#?}", obj);
+                            }
                             (closure.ip, closure.num_locals as u32)
                         }
                         _ => {

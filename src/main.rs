@@ -22,19 +22,28 @@ package main
 //     return n * fact(n-1)
 // }
 
+func fib1(n int) int {
+    if n < 2 {
+        return n
+    }
+
+    return fib1(n-1) + fib1(n-2)
+}
+
 func main() {
     //println(fact(7))
 
     var fib func(n int) int
     
-    // fib = func(n int) int {
-    //     if n < 2 {
-    //         return n
-    //     }
-    // 
-    //     return fib(n-1) + fib(n-2)
-    // }
-    // println(fib(7))
+    fib = func(n int) int {
+        if n < 2 {
+            return n
+        }
+    
+        return fib(n-1) + fib(n-2)
+    }
+    println(fib1(30))
+    println(fib(30))
 }
     "#,
     );
