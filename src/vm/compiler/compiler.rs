@@ -1,5 +1,5 @@
-use crate::parser::ast::ArrayType;
 use crate::parser::ast::InterfaceType;
+use crate::parser::ast::{ArrayType, Field};
 use crate::parser::ast::{
     AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
     ExprStmt, Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation,
@@ -259,29 +259,49 @@ impl Compiler {
     fn field_list_to_define_type(&mut self, fl: &FieldList) -> (DefineType, Vec<DefineType>) {
         let mut decl_r_types = Vec::with_capacity(fl.list.len());
 
-        for el in &fl.list {
-            let t = match &el.typ {
-                Expression::Ident(id) => self.symbols.resolve(id.name.as_str()).unwrap().get_type(),
+        fn field_to_define_type(c: &mut Compiler, field: &Field) -> DefineType {
+            let t = match &field.typ {
+                Expression::Ident(id) => c.symbols.resolve(id.name.as_str()).unwrap().get_type(),
                 Expression::TypePointer(pt) => {
                     let id = pt.typ.as_ident().unwrap();
-                    let t = self.symbols.resolve(id.name.as_str()).unwrap().get_type();
+                    let t = c.symbols.resolve(id.name.as_str()).unwrap().get_type();
                     DefineType::Ref(Box::new(t))
                 }
                 Expression::TypeFunction(f) => {
-                    let (_, t_vec) = self.field_list_to_define_type(&f.params);
-                    let (dt, _) = self.field_list_to_define_type(&f.result);
+                    let (_, t_vec) = c.field_list_to_define_type(&f.params);
+                    let (dt, _) = c.field_list_to_define_type(&f.result);
 
                     DefineType::Func {
                         name: "".to_string(),
                         recv: None,
-                        args: self.define_type_to_context_type(t_vec.as_ref()),
+                        args: c.define_type_to_context_type(t_vec.as_ref()),
                         rt: Box::new(dt),
                     }
                 }
-                _ => panic!("function: unsupported parameter expression: {:#?}", el.typ),
+                Expression::TypeStruct(st) => {
+                    let fields = st
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            ContextType::Named(
+                                f.name.first().unwrap().name.clone(),
+                                field_to_define_type(c, f),
+                            )
+                        })
+                        .collect();
+                    DefineType::Struct {
+                        name: format!("anonymous_struct {}", c.anonymous_struct),
+                        fields,
+                        methods: vec![],
+                    }
+                }
+                _ => panic!("function: unsupported parameter expression: {:#?}", field),
             };
+            t
+        }
 
-            decl_r_types.push(t);
+        for el in &fl.list {
+            decl_r_types.push(field_to_define_type(self, el));
         }
 
         let r_t = if decl_r_types.is_empty() {
@@ -2426,7 +2446,7 @@ impl Compiler {
                                         got_t => assert_eq!(t, got_t),
                                     }
                                 } else {
-                                    assert_eq!(t.strip_type(), got);
+                                    assert_eq!(t.strip_type(), got.strip_type());
                                 }
                             }
                         }
@@ -3255,6 +3275,7 @@ impl Compiler {
 
                 let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
+                //println!("{:#?}", f.typ.params.list);
                 // Compile function in a new scope
                 self.symbols.new_context(true);
                 for p in &f.typ.params.list {

@@ -15,18 +15,29 @@ fn main() {
         r#"
 package main
 
-func foo(dog struct {
-	name   string
-	isGood bool
-}) struct {
-	name   string
-	isGood bool
-} {
-
-	return dog
-}
-
 func main() {
+    var printDog func(
+            int,
+            struct {
+	            name   string
+	            isGood bool
+            })
+    
+    printDog = func(
+        i int,
+        dog struct {
+            name   string
+            isGood bool
+    }) {
+        if i == 0 {
+            return
+        }
+    
+        println(dog)
+        printDog(i - 1, dog)
+    }
+    
+    
 	dog := struct {
 		name   string
 		isGood bool
@@ -35,8 +46,7 @@ func main() {
 		true,
 	}
 
-	dog = foo(dog)
-	println(dog)
+	printDog(4, dog)
 }
     "#,
     );
