@@ -25,10 +25,11 @@ impl Map {
         &mut ptr.get_mut::<Self>().value
     }
 
+    #[allow(unused)]
     pub(crate) unsafe fn read(ptr: &Object) -> &Self {
         &ptr.get::<Self>()
     }
-    pub(crate) fn from_map(map: BTreeMap<Object, Object>, gc: &mut GC) -> Object {
+    pub(crate) fn from_map(map: BTreeMap<Object, Object>, _gc: &mut GC) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Map);
         let obj = unsafe { ptr.get_mut::<Self>() };
         obj.header.marked = false;
@@ -79,6 +80,7 @@ impl Slice {
     }
 
     /// Drops and deallocate this NlArray struct and its value
+    #[allow(unused)]
     pub(crate) unsafe fn destroy(ptr: Object) {
         drop_in_place(ptr.as_ptr() as *mut Self);
         dealloc(ptr.as_ptr(), Layout::new::<Self>());
@@ -195,6 +197,7 @@ impl Variadic {
     }
 
     /// Drops and deallocate this NlArray struct and its value
+    #[allow(unused)]
     pub(crate) unsafe fn destroy(ptr: Object) {
         drop_in_place(ptr.as_ptr() as *mut Self);
         dealloc(ptr.as_ptr(), Layout::new::<Self>());
@@ -208,6 +211,7 @@ impl Variadic {
         ptr
     }
 
+    #[allow(unused)]
     pub(crate) fn from_slice(slice: &[Object]) -> Object {
         Self::from_vec(slice.to_vec())
     }

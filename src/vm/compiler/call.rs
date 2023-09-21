@@ -47,7 +47,7 @@ impl CallType {
                 let method_name = sel.sel.name.to_string();
 
                 match sellt.clone() {
-                    DefineType::Interface { name, methods } => {
+                    DefineType::Interface { methods, .. } => {
                         let m = find_method(&method_name, methods);
 
                         match m {
@@ -59,7 +59,7 @@ impl CallType {
                             None => panic!("interface method not found"),
                         }
                     }
-                    DefineType::Struct { name, methods, .. } => {
+                    DefineType::Struct { name, .. } => {
                         let (_, _, methods) = c
                             .symbols
                             .resolve(&name)

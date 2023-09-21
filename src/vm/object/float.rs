@@ -49,6 +49,7 @@ impl Float32 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -76,6 +77,7 @@ impl Float64 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);

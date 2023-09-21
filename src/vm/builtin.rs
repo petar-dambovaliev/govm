@@ -205,7 +205,7 @@ fn call_append(args: &[Object]) -> Result<Object, Error> {
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
 
-    let i = match collection.tag() {
+    match collection.tag() {
         Type::Slice => {
             while let Some(el) = iter.next() {
                 collection.as_slice_mut().push(*el);
@@ -327,7 +327,7 @@ fn call_println(args: &[Object]) -> Result<Object, Error> {
 ///     print("hello {}!", "world") => prints "hello world" to stdout
 fn call_print(args: &[Object]) -> Result<Object, Error> {
     if !args.is_empty() {
-        let mut args = args.iter();
+        let args = args.iter();
 
         let mut output = Vec::with_capacity(args.len());
         for arg in args {
@@ -479,7 +479,7 @@ fn call_rune(args: &[Object]) -> Result<Object, Error> {
         }
         Type::UI32 => {
             let i = args[0].as_uint32().value;
-            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+            Ok(Rune::from_char(char::from_u32(i).unwrap()))
         }
         Type::UI64 => {
             let i = args[0].as_uint64().value;

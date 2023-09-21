@@ -24,22 +24,26 @@ impl Complex64 {
         obj.get::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     pub(crate) unsafe fn read_mut(obj: &Object) -> &mut Self {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     pub(crate) unsafe fn read_val(obj: &Object) -> Complex<f32> {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
         dealloc(obj.as_ptr(), Layout::new::<Self>());
     }
 
+    #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f32>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
@@ -61,22 +65,26 @@ impl Complex128 {
         obj.get::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     pub(crate) unsafe fn read_mut(obj: &Object) -> &mut Self {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     pub(crate) unsafe fn read_val(obj: &Object) -> Complex<f64> {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
         dealloc(obj.as_ptr(), Layout::new::<Self>());
     }
 
+    #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f64>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
@@ -93,6 +101,7 @@ pub struct Int {
 }
 
 impl Int {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -108,6 +117,7 @@ impl Int {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -131,6 +141,7 @@ pub struct Int8 {
 }
 
 impl Int8 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -141,11 +152,13 @@ impl Int8 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> i8 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -168,6 +181,7 @@ pub struct Int16 {
 }
 
 impl Int16 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -178,11 +192,13 @@ impl Int16 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> i16 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -205,6 +221,7 @@ pub struct Int32 {
 }
 
 impl Int32 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -215,11 +232,13 @@ impl Int32 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> i32 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -242,6 +261,7 @@ pub struct Int64 {
 }
 
 impl Int64 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -252,11 +272,13 @@ impl Int64 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> i64 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -279,6 +301,7 @@ pub struct Uint {
 }
 
 impl Uint {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -289,11 +312,12 @@ impl Uint {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> usize {
         obj.get::<Self>().value
     }
-
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -316,6 +340,7 @@ pub struct Uint8 {
 }
 
 impl Uint8 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -326,11 +351,13 @@ impl Uint8 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> u8 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -353,6 +380,7 @@ pub struct Uint16 {
 }
 
 impl Uint16 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -363,11 +391,13 @@ impl Uint16 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> u16 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -390,6 +420,7 @@ pub struct Uint32 {
 }
 
 impl Uint32 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -400,11 +431,13 @@ impl Uint32 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> u32 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -427,6 +460,7 @@ pub struct Uint64 {
 }
 
 impl Uint64 {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -437,11 +471,13 @@ impl Uint64 {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> u64 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);
@@ -464,6 +500,7 @@ pub struct Byte {
 }
 
 impl Byte {
+    #[allow(unused)]
     #[inline]
     unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
@@ -474,11 +511,13 @@ impl Byte {
         obj.get_mut::<Self>()
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn read_val(obj: &Object) -> u8 {
         obj.get::<Self>().value
     }
 
+    #[allow(unused)]
     #[inline]
     unsafe fn destroy(obj: Object) {
         drop_in_place(obj.as_ptr() as *mut Self);

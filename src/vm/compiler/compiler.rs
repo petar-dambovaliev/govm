@@ -312,8 +312,8 @@ impl Compiler {
                 DefineType::Ref(Box::new(self.expression_to_define_type(&tp.typ)))
             }
             Expression::TypeMap(map) => {
-                let mut k = self.expression_to_define_type(map.key.as_ref());
-                let mut v = self.expression_to_define_type(map.val.as_ref());
+                let k = self.expression_to_define_type(map.key.as_ref());
+                let v = self.expression_to_define_type(map.val.as_ref());
 
                 // if k.is_type() {
                 //     k = k.as_type().0;
@@ -510,7 +510,7 @@ impl Compiler {
                     let t = self.expression_to_define_type(&recv.typ);
 
                     //check if there is a field with the same name
-                    if let DefineType::Struct { name, fields, .. } = &t.strip_ref() {
+                    if let DefineType::Struct { fields, .. } = &t.strip_ref() {
                         for field in fields {
                             let (field_name, _) = field.as_named().unwrap();
                             if field_name == f.name.name {
@@ -1262,7 +1262,7 @@ impl Compiler {
                                     false,
                                 ),
                                 Expression::Index(ind) => {
-                                    let t = self.compile_expression(ind.left.as_ref())?;
+                                    let _t = self.compile_expression(ind.left.as_ref())?;
                                     self.compile_expression(ind.index.as_ref())?;
                                     self.compile_expression(right)?;
                                     self.emit_opcode(OpCode::IndexSet);
@@ -1298,7 +1298,7 @@ impl Compiler {
                                 let t = resolved.get_type().strip_var().strip_ref();
 
                                 match t {
-                                    DefineType::Struct { fields: fields, .. } => {
+                                    DefineType::Struct { fields, .. } => {
                                         let mut i = None;
                                         for (ind, field) in fields.iter().enumerate() {
                                             let f = field.as_named().unwrap();
@@ -1436,7 +1436,7 @@ impl Compiler {
                 };
 
                 if rts_len == 1 && rt.is_tuple() {
-                    let mut tuple = rt.as_tuple();
+                    let tuple = rt.as_tuple();
                     rts_len = tuple.len();
                     rt = DefineType::Tuple(tuple);
                 }
@@ -1565,7 +1565,7 @@ impl Compiler {
                 let iter_sym;
 
                 // __iter__ := into_iter X
-                let iter_ident = Expression::Ident(Ident {
+                let _iter_ident = Expression::Ident(Ident {
                     pos: 0,
                     name: "__iter__".to_string(),
                 });
@@ -2300,8 +2300,9 @@ impl Compiler {
         }
     }
 
+    #[allow(unused)]
     fn typecheck_call_func_sig(&mut self, call: &Call) -> Result<(), Error> {
-        let (f_name) = if let Expression::Selector(sel) = call.func.as_ref() {
+        let f_name = if let Expression::Selector(sel) = call.func.as_ref() {
             let sellt = self
                 .symbols
                 .resolve(&sel.x.as_ident().unwrap().name)
@@ -2343,7 +2344,7 @@ impl Compiler {
     fn compile_expression(&mut self, expr: &Expression) -> Result<DefineType, Error> {
         match expr {
             //todo this is a total mess: fix me
-            Expression::Call(call) => 'compile_call: {
+            Expression::Call(call) => {
                 //todo typecheck return and args on builtins
                 if let Expression::Ident(name) = call.func.as_ref() {
                     if let Some(builtin) = builtin::resolve(&name.name) {
@@ -2525,7 +2526,7 @@ impl Compiler {
 
                 return Ok(rt);
             }
-            Expression::TypeMap(tm) => {
+            Expression::TypeMap(_tm) => {
                 let rt = self.expression_to_define_type(expr);
                 let obj = rt.clone().to_object();
                 let idx = self.add_constant(obj);
@@ -2886,11 +2887,7 @@ impl Compiler {
                     };
 
                     let (name, inner_types) = match dt {
-                        DefineType::Struct {
-                            name: name,
-                            fields: fields,
-                            ..
-                        } => (name, fields),
+                        DefineType::Struct { name, fields, .. } => (name, fields),
                         _ => panic!("expect struct"),
                     };
 
@@ -2993,7 +2990,7 @@ impl Compiler {
                     self.emit_opcode(OpCode::Struct);
                     self.emit_u16(inner_types.len().try_into().unwrap());
                     return Ok(DefineType::Struct {
-                        name: name,
+                        name,
                         fields: inner_types,
                         methods: vec![],
                     });
@@ -3183,7 +3180,7 @@ impl Compiler {
                 }
 
                 // panic!("{:#?}", self.symbols);
-                match self.symbols.resolve(&ident.name) {
+                return match self.symbols.resolve(&ident.name) {
                     Some(Resolved::Local((symbol, dt))) => {
                         let opcode = if symbol.scope == Scope::Global {
                             if is_builtin_const(&ident.name) {
@@ -3198,22 +3195,20 @@ impl Compiler {
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
 
-                        return Ok(dt);
+                        Ok(dt)
                     }
                     Some(Resolved::Enclosed((s, t))) => {
                         // enclosed symbols cannot be global
                         self.emit_opcode(OpCode::GetCaptured);
                         self.emit_u16(s.index);
 
-                        return Ok(t);
+                        Ok(t)
                     }
-                    None => {
-                        return Err(Error::ReferenceError(format!(
-                            "ident: `{}` is not defined",
-                            ident.name
-                        )))
-                    }
-                }
+                    None => Err(Error::ReferenceError(format!(
+                        "ident: `{}` is not defined",
+                        ident.name
+                    ))),
+                };
             }
             Expression::Selector(sel) => {
                 let name = sel.x.as_ident().unwrap();
@@ -3225,7 +3220,7 @@ impl Compiler {
 
                 let (_, inner_types) = match inner.strip_ref() {
                     DefineType::Struct {
-                        name: name,
+                        name,
                         fields: inner_types,
                         ..
                     } => (name, inner_types),
@@ -3295,7 +3290,6 @@ impl Compiler {
                 //todo ugly
 
                 // type checking if all returns are correct types
-                let mut terminates = None;
                 let mut has_top_return = false;
                 for stmt in &f.body.list {
                     if let Statement::Return(_) = stmt {
@@ -3304,7 +3298,7 @@ impl Compiler {
                     }
                 }
 
-                terminates = self.compile_block_statement(&f.body.list)?;
+                let terminates = self.compile_block_statement(&f.body.list)?;
 
                 let ctx = self.func_contexts.pop().unwrap();
 
@@ -3351,7 +3345,7 @@ impl Compiler {
                         }
                     }
                 } else {
-                    for (ret_type, is_type_assert) in &ctx.ret_types {
+                    for (ret_type, _is_type_assert) in &ctx.ret_types {
                         assert_eq!(ret_type, &DefineType::Null);
                     }
                 }
@@ -3503,7 +3497,6 @@ impl Compiler {
                     index = 1;
                 }
 
-                let mut end = 0;
                 if let Some(from) = index_iter.next().unwrap() {
                     let ind_t = self.compile_expression(from.as_ref())?;
 

@@ -138,7 +138,7 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 impl DefineType {
     pub fn to_object(self) -> Object {
         match self {
-            DefineType::Type(dt, t) => match *dt.clone() {
+            DefineType::Type(dt, _t) => match *dt.clone() {
                 DefineType::String => TypeValue::object(Type::String, None),
                 DefineType::Int => TypeValue::object(Type::Int, None),
                 _ => dt.to_object(),
@@ -224,7 +224,7 @@ impl DefineType {
         let mut got_methods = if strct.is_struct() {
             let (name, _, _) = strct.as_struct().unwrap();
 
-            let (_, _, mut got_methods) = c
+            let (_, _, got_methods) = c
                 .symbols
                 .resolve(&name)
                 .unwrap()
@@ -642,7 +642,6 @@ pub(crate) struct Context {
     pub symbols: Vec<Vec<(String, DefineType)>>,
     pub is_closure: bool,
     pub captured: Vec<String>,
-    pub propagate: Vec<Vec<String>>,
 }
 
 impl Context {
@@ -653,7 +652,6 @@ impl Context {
             symbols: vec![Vec::new()],
             is_closure,
             captured: Vec::new(),
-            propagate: Vec::new(),
         }
     }
 
@@ -711,11 +709,7 @@ impl Context {
     }
 
     pub fn update_dt(&mut self, name: &str, dt: DefineType) -> bool {
-        let mut abs_index = self.total_len();
-
         for scope in self.symbols.iter_mut().rev() {
-            abs_index -= scope.len();
-
             if let Some(index) = scope.iter().position(|n| n.0 == name) {
                 scope[index].1 = dt.clone();
                 return true;
@@ -751,12 +745,6 @@ impl SymbolTable {
     pub fn new() -> Self {
         SymbolTable {
             contexts: vec![Context::new(Scope::Global, false)],
-        }
-    }
-
-    pub fn add_captured(&mut self, s: String) {
-        if !self.current_context().captured.contains(&s) {
-            self.current_context().captured.push(s);
         }
     }
 

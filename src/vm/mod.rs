@@ -17,7 +17,6 @@ use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::gc::GC;
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
-use crate::vm::object::r#ref::Ref;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
@@ -276,6 +275,7 @@ impl VM {
         OpCode::from(byte)
     }
 
+    #[allow(unused)]
     #[inline(always)]
     fn peek_next(&self) -> OpCode {
         // Safety: if compiler did its job correctly, IP will always be in bounds
@@ -284,10 +284,12 @@ impl VM {
         OpCode::from(byte)
     }
 
+    #[allow(unused)]
     fn peak_instruction(&self) -> Option<OpCode> {
         self.instructions.get(self.ip + 1).map(|a| OpCode::from(*a))
     }
 
+    #[allow(unused)]
     fn ignore_next_instruction(&mut self) {
         let new_ip = self.ip + 1;
         if self.instructions.len() < new_ip {
@@ -402,7 +404,6 @@ impl VM {
             }};
         }
 
-        let debug_constants = constants.clone();
         //#[cfg(feature = "debug")]
         //let mut debug_pause = 0;
 
@@ -455,7 +456,7 @@ impl VM {
             // );
             match self.next() {
                 OpCode::TypedNull => {
-                    let p = self.pop();
+                    let _p = self.pop();
                     //println!("popped: {:#?} {:#?}", p, p.as_ptr());
                     let num = self.read_u16() as usize;
                     let c = constants[num];
@@ -888,7 +889,7 @@ impl VM {
                     let num_args = self.read_u8();
                     //println!("CALL");
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
-                    let mut obj = self.pop();
+                    let obj = self.pop();
 
                     let (ip, num_locals) = match obj.tag() {
                         Type::Function => {
@@ -1105,7 +1106,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<(Object, Option
     }
 }
 
-fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Error> {
+fn index_get_struct(obj: Object, key: Object, _gc: &mut GC) -> Result<Object, Error> {
     let strct = obj.as_struct();
     let i = key.as_isize();
 
@@ -1116,7 +1117,7 @@ fn index_get_struct(obj: Object, key: Object, gc: &mut GC) -> Result<Object, Err
     Ok(strct.values[i as usize].clone())
 }
 
-fn index_get_map(obj: Object, key: Object, gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
+fn index_get_map(obj: Object, key: Object, _gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
     let map = obj.as_map();
     //todo create default value if not found
     //let map_obj = unsafe{Map::read(&obj)};

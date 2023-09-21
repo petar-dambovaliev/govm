@@ -27,15 +27,6 @@ use std::ops::Shl;
 use std::string::String as RString;
 use string::String;
 
-/// A macro for initialising a struct field (without dropping the original default value)
-macro_rules! init {
-    ($field: expr => $value: expr) => {
-        unsafe {
-            std::ptr::addr_of_mut!($field).write($value);
-        }
-    };
-}
-
 /// The mask to apply to get just the pointer address from a pointer object
 const PTR_MASK: usize = (1 << NUM_BITS) - 1;
 
@@ -758,7 +749,7 @@ impl PartialEq for Object {
                 l.value == r.value
             }
             Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
-            Type::Float64 => unsafe { self.as_float64() == other.as_float64() },
+            Type::Float64 => self.as_float64() == other.as_float64(),
             Type::Float => unsafe { self.as_float() == other.as_float() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
@@ -791,19 +782,19 @@ impl PartialOrd for Object {
 
         match self.tag() {
             Type::Null | Type::Bool => self.0.partial_cmp(&other.0),
-            Type::Int => unsafe { self.as_int().value.partial_cmp(&other.as_int().value) },
-            Type::I8 => unsafe { self.as_int8().value.partial_cmp(&other.as_int8().value) },
-            Type::I16 => unsafe { self.as_int16().value.partial_cmp(&other.as_int16().value) },
-            Type::I32 => unsafe { self.as_int32().value.partial_cmp(&other.as_int32().value) },
-            Type::I64 => unsafe { self.as_int64().value.partial_cmp(&other.as_int64().value) },
-            Type::Byte => unsafe { self.as_byte().value.partial_cmp(&other.as_byte().value) },
-            Type::UI => unsafe { self.as_uint().value.partial_cmp(&other.as_uint().value) },
-            Type::UI8 => unsafe { self.as_uint8().value.partial_cmp(&other.as_uint8().value) },
-            Type::UI16 => unsafe { self.as_uint16().value.partial_cmp(&other.as_uint16().value) },
-            Type::UI32 => unsafe { self.as_uint32().value.partial_cmp(&other.as_uint32().value) },
-            Type::UI64 => unsafe { self.as_uint64().value.partial_cmp(&other.as_uint64().value) },
+            Type::Int => self.as_int().value.partial_cmp(&other.as_int().value),
+            Type::I8 => self.as_int8().value.partial_cmp(&other.as_int8().value),
+            Type::I16 => self.as_int16().value.partial_cmp(&other.as_int16().value),
+            Type::I32 => self.as_int32().value.partial_cmp(&other.as_int32().value),
+            Type::I64 => self.as_int64().value.partial_cmp(&other.as_int64().value),
+            Type::Byte => self.as_byte().value.partial_cmp(&other.as_byte().value),
+            Type::UI => self.as_uint().value.partial_cmp(&other.as_uint().value),
+            Type::UI8 => self.as_uint8().value.partial_cmp(&other.as_uint8().value),
+            Type::UI16 => self.as_uint16().value.partial_cmp(&other.as_uint16().value),
+            Type::UI32 => self.as_uint32().value.partial_cmp(&other.as_uint32().value),
+            Type::UI64 => self.as_uint64().value.partial_cmp(&other.as_uint64().value),
             Type::Float => unsafe { self.as_float().partial_cmp(&other.as_float()) },
-            Type::Float64 => unsafe { self.as_float64().partial_cmp(&other.as_float64()) },
+            Type::Float64 => self.as_float64().partial_cmp(&other.as_float64()),
             Type::Float32 => unsafe { self.as_float32().partial_cmp(&other.as_float32()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
             Type::Complex64 | Type::Complex128 => {
@@ -852,7 +843,6 @@ macro_rules! impl_arith {
                 Type::I64 => Object::int64(self.as_int64().value $op rhs.as_int64().value),
                 Type::UI8 => Object::uint8(self.as_uint8().value $op rhs.as_uint8().value),
                 Type::UI => Object::uint(self.as_uint().value $op rhs.as_uint().value),
-                Type::UI8 => Object::uint8(self.as_uint8().value $op rhs.as_uint8().value),
                 Type::UI16 => Object::uint16(self.as_uint16().value $op rhs.as_uint16().value),
                 Type::UI32 => Object::uint32(self.as_uint32().value $op rhs.as_uint32().value),
                 Type::UI64 => Object::uint64(self.as_uint64().value $op rhs.as_uint64().value),
@@ -861,9 +851,9 @@ macro_rules! impl_arith {
                 Type::Float => unsafe {
                     Object::float(self.as_float() $op rhs.as_float(), gc)
                 }
-                Type::Float64 => unsafe {
-                    Object::float64(self.as_float64() $op rhs.as_float64(), gc)
-                }
+                Type::Float64 =>
+                    Object::float64(self.as_float64() $op rhs.as_float64(), gc),
+
                 Type::Float32 => unsafe {
                     Object::float32(self.as_float32() $op rhs.as_float32(), gc)
                 }
@@ -960,7 +950,7 @@ impl Display for Object {
             Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
             Type::Float => unsafe { f.write_str(&self.as_float().to_string())? },
             Type::Float32 => unsafe { f.write_str(&self.as_float32().to_string())? },
-            Type::Float64 => unsafe { f.write_str(&self.as_float64().to_string())? },
+            Type::Float64 => f.write_str(&self.as_float64().to_string())?,
             Type::Int => f.write_str(&self.as_int().value.to_string())?,
             Type::I8 => f.write_str(&self.as_int8().value.to_string())?,
             Type::I16 => f.write_str(&self.as_int16().value.to_string())?,
@@ -998,7 +988,7 @@ impl Display for Object {
                 f.write_char(']')?;
             }
             Type::Struct => {
-                let strct = unsafe { self.as_struct() };
+                let strct = self.as_struct();
 
                 let name = if strct.is_anonymous {
                     "struct"
@@ -1028,7 +1018,7 @@ impl Display for Object {
                 f.write_str(&format!("rune({})", self.as_rune().value.to_string()))?;
             }
             Type::Map => {
-                let strct = unsafe { self.as_map() };
+                let strct = self.as_map();
 
                 f.write_char('{')?;
                 for (i, obj) in strct.iter() {

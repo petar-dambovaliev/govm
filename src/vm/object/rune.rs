@@ -21,6 +21,8 @@ impl Rune {
     pub(crate) unsafe fn read(obj: &Object) -> &Self {
         obj.get::<Self>()
     }
+
+    #[allow(unused)]
     unsafe fn destroy(ptr: Object) {
         drop_in_place(ptr.as_ptr() as *mut Self);
         dealloc(ptr.as_ptr(), Layout::new::<Self>());

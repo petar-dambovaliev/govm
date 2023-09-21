@@ -231,6 +231,7 @@ impl Context {
         }
     }
 
+    #[allow(unused)]
     fn start(&self) -> usize {
         match self {
             Self::Switch(sw) => sw.start,
@@ -301,10 +302,12 @@ impl LoopContext {
 struct FuncContext {
     /// Points to the first instruction of the (current) loop condition
     /// This is where continue statements should jump to
+    #[allow(unused)]
     start: usize,
 
     /// Stores the index of all JUMP instructions within the current function context that originate from a return statement
     /// Once this function context ends, these instructions should have their operands updated to the first instruction that follows this function
+    #[allow(unused)]
     ret_instructions: Vec<usize>,
     ret_types: Vec<(DefineType, bool)>,
     pub expected_ret: DefineType,
@@ -509,7 +512,7 @@ mod tests {
         let mut c = Compiler::new();
         c.symbols
             .define(left, DefineType::Var(Box::new(DefineType::Int)), false);
-        let r = c.compile_statement(&expr).unwrap();
+        let _r = c.compile_statement(&expr).unwrap();
 
         println!("{}", bytecode_to_human(&c.instructions, true));
     }
@@ -657,7 +660,7 @@ mod tests {
         let mut compiler = Compiler::new();
 
         let ast = p.parse_file().unwrap();
-        let code = compiler.compile_ast(&ast).unwrap();
+        let _code = compiler.compile_ast(&ast).unwrap();
         //println!("{}", bytecode_to_human(&code.instructions, false))
         // assert_eq!(
         //     run(r#"
