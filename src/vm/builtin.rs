@@ -1,5 +1,4 @@
 use super::{Error, Object};
-use crate::vm::gc::GC;
 use crate::vm::object::collections::{Map, Slice};
 use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
@@ -88,7 +87,7 @@ pub fn signature_from_t(t: DefineType) -> Option<DefineType> {
 }
 
 #[inline]
-pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Error> {
+pub fn call(builtin: Builtin, args: &[Object]) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args),
         //Builtin::Type => call_type(args, gc),
@@ -101,7 +100,7 @@ pub fn call(builtin: Builtin, args: &[Object], gc: &mut GC) -> Result<Object, Er
         Builtin::Rune => call_rune(args),
         Builtin::Println => call_println(args),
         Builtin::Int64 => call_int64(args),
-        Builtin::Make => call_make(args, gc),
+        Builtin::Make => call_make(args),
         Builtin::Cap => call_cap(args),
         Builtin::Append => call_append(args),
         Builtin::Copy => call_copy(args),
@@ -233,7 +232,7 @@ fn call_cap(args: &[Object]) -> Result<Object, Error> {
 }
 
 //slices, maps, or channels
-fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
+fn call_make(args: &[Object]) -> Result<Object, Error> {
     let mut arg_iter = args.iter();
     let t = arg_iter.next().unwrap();
     let len = arg_iter.next();
@@ -268,12 +267,11 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
             );
 
             let def_value = match inner.value {
-                Type::String => Object::string("", gc),
+                Type::String => Object::string(""),
                 Type::Int => Object::int(0),
-                Type::Slice => call_make(
-                    &[TypeValue::object(Type::Slice, inner.inner_k), *len.unwrap()],
-                    gc,
-                )?,
+                Type::Slice => {
+                    call_make(&[TypeValue::object(Type::Slice, inner.inner_k), *len.unwrap()])?
+                }
                 _ => unimplemented!("{:#?}", inner.value),
             };
 
@@ -288,7 +286,7 @@ fn call_make(args: &[Object], gc: &mut GC) -> Result<Object, Error> {
             let _v = unsafe { TypeValue::read(&tv.inner_v.unwrap()) };
 
             let m: BTreeMap<Object, Object> = BTreeMap::new();
-            Map::from_map(m, gc)
+            Map::from_map(m)
         }
         _ => panic!(),
     };

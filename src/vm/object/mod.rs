@@ -7,7 +7,8 @@ pub mod rune;
 pub mod string;
 pub mod structure;
 
-use crate::vm::gc::GC;
+use bdwgc_alloc::Allocator;
+
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float, Float32, Float64};
 use crate::vm::object::function::Closure;
@@ -19,7 +20,7 @@ use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::Error;
-use std::alloc::{alloc, handle_alloc_error, Layout};
+use std::alloc::{handle_alloc_error, GlobalAlloc, Layout};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
@@ -273,30 +274,26 @@ impl Object {
     }
 
     #[inline]
-    pub fn float(value: f64, gc: &mut GC) -> Self {
+    pub fn float(value: f64) -> Self {
         let ptr = Float::from_f64(value);
-        gc.trace(ptr);
         ptr
     }
 
     #[inline]
-    pub fn float32(value: f32, gc: &mut GC) -> Self {
+    pub fn float32(value: f32) -> Self {
         let ptr = Float32::from_f32(value);
-        gc.trace(ptr);
         ptr
     }
 
     #[inline]
-    pub fn float64(value: f64, gc: &mut GC) -> Self {
+    pub fn float64(value: f64) -> Self {
         let ptr = Float64::from_f64(value);
-        gc.trace(ptr);
         ptr
     }
 
     #[inline]
-    pub fn ref_t(value: Object, gc: &mut GC) -> Self {
+    pub fn ref_t(value: Object) -> Self {
         let ptr = Ref::from_obj(value);
-        gc.trace(ptr);
         ptr
     }
 
@@ -583,73 +580,42 @@ impl Object {
     pub(crate) unsafe fn get_mut<'a, T>(self) -> &'a mut T {
         &mut *(self.as_ptr() as *mut T)
     }
-
-    /// Frees the memory address this pointer points to
-    pub fn free(self) {
-        unsafe {
-            match self.tag() {
-                Type::Float => Float::destroy(self),
-                Type::String => String::destroy(self),
-                Type::Array => Array::destroy(self),
-                _ => (),
-            }
-        }
-    }
-
-    /// Frees the memory address this pointer points to
-    /// Plus all addresses inside the array (if it is an array)
-    pub fn free_recursive(self) {
-        if self.tag() == Type::Array {
-            // Safety: We've asserted the type
-            unsafe {
-                for o in self.as_vec_unchecked() {
-                    o.free();
-                }
-            }
-        }
-
-        self.free();
-    }
 }
 
 pub trait FromString<T> {
-    fn string(value: T, gc: &mut GC) -> Self;
+    fn string(value: T) -> Self;
 }
 
 impl FromString<RString> for Object {
-    fn string(value: RString, gc: &mut GC) -> Self {
+    fn string(value: RString) -> Self {
         let ptr = String::from_string(value);
-        gc.trace(ptr);
         ptr
     }
 }
 
 impl FromString<&str> for Object {
-    fn string(value: &str, gc: &mut GC) -> Self {
+    fn string(value: &str) -> Self {
         let ptr = String::from_string(value.to_string());
-        gc.trace(ptr);
         ptr
     }
 }
 
 pub trait FromVec<T> {
-    fn array(value: T, gc: &mut GC) -> Self;
+    fn array(value: T) -> Self;
 }
 
 impl FromVec<Vec<Object>> for Object {
     /// Create a new (garbage-collected) Array value
-    fn array(value: Vec<Object>, gc: &mut GC) -> Self {
+    fn array(value: Vec<Object>) -> Self {
         let ptr = Array::from_vec(value);
-        gc.trace(ptr);
         ptr
     }
 }
 
 impl FromVec<&[Object]> for Object {
     /// Create a new (garbage-collected) Array value
-    fn array(value: &[Object], gc: &mut GC) -> Self {
+    fn array(value: &[Object]) -> Self {
         let ptr = Array::from_slice(value);
-        gc.trace(ptr);
         ptr
     }
 }
@@ -830,7 +796,7 @@ impl Ord for Object {
 macro_rules! impl_arith {
     ($func_name:ident, $op:tt) => {
         #[inline(always)]
-        pub(crate) fn $func_name(self, rhs: Self, gc: &mut GC) -> Result<Object, Error> {
+        pub(crate) fn $func_name(self, rhs: Self) -> Result<Object, Error> {
             if self.tag() != rhs.tag() {
                 return Err(Error::TypeError(format!("invalid op {} for types ({} and {})", stringify!($op), self.tag(), rhs.tag())))
             }
@@ -849,13 +815,13 @@ macro_rules! impl_arith {
 
                 // Safety: We've already asserted the object type
                 Type::Float => unsafe {
-                    Object::float(self.as_float() $op rhs.as_float(), gc)
+                    Object::float(self.as_float() $op rhs.as_float())
                 }
                 Type::Float64 =>
-                    Object::float64(self.as_float64() $op rhs.as_float64(), gc),
+                    Object::float64(self.as_float64() $op rhs.as_float64()),
 
                 Type::Float32 => unsafe {
-                    Object::float32(self.as_float32() $op rhs.as_float32(), gc)
+                    Object::float32(self.as_float32() $op rhs.as_float32())
                 }
 
                 Type::String => add_strings(self, rhs),
@@ -883,7 +849,7 @@ fn add_strings(left: Object, right: Object) -> Object {
 macro_rules! impl_logical {
     ($func_name:ident, $op:tt) => {
         #[inline(always)]
-        pub fn $func_name(self, rhs: Self, _gc: &mut GC) -> Result<Object, Error> {
+        pub fn $func_name(self, rhs: Self) -> Result<Object, Error> {
             let result = match (self.tag(), rhs.tag()) {
                 (Type::Bool, Type::Bool) => Object::bool(self.as_bool() $op rhs.as_bool()),
                 _ => return Err(Error::TypeError(format!("invalid op {} for types {} and {}", stringify!($op), self.tag(), rhs.tag())))
@@ -896,7 +862,7 @@ macro_rules! impl_logical {
 macro_rules! impl_cmp {
     ($func_name:ident, $op:tt) => {
         #[inline(always)]
-        pub fn $func_name(self, rhs: Self, _gc: &mut GC) -> Result<Object, Error> {
+        pub fn $func_name(self, rhs: Self) -> Result<Object, Error> {
             match (self.tag(), rhs.tag()) {
                 (Type::Ref, Type::Null) | (Type::Null, Type::Ref) => {}
                 _ => {
@@ -929,18 +895,6 @@ impl Object {
 
     impl_logical!(and, &&);
     impl_logical!(or, ||);
-}
-
-#[repr(C)]
-pub(crate) struct Header {
-    pub(crate) marked: bool,
-}
-
-impl Header {
-    #[inline]
-    pub unsafe fn read(obj: &mut Object) -> &mut Header {
-        obj.get_mut::<Self>()
-    }
 }
 
 impl Display for Object {
@@ -1129,7 +1083,7 @@ impl Display for Type {
 #[inline]
 fn allocate(layout: Layout) -> *mut u8 {
     // Safety: we only call this function for types with a non-zero layout
-    let ptr = unsafe { alloc(layout) };
+    let ptr = unsafe { Allocator.alloc(layout) };
 
     if ptr.is_null() {
         handle_alloc_error(layout);
@@ -1204,16 +1158,14 @@ mod tests {
 
     #[test]
     fn test_object_string() {
-        let mut gc = GC::new();
-        let obj = Object::string("Hello, world!", &mut gc);
+        let obj = Object::string("Hello, world!");
         assert_eq!(obj.tag(), Type::String);
         assert_eq!(obj.as_str(), "Hello, world!");
     }
 
     #[test]
     fn test_pointer_float() {
-        let mut gc = GC::new();
-        let obj = Object::float(std::f64::consts::PI, &mut gc);
+        let obj = Object::float(std::f64::consts::PI);
         assert_eq!(obj.tag(), Type::Float);
         assert_eq!(obj.as_float64(), std::f64::consts::PI);
     }
@@ -1223,7 +1175,6 @@ mod tests {
         let ptr = Array::from_slice(&[]);
         assert_eq!(ptr.tag(), Type::Array);
         assert_eq!(ptr.as_vec().len(), 0);
-        ptr.free();
     }
 
     #[test]
@@ -1232,7 +1183,6 @@ mod tests {
         assert_eq!(ptr.tag(), Type::Array);
         assert_eq!(ptr.as_vec().len(), 1);
         assert_eq!(ptr.as_vec().get(0), Some(&Object::null()));
-        ptr.free();
     }
 
     #[test]
@@ -1245,15 +1195,13 @@ mod tests {
 
     #[test]
     fn test_ord() {
-        let mut gc = GC::new();
-        let left = Object::string("foo", &mut gc);
-        let right = Object::string("foo", &mut gc);
+        let left = Object::string("foo");
+        let right = Object::string("foo");
         assert_eq!(left.cmp(&right), Ordering::Equal)
     }
     #[test]
     fn test_ref() {
-        let mut gc = GC::new();
-        let left = Object::ref_t(Object::int(5), &mut gc);
+        let left = Object::ref_t(Object::int(5));
         let right = left;
         right.as_ref_mut().value = Object::int(6);
         println!("{:#?}--{:#?}", left, right);

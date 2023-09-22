@@ -1,4 +1,4 @@
-use crate::vm::object::{allocate, Header, Object, Type};
+use crate::vm::object::{allocate, Object, Type};
 use std::alloc::Layout;
 
 macro_rules! init {
@@ -11,7 +11,6 @@ macro_rules! init {
 
 #[repr(C)]
 pub struct Closure {
-    header: Header,
     pub ip: u32,
     pub num_locals: u16,
     pub captured: Vec<Object>,
@@ -37,7 +36,7 @@ impl Closure {
     pub fn object(ip: u32, num_locals: u16, captured: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Closure);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         obj.ip = ip;
         obj.num_locals = num_locals;
         obj.is_null = false;

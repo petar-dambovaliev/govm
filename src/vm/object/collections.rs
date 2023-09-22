@@ -1,10 +1,8 @@
-use crate::vm::gc::GC;
 use crate::vm::object::rune::Rune;
-use crate::vm::object::{allocate, Header, Object, Type};
-use std::alloc::{dealloc, Layout};
+use crate::vm::object::{allocate, Object, Type};
+use std::alloc::Layout;
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
-use std::ptr::drop_in_place;
 
 macro_rules! init {
     ($field: expr => $value: expr) => {
@@ -16,7 +14,6 @@ macro_rules! init {
 
 #[repr(C)]
 pub struct Map {
-    header: Header,
     pub(crate) value: BTreeMap<Object, Object>,
 }
 
@@ -29,10 +26,10 @@ impl Map {
     pub(crate) unsafe fn read(ptr: &Object) -> &Self {
         &ptr.get::<Self>()
     }
-    pub(crate) fn from_map(map: BTreeMap<Object, Object>, _gc: &mut GC) -> Object {
+    pub(crate) fn from_map(map: BTreeMap<Object, Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Map);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => map);
         ptr
     }
@@ -40,7 +37,6 @@ impl Map {
 
 #[repr(C)]
 pub struct Array {
-    header: Header,
     pub(crate) value: Vec<Object>,
 }
 
@@ -49,16 +45,10 @@ impl Array {
         ptr.get::<Self>().value.as_ref()
     }
 
-    /// Drops and deallocate this NlArray struct and its value
-    pub(crate) unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_vec(vec: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Array);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => vec);
         ptr
     }
@@ -70,7 +60,6 @@ impl Array {
 
 #[repr(C)]
 pub struct Slice {
-    header: Header,
     pub(crate) value: Vec<Object>,
 }
 
@@ -79,17 +68,10 @@ impl Slice {
         ptr.get::<Self>().value.as_ref()
     }
 
-    /// Drops and deallocate this NlArray struct and its value
-    #[allow(unused)]
-    pub(crate) unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_vec(vec: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Slice);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => vec);
         ptr
     }
@@ -125,7 +107,6 @@ impl RuneIter {
 
 #[repr(C)]
 pub struct ObjIter {
-    header: Header,
     value: IterType,
 }
 
@@ -162,7 +143,7 @@ impl ObjIter {
     pub fn from_map(map: BTreeMap<Object, Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => IterType::Map(map.into_iter()));
         ptr
     }
@@ -170,7 +151,7 @@ impl ObjIter {
     pub fn from_vec(vec: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => IterType::Array(vec.into_iter().enumerate()));
         ptr
     }
@@ -178,7 +159,6 @@ impl ObjIter {
     pub fn from_str(s: Object) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Iter);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
 
         init!(obj.value => IterType::String(RuneIter{i:0, s}));
         ptr
@@ -187,7 +167,6 @@ impl ObjIter {
 
 #[repr(C)]
 pub struct Variadic {
-    header: Header,
     pub(crate) value: Vec<Object>,
 }
 
@@ -196,17 +175,10 @@ impl Variadic {
         ptr.get::<Self>().value.as_ref()
     }
 
-    /// Drops and deallocate this NlArray struct and its value
-    #[allow(unused)]
-    pub(crate) unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
     pub fn from_vec(vec: Vec<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Variadic);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => vec);
         ptr
     }

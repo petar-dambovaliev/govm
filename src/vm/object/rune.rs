@@ -1,6 +1,5 @@
-use crate::vm::object::{allocate, Header, Object, Type};
-use std::alloc::{dealloc, Layout};
-use std::ptr::drop_in_place;
+use crate::vm::object::{allocate, Object, Type};
+use std::alloc::Layout;
 
 macro_rules! init {
     ($field: expr => $value: expr) => {
@@ -12,7 +11,6 @@ macro_rules! init {
 
 #[repr(C)]
 pub struct Rune {
-    header: Header,
     pub value: char,
 }
 
@@ -22,16 +20,10 @@ impl Rune {
         obj.get::<Self>()
     }
 
-    #[allow(unused)]
-    unsafe fn destroy(ptr: Object) {
-        drop_in_place(ptr.as_ptr() as *mut Self);
-        dealloc(ptr.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_char(value: char) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Rune);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value);
         ptr
     }

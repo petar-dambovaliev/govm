@@ -1,7 +1,6 @@
-use crate::vm::object::{allocate, Header, Object, Type};
+use crate::vm::object::{allocate, Object, Type};
 use num::Complex;
-use std::alloc::{dealloc, Layout};
-use std::ptr::drop_in_place;
+use std::alloc::Layout;
 
 /// A macro for initialising a struct field (without dropping the original default value)
 macro_rules! init {
@@ -14,7 +13,6 @@ macro_rules! init {
 
 #[repr(C)]
 pub struct Complex64 {
-    header: Header,
     pub(crate) value: Complex<f32>,
 }
 
@@ -37,17 +35,10 @@ impl Complex64 {
     }
 
     #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
-    #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f32>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -55,7 +46,6 @@ impl Complex64 {
 
 #[repr(C)]
 pub struct Complex128 {
-    header: Header,
     pub(crate) value: Complex<f64>,
 }
 
@@ -78,17 +68,10 @@ impl Complex128 {
     }
 
     #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
-    #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f64>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -96,7 +79,6 @@ impl Complex128 {
 
 #[repr(C)]
 pub struct Int {
-    header: Header,
     pub(crate) value: isize,
 }
 
@@ -117,18 +99,11 @@ impl Int {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_isize(value: isize) -> Object {
         let raw = allocate(Layout::new::<Self>());
         let ptr = Object::with_type(raw, Type::Int);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -136,7 +111,6 @@ impl Int {
 
 #[repr(C)]
 pub struct Int8 {
-    header: Header,
     pub(crate) value: i8,
 }
 
@@ -158,17 +132,10 @@ impl Int8 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_i8(value: i8) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::I8);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -176,7 +143,6 @@ impl Int8 {
 
 #[repr(C)]
 pub struct Int16 {
-    header: Header,
     pub(crate) value: i16,
 }
 
@@ -197,18 +163,10 @@ impl Int16 {
     unsafe fn read_val(obj: &Object) -> i16 {
         obj.get::<Self>().value
     }
-
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_i16(value: i16) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::I16);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -216,7 +174,6 @@ impl Int16 {
 
 #[repr(C)]
 pub struct Int32 {
-    header: Header,
     pub(crate) value: i32,
 }
 
@@ -238,17 +195,10 @@ impl Int32 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_i32(value: i32) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::I32);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -256,7 +206,6 @@ impl Int32 {
 
 #[repr(C)]
 pub struct Int64 {
-    header: Header,
     pub(crate) value: i64,
 }
 
@@ -278,17 +227,10 @@ impl Int64 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_i64(value: i64) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::I64);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -296,7 +238,6 @@ impl Int64 {
 
 #[repr(C)]
 pub struct Uint {
-    header: Header,
     pub(crate) value: usize,
 }
 
@@ -317,17 +258,10 @@ impl Uint {
     unsafe fn read_val(obj: &Object) -> usize {
         obj.get::<Self>().value
     }
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_usize(value: usize) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::UI);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -335,7 +269,6 @@ impl Uint {
 
 #[repr(C)]
 pub struct Uint8 {
-    header: Header,
     pub(crate) value: u8,
 }
 
@@ -357,17 +290,10 @@ impl Uint8 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_u8(value: u8) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::UI8);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -375,7 +301,6 @@ impl Uint8 {
 
 #[repr(C)]
 pub struct Uint16 {
-    header: Header,
     pub(crate) value: u16,
 }
 
@@ -397,17 +322,10 @@ impl Uint16 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_u16(value: u16) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::UI16);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -415,7 +333,6 @@ impl Uint16 {
 
 #[repr(C)]
 pub struct Uint32 {
-    header: Header,
     pub(crate) value: u32,
 }
 
@@ -437,17 +354,10 @@ impl Uint32 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_u32(value: u32) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::UI32);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -455,7 +365,6 @@ impl Uint32 {
 
 #[repr(C)]
 pub struct Uint64 {
-    header: Header,
     pub(crate) value: u64,
 }
 
@@ -477,17 +386,10 @@ impl Uint64 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_u64(value: u64) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::UI64);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -495,7 +397,6 @@ impl Uint64 {
 
 #[repr(C)]
 pub struct Byte {
-    header: Header,
     pub(crate) value: u8,
 }
 
@@ -517,17 +418,10 @@ impl Byte {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_u8(value: u8) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Byte);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }

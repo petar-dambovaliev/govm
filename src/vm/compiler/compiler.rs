@@ -11,7 +11,7 @@ use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
     Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext, JUMP_PLACEHOLDER,
 };
-use crate::vm::gc::GC;
+
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -31,7 +31,6 @@ pub struct Compiler {
     contexts: Vec<Context>,
     func_contexts: Vec<FuncContext>,
     label_contexts: AHashMap<(usize, usize), String>,
-    gc: GC,
     anonymous_struct: usize,
 }
 
@@ -46,7 +45,6 @@ impl Compiler {
             contexts: Vec::new(),
             func_contexts: Vec::new(),
             label_contexts: AHashMap::new(),
-            gc: GC::new(),
             anonymous_struct: 0,
         }
     }
@@ -195,12 +193,6 @@ impl Compiler {
         self.emit_opcode(OpCode::Halt);
         self.instructions.shrink_to_fit();
         self.constants.shrink_to_fit();
-
-        // instruct GC to stop managing any of the constants
-        // TODO: Implement custom Clone for object instead?
-        for c in &self.constants {
-            self.gc.untrace(*c);
-        }
 
         Ok(Bytecode {
             constants: self.constants.clone(),
@@ -2723,7 +2715,7 @@ impl Compiler {
                 return Ok(DefineType::Bool);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
-                let obj = Object::float(lit.value.parse().unwrap(), &mut self.gc);
+                let obj = Object::float(lit.value.parse().unwrap());
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
@@ -2745,7 +2737,7 @@ impl Compiler {
                 return Ok(DefineType::Int);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::String => {
-                let obj = Object::string(lit.value.clone(), &mut self.gc);
+                let obj = Object::string(lit.value.clone());
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);

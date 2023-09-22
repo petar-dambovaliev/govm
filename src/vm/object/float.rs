@@ -1,6 +1,5 @@
-use crate::vm::object::{allocate, Header, Object, Type};
-use std::alloc::{dealloc, Layout};
-use std::ptr::drop_in_place;
+use crate::vm::object::{allocate, Object, Type};
+use std::alloc::Layout;
 
 macro_rules! init {
     ($field: expr => $value: expr) => {
@@ -12,7 +11,6 @@ macro_rules! init {
 
 #[repr(C)]
 pub struct Float {
-    header: Header,
     value: f64,
 }
 
@@ -22,16 +20,10 @@ impl Float {
         obj.get::<Self>().value
     }
 
-    #[inline]
-    pub(crate) unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_f64(value: f64) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -39,7 +31,6 @@ impl Float {
 
 #[repr(C)]
 pub struct Float32 {
-    header: Header,
     value: f32,
 }
 
@@ -49,17 +40,10 @@ impl Float32 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_f32(value: f32) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float32);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }
@@ -67,7 +51,6 @@ impl Float32 {
 
 #[repr(C)]
 pub struct Float64 {
-    header: Header,
     value: f64,
 }
 
@@ -77,17 +60,10 @@ impl Float64 {
         obj.get::<Self>().value
     }
 
-    #[allow(unused)]
-    #[inline]
-    unsafe fn destroy(obj: Object) {
-        drop_in_place(obj.as_ptr() as *mut Self);
-        dealloc(obj.as_ptr(), Layout::new::<Self>());
-    }
-
     pub(crate) fn from_f64(value: f64) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float32);
         let obj = unsafe { ptr.get_mut::<Self>() };
-        obj.header.marked = false;
+
         init!(obj.value => value );
         ptr
     }

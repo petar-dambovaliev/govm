@@ -1,6 +1,5 @@
 pub mod builtin;
 pub mod compiler;
-pub mod gc;
 pub mod object;
 pub mod symbols;
 
@@ -15,7 +14,6 @@ use std::ptr;
 #[cfg(feature = "debug")]
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
-use crate::vm::gc::GC;
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
@@ -379,15 +377,11 @@ impl VM {
         let constants = code.constants;
         let mut final_result = Object::null();
 
-        // Construct a new garbage collector
-        // And allow to manage memory for constants
-        let gc = &mut GC::new();
-
         macro_rules! impl_binary_op_method {
             ($op:tt) => {{
                 let right = self.pop();
                 let left = self.pop();
-                let result = left.$op(right, gc)?;
+                let result = left.$op(right)?;
                 self.push(result);
             }};
         }
@@ -399,7 +393,7 @@ impl VM {
                 let constant_idx = self.read_u16();
                 let right = constants[constant_idx as usize];
                 //println!("local: {:#?} const: {:#?}", local_idx, constant_idx);
-                let result = left.$op(right, gc)?;
+                let result = left.$op(right)?;
                 self.push(result);
             }};
         }
@@ -841,7 +835,7 @@ impl VM {
                 OpCode::Divide => {
                     let right = self.pop();
                     let left = self.pop();
-                    let result = left.div(right, gc)?;
+                    let result = left.div(right)?;
                     self.push(result);
                 }
                 //impl_binary_op_method!(div),
@@ -856,7 +850,7 @@ impl VM {
                 OpCode::And => {
                     let right = self.pop();
                     let left = self.pop();
-                    let result = left.and(right, gc)?;
+                    let result = left.and(right)?;
                     self.push(result);
                 }
                 OpCode::Or => impl_binary_op_method!(or),
@@ -874,7 +868,7 @@ impl VM {
                 OpCode::Negate => {
                     let left = self.pop();
                     let result = match left.tag() {
-                        Type::Float => unsafe { Object::float(-left.as_float(), gc) },
+                        Type::Float => unsafe { Object::float(-left.as_float()) },
                         Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(
@@ -936,7 +930,7 @@ impl VM {
                     args.reverse();
 
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
-                    let result = builtin::call(builtin, &args, gc)?;
+                    let result = builtin::call(builtin, &args)?;
                     self.push(result);
                 }
                 OpCode::ReturnValue => {
@@ -981,7 +975,7 @@ impl VM {
                 OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
                 OpCode::Ref => {
                     let val = self.pop();
-                    self.push(Object::ref_t(val, gc));
+                    self.push(Object::ref_t(val));
                     //println!("{:#?}", self.stack);
                 }
                 OpCode::Array => {
@@ -992,7 +986,7 @@ impl VM {
                     }
                     vec.reverse();
                     // TODO: Re-use vector allocation here
-                    let obj = Object::array(vec, gc);
+                    let obj = Object::array(vec);
                     self.push(obj);
                 }
                 OpCode::Map => {
@@ -1004,7 +998,7 @@ impl VM {
                         map.insert(key, value);
                     }
 
-                    let obj = Map::from_map(map, gc);
+                    let obj = Map::from_map(map);
                     self.push(obj);
                 }
                 OpCode::Struct => {
@@ -1030,7 +1024,7 @@ impl VM {
                 OpCode::IndexGet => {
                     let index = self.pop();
                     let left = self.pop();
-                    let (obj, found) = index_get(left, index, gc)?;
+                    let (obj, found) = index_get(left, index)?;
 
                     self.push(obj);
 
@@ -1054,7 +1048,6 @@ impl VM {
                 }
                 OpCode::Halt => {
                     //println!("Halt: {:#?}", self.stack);
-                    gc.untrace(final_result);
                     return Ok(final_result);
                 }
             }
@@ -1062,7 +1055,7 @@ impl VM {
     }
 }
 
-fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
+fn index_get(left: Object, index: Object) -> Result<(Object, Option<bool>), Error> {
     let let_obj = match left.tag() {
         Type::Ref => left.as_ref().value,
         _ => left,
@@ -1095,10 +1088,10 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<(Object, Option
                 )));
             }
 
-            Ok((index_get_string(let_obj, index.as_isize(), gc)?, None))
+            Ok((index_get_string(let_obj, index.as_isize())?, None))
         }
-        Type::Map => index_get_map(let_obj, index, gc),
-        Type::Struct => Ok((index_get_struct(let_obj, index, gc)?, None)),
+        Type::Map => index_get_map(let_obj, index),
+        Type::Struct => Ok((index_get_struct(let_obj, index)?, None)),
         _ => Err(Error::TypeError(format!(
             "object cannot be indexed: {}",
             left.tag()
@@ -1106,7 +1099,7 @@ fn index_get(left: Object, index: Object, gc: &mut GC) -> Result<(Object, Option
     }
 }
 
-fn index_get_struct(obj: Object, key: Object, _gc: &mut GC) -> Result<Object, Error> {
+fn index_get_struct(obj: Object, key: Object) -> Result<Object, Error> {
     let strct = obj.as_struct();
     let i = key.as_isize();
 
@@ -1117,7 +1110,7 @@ fn index_get_struct(obj: Object, key: Object, _gc: &mut GC) -> Result<Object, Er
     Ok(strct.values[i as usize].clone())
 }
 
-fn index_get_map(obj: Object, key: Object, _gc: &mut GC) -> Result<(Object, Option<bool>), Error> {
+fn index_get_map(obj: Object, key: Object) -> Result<(Object, Option<bool>), Error> {
     let map = obj.as_map();
     //todo create default value if not found
     //let map_obj = unsafe{Map::read(&obj)};
@@ -1149,7 +1142,7 @@ fn index_get_array(array: &Vec<Object>, mut index: isize) -> Result<Object, Erro
     Ok(array[index])
 }
 
-fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Error> {
+fn index_get_string(obj: Object, index: isize) -> Result<Object, Error> {
     let str = obj.as_str();
     if index < 0 {
         return Err(Error::IndexError("i: out of bounds".to_string()));
@@ -1161,7 +1154,7 @@ fn index_get_string(obj: Object, index: isize, gc: &mut GC) -> Result<Object, Er
     }
 
     let ch = str.chars().nth(i).unwrap();
-    let result = Object::string(ch.to_string(), gc);
+    let result = Object::string(ch.to_string());
     Ok(result)
 }
 

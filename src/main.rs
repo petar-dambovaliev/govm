@@ -4,9 +4,11 @@ pub mod vm;
 use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::VM;
+use bdwgc_alloc::Allocator;
 use std::time::Instant;
 
 fn main() {
+    unsafe { Allocator::initialize() }
     //todo definition order matters and it shouldn't
     let i = Instant::now();
     //todo
