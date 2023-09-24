@@ -7,6 +7,9 @@ use crate::vm::VM;
 use bdwgc_alloc::Allocator;
 use std::time::Instant;
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: Allocator = Allocator;
+
 fn main() {
     unsafe { Allocator::initialize() }
     //todo definition order matters and it shouldn't
@@ -17,38 +20,25 @@ fn main() {
         r#"
 package main
 
-func main() {
-    var printDog func(
-            int,
-            struct {
-	            name   string
-	            isGood bool
-            })
-    
-    printDog = func(
-        i int,
-        dog struct {
-            name   string
-            isGood bool
-    }) {
-        if i == 0 {
-            return
-        }
-    
-        println(dog)
-        printDog(i - 1, dog)
-    }
-    
-    
-	dog := struct {
-		name   string
-		isGood bool
-	}{
-		"Rex",
-		true,
-	}
+type User struct {
+	name string
+}
 
-	printDog(4, dog)
+func main() {
+    //a := []*User{}
+     
+	for i := 0; i < 9; i++ {
+	    for j := 0; j < 999999; j++ {
+	        a := &User{
+		        name: "john",
+	        }
+		    // a = append(a, &User{
+		    //     name: "john",
+	        // })
+	        //println(j)
+	    }
+	    println(i)
+	}
 }
     "#,
     );

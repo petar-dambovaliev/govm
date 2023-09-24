@@ -7,8 +7,6 @@ pub mod rune;
 pub mod string;
 pub mod structure;
 
-use bdwgc_alloc::Allocator;
-
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float, Float32, Float64};
 use crate::vm::object::function::Closure;
@@ -20,7 +18,7 @@ use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::Error;
-use std::alloc::{handle_alloc_error, GlobalAlloc, Layout};
+use std::alloc::{handle_alloc_error, Layout};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
@@ -31,7 +29,7 @@ use string::String;
 /// The mask to apply to get just the pointer address from a pointer object
 const PTR_MASK: usize = (1 << NUM_BITS) - 1;
 
-/// The amount of bits to shift-left the actual value in value objects (last 6 bits store the type tag)
+/// The amount of bits to shift-left the actual value in value objects (last 5 bits store the type tag)
 const VALUE_SHIFT_BITS: usize = 5;
 
 const NUM_BITS: usize = 64 - VALUE_SHIFT_BITS;
@@ -44,9 +42,9 @@ const MAX_INT: isize = isize::MAX;
 /// The minimum integer value we can store in a value object
 const MIN_INT: isize = isize::MIN;
 
-// ARM uses 49 bits and x86-64 uses 48 bits
-// we have at least 15 bits to work with
-// this is 6 bits and it supports up to 64 variants
+// ARM uses 49 bits and x86-64 uses 48 bits (some newer cpus have opt-in using 57 bits)
+// we have at least 7 bits to work with
+// this is 6 bits and it supports up to 32 variants
 #[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum Type {
@@ -872,7 +870,8 @@ macro_rules! impl_cmp {
                 }
             }
 
-            //println!("{:#?} < {:#?}", self, rhs);
+
+            //println!("{} < {}", self, rhs);
             // Delegate actual comparison to PartialOrd/PartialEq implementation
             Ok(Object::bool(self $op rhs,))
         }
@@ -889,7 +888,27 @@ impl Object {
     impl_cmp!(gt, >);
     impl_cmp!(gte, >=);
     impl_cmp!(lt, <);
-    impl_cmp!(lte, <=);
+    //impl_cmp!(lte, <=);
+    #[inline(always)]
+    pub fn lte(self, rhs: Self) -> Result<Object, Error> {
+        match (self.tag(), rhs.tag()) {
+            (Type::Ref, Type::Null) | (Type::Null, Type::Ref) => {}
+            _ => {
+                if self.tag() != rhs.tag() {
+                    return Err(Error::TypeError(format!(
+                        "invalid types {} and {}",
+                        self.tag(),
+                        rhs.tag()
+                    )));
+                }
+            }
+        }
+
+        //println!("{} <= {}", self, rhs);
+        // Delegate actual comparison to PartialOrd/PartialEq implementation
+        Ok(Object::bool(self <= rhs))
+    }
+
     impl_cmp!(eq, ==);
     impl_cmp!(neq, !=);
 
@@ -1083,7 +1102,7 @@ impl Display for Type {
 #[inline]
 fn allocate(layout: Layout) -> *mut u8 {
     // Safety: we only call this function for types with a non-zero layout
-    let ptr = unsafe { Allocator.alloc(layout) };
+    let ptr = unsafe { std::alloc::alloc(layout) };
 
     if ptr.is_null() {
         handle_alloc_error(layout);

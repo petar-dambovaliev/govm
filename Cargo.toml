@@ -8,7 +8,7 @@ strum = {version = "0.24.1", features = ["derive"]}
 unic-ucd-category = {version = "0.9.0"}
 ahash = "0.8.3"
 num = "0.4.1"
-bdwgc-alloc = {version = "0.6.6", features = ["cmake"], default-features = false}
+bdwgc-alloc = {git = "https://github.com/peter7891/bdwgc-alloc", branch = "main", features = ["cmake"], default-features = false}
 
 [debug]
 panic = "unwind"

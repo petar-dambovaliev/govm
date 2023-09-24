@@ -446,7 +446,7 @@ impl VM {
             // println!(
             //     "instr=>{:#?} const6=>{}",
             //     self.peek_next(),
-            //     constants[6].as_isize()
+            //     constants[7].as_isize()
             // );
             match self.next() {
                 OpCode::TypedNull => {
@@ -517,6 +517,7 @@ impl VM {
                 }
                 OpCode::IncLocal => {
                     let id = self.read_u16();
+                    //println!("{:#?}-{:#?}-{:#?}", id, self.bp, self.stack);
                     let val = &mut self.stack[self.bp as usize + id as usize];
                     let new_val = val.as_int_mut();
                     new_val.value += 1;
@@ -697,10 +698,13 @@ impl VM {
                 }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
-                    //println!("GetLocal-before: {:#?}", self.stack);
+
+                    if idx == 1 {
+                        //panic!("getlocal: id {:#?} value {:#?}", idx + self.bp, self.stack);
+                    }
                     //println!("id: {} bp: {}", idx, self.bp);
                     let value = self.get_local(idx);
-                    //println!("getlocal: id {:#?} value {:#?}", idx + self.bp, self.stack);
+                    //
                     self.push(value);
                     //println!("GetLocal-after: {:#?}", self.stack);
                 }
@@ -814,6 +818,7 @@ impl VM {
 
                     let pos = self.read_u16();
                     if !condition.as_bool() {
+                        //panic!("{:#?}", self.stack);
                         self.jump(pos);
                     }
                 }
@@ -929,6 +934,10 @@ impl VM {
                     }
                     args.reverse();
 
+                    // if builtin != 13 {
+                    //     println!("{:#?}", args);
+                    // }
+
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
                     let result = builtin::call(builtin, &args)?;
                     self.push(result);
@@ -975,18 +984,26 @@ impl VM {
                 OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
                 OpCode::Ref => {
                     let val = self.pop();
-                    self.push(Object::ref_t(val));
-                    //println!("{:#?}", self.stack);
+                    /// here is the bug
+                    let r = Object::ref_t(val);
+                    ////
+                    self.push(r);
                 }
                 OpCode::Array => {
                     let length = self.read_u16();
+                    let is_slice = self.read_u16() == 1;
                     let mut vec = Vec::with_capacity(length as usize);
                     for _ in 0..length {
                         vec.push(self.pop());
                     }
                     vec.reverse();
-                    // TODO: Re-use vector allocation here
-                    let obj = Object::array(vec);
+
+                    let obj = if is_slice {
+                        Slice::from_vec(vec)
+                    } else {
+                        Object::array(vec)
+                    };
+
                     self.push(obj);
                 }
                 OpCode::Map => {
@@ -1019,7 +1036,11 @@ impl VM {
                         strct.method_dispatch.clone(),
                         strct.is_anonymous,
                     );
+                    // remove struct const from the stack
+                    self.pop();
+
                     self.push(obj);
+                    //println!("{:#?}", self.stack);
                 }
                 OpCode::IndexGet => {
                     let index = self.pop();

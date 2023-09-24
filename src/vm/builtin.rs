@@ -210,7 +210,7 @@ fn call_append(args: &[Object]) -> Result<Object, Error> {
                 collection.as_slice_mut().push(*el);
             }
         }
-        _ => unimplemented!(),
+        k => unimplemented!("append: {:#?}", k),
     };
 
     Ok(*collection)

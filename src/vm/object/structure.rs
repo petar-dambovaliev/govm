@@ -55,10 +55,6 @@ impl Interface {
         ptr.get::<Self>()
     }
 
-    // pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut Self {
-    //     ptr.get_mut::<Self>()
-    // }
-
     pub fn object(name: String, methods: Vec<String>, value: Object) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Interface);
         let obj = unsafe { ptr.get_mut::<Self>() };
@@ -81,10 +77,6 @@ impl TypeValue {
     pub(crate) unsafe fn read(ptr: &Object) -> &Self {
         ptr.get::<Self>()
     }
-
-    // pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut Self {
-    //     ptr.get_mut::<Self>()
-    // }
 
     pub fn object(value: Type, inner_k: Option<Object>) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Type);

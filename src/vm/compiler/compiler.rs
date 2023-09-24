@@ -9,7 +9,8 @@ use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
-    Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext, JUMP_PLACEHOLDER,
+    bytecode_to_human, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
+    JUMP_PLACEHOLDER,
 };
 
 use crate::vm::object::function::Closure;
@@ -1027,7 +1028,6 @@ impl Compiler {
                 if self.last_instruction_is(OpCode::Pop) {
                     self.remove_last_instruction();
                     if let Some(post) = &forstmt.post {
-                        //panic!("{:#?}", post);
                         post_op_pos = self.instructions.len();
                         self.compile_statement(post.as_ref())?;
                     }
@@ -1036,7 +1036,7 @@ impl Compiler {
                         post_op_pos = self.instructions.len();
                         self.compile_statement(post.as_ref())?;
                     }
-                    self.emit_opcode(OpCode::Null);
+                    //self.emit_opcode(OpCode::Null);
                 }
 
                 // emit jump instruction to loop condition
@@ -1555,8 +1555,9 @@ impl Compiler {
                     },
                 };
 
-                self.emit_opcode(setop);
-                self.emit_u16(index);
+                //todo
+                // self.emit_opcode(setop);
+                // self.emit_u16(index);
 
                 if !t.strip_var().is_numeric() {
                     panic!("cannot use inc/dec operators on {:#?}", t);
@@ -2843,17 +2844,7 @@ impl Compiler {
                     //todo assert length
                     //if ta.len != clit.val.values.len() { }
 
-                    let inner_t = match ta.typ.as_ref() {
-                        Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!(),
-                    };
-
-                    let slice_t = self
-                        .symbols
-                        .resolve(inner_t.name.as_str())
-                        .unwrap()
-                        .as_local()
-                        .1;
+                    let slice_t = self.expression_to_define_type(ta.typ.as_ref());
                     let mut el_t = None;
                     let key_required = clit
                         .val
@@ -2884,6 +2875,7 @@ impl Compiler {
                     }
                     self.emit_opcode(OpCode::Array);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    self.emit_u16(1);
                     return Ok(DefineType::Array {
                         inner_type: Box::new(slice_t),
                         len: clit.val.values.len(),
@@ -3059,6 +3051,8 @@ impl Compiler {
                     }
                     self.emit_opcode(OpCode::Array);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
+                    self.emit_u16(0);
+
                     return Ok(DefineType::Array {
                         inner_type: Box::new(slice_t),
                         len: clit.val.values.len(),

@@ -105,7 +105,6 @@ impl OpCode {
             OpCode::Const
             | OpCode::Jump
             | OpCode::JumpIfFalse
-            | OpCode::Array
             | OpCode::Map
             | OpCode::ReturnValue
             | OpCode::Struct
@@ -136,7 +135,8 @@ impl OpCode {
             | OpCode::SwapLG
             | OpCode::SwapGG
             | OpCode::SwapGL
-            | OpCode::DynamicDispatch => &[2, 2],
+            | OpCode::DynamicDispatch
+            | OpCode::Array => &[2, 2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
