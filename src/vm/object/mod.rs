@@ -44,16 +44,13 @@ const MIN_INT: isize = isize::MIN;
 
 // ARM uses 49 bits and x86-64 uses 48 bits (some newer cpus have opt-in using 57 bits)
 // we have at least 7 bits to work with
-// this is 6 bits and it supports up to 32 variants
+// this is 5 bits and it supports up to 32 variants
 #[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
 #[repr(u8)]
 pub enum Type {
-    // The types below are all stored directly inside the pointer
     Null = 0b00000,
     Bool,
     Function,
-
-    // The types below are all heap-allocated
     Int,
     Byte,
     I8,

@@ -24,21 +24,37 @@ type User struct {
 	name string
 }
 
-func main() {
-    //a := []*User{}
-     
-	for i := 0; i < 9; i++ {
-	    for j := 0; j < 999999; j++ {
-	        a := &User{
-		        name: "john",
-	        }
-		    // a = append(a, &User{
-		    //     name: "john",
-	        // })
-	        //println(j)
-	    }
-	    println(i)
+func NewUser() *User {
+    return &User {
+        name: "john",
 	}
+}
+
+func Foo() {
+    a := []*User{}
+    
+	for i := 0; i < 4; i++ {
+	    for j := 0; j < 999999; j++ { 
+		    a = append(a, NewUser())
+	    }
+	    println(len(a))
+	    a = []*User{}
+	}
+}
+
+func l() {
+    println("loop")
+    for i := 0; i < 10000; i++ {
+	    for j := 0; j < 999990; j++ { 
+		    
+	    }
+	}
+}
+
+func main() {
+    Foo()
+    Foo()
+	l()
 }
     "#,
     );

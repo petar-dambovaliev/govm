@@ -934,9 +934,7 @@ impl VM {
                     }
                     args.reverse();
 
-                    // if builtin != 13 {
-                    //     println!("{:#?}", args);
-                    // }
+                    //panic!("{:#?}", self.stack);
 
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
                     let result = builtin::call(builtin, &args)?;

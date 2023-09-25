@@ -941,7 +941,7 @@ impl Compiler {
         // if block statement does not contain any other statements or expressions
         // simply push a NULL onto the stack
         if block.is_empty() {
-            self.emit_opcode(OpCode::Null);
+            //self.emit_opcode(OpCode::Null);
             return Ok(Some(false));
         }
 
