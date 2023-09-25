@@ -2378,7 +2378,7 @@ impl Compiler {
                             //panic!("{:#?}", 123);
                             self.emit_opcode(OpCode::Pop);
                         }
-                        return Ok(first.unwrap());
+                        return Ok(first.unwrap_or(DefineType::Null));
                     }
                 }
 

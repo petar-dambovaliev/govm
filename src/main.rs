@@ -53,7 +53,6 @@ func l() {
 
 func main() {
     Foo()
-    Foo()
 	l()
 }
     "#,

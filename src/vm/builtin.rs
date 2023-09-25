@@ -5,6 +5,7 @@ use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
+use bdwgc_alloc::Allocator;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Copy, Clone)]
@@ -27,12 +28,18 @@ pub enum Builtin {
     Copy,
     Delete,
     Clear,
+    GcCollect,
 }
 
 impl Builtin {
     pub fn is_void(&self) -> bool {
         match &self {
-            Self::Print | Self::Println | Self::Copy | Self::Delete | Self::Clear => true,
+            Self::Print
+            | Self::Println
+            | Self::Copy
+            | Self::Delete
+            | Self::Clear
+            | Self::GcCollect => true,
             _ => false,
         }
     }
@@ -57,6 +64,7 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "copy" => Some(Builtin::Copy),
         "delete" => Some(Builtin::Delete),
         "clear" => Some(Builtin::Clear),
+        "gccollect" => Some(Builtin::GcCollect),
         _ => None,
     }
 }
@@ -106,8 +114,19 @@ pub fn call(builtin: Builtin, args: &[Object]) -> Result<Object, Error> {
         Builtin::Copy => call_copy(args),
         Builtin::Delete => call_delete(args),
         Builtin::Clear => call_clear(args),
+        Builtin::GcCollect => call_collect(args),
         _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_collect(args: &[Object]) -> Result<Object, Error> {
+    assert_eq!(args.len(), 0);
+
+    println!("collecting");
+    Allocator::force_collect();
+    println!("collected");
+
+    Ok(Object::null())
 }
 
 fn call_clear(args: &[Object]) -> Result<Object, Error> {
