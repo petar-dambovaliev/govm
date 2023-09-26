@@ -23,33 +23,27 @@ package main
 
 import "fmt"
 
+type rect struct {
+    width, height int
+}
+
+func (r *rect) perim() int {
+    return 2*r.width + 2*r.height
+}
+
+func (r rect) area() int {
+    return r.width * r.height
+}
+
 func main() {
+    r := rect{width: 10, height: 5}
 
-    nums := []int{2, 3, 4}
-    sum := 0
-    for _, num := range nums {
-        sum += num
-    }
-    println("sum:", sum)
-
-    for i, num := range nums {
-        if num == 3 {
-            println("index:", i)
-        }
-    }
+    println("area: ", r.area())
+    println("perim:", r.perim())
     
-    kvs := map[string]string{"a": "apple", "b": "banana"}
-    for k, v := range kvs {
-        println("%s -> %s\n", k, v)
-    }
-    
-    for k := range kvs {
-        println("key:", k)
-    }
-    
-    for i, c := range "go" {
-        println(i, c)
-    }
+    rp := &r
+    println("area: ", rp.area())
+    println("perim:", rp.perim())
 }
     "#,
     );

@@ -83,6 +83,7 @@ pub(crate) enum OpCode {
     PanicIfFalse,
     SetDefault,
     IncLocal,
+    IncCaptured,
     IncGlobal,
     Slice,
     Variadic,
@@ -111,6 +112,7 @@ impl OpCode {
             | OpCode::Struct
             | OpCode::Upcast
             | OpCode::IncLocal
+            | OpCode::IncCaptured
             | OpCode::IncGlobal
             | OpCode::Variadic
             | OpCode::TypedNull => &[2],
@@ -403,6 +405,7 @@ impl Display for OpCode {
             Self::PanicIfFalse => "PanicIfFalse",
             Self::SetDefault => "SetDefault",
             Self::IncLocal => "IncLocal",
+            Self::IncCaptured => "IncCaptured",
             Self::IncGlobal => "IncGlobal",
             Self::Slice => "Slice",
             Self::Variadic => "Variadic",

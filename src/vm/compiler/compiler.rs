@@ -627,7 +627,6 @@ impl Compiler {
                             methods: r_methods,
                         },
                     );
-                    println!("update");
                     assert!(updated);
                 }
 
@@ -1573,19 +1572,13 @@ impl Compiler {
 
                 let r = self.symbols.resolve(&name.name).unwrap();
 
-                let (index, setop, incop, t) = match r {
-                    Resolved::Enclosed((s, t)) => {
-                        (s.index, OpCode::GetCaptured, OpCode::IncLocal, t)
-                    }
+                let (index, incop, t) = match r {
+                    Resolved::Enclosed((s, t)) => (s.index, OpCode::IncCaptured, t),
                     Resolved::Local((symbol, t)) => match symbol.scope {
-                        Scope::Local => (symbol.index, OpCode::SetLocal, OpCode::IncLocal, t),
-                        Scope::Global => (symbol.index, OpCode::SetGlobal, OpCode::IncGlobal, t),
+                        Scope::Local => (symbol.index, OpCode::IncLocal, t),
+                        Scope::Global => (symbol.index, OpCode::IncGlobal, t),
                     },
                 };
-
-                //todo
-                // self.emit_opcode(setop);
-                // self.emit_u16(index);
 
                 if !t.strip_var().is_numeric() {
                     panic!("cannot use inc/dec operators on {:#?}", t);
@@ -2181,7 +2174,13 @@ impl Compiler {
     }
 
     fn make_method_name(dt: DefineType, f_name: &str) -> String {
-        format!("0x{:#?}{}", dt, f_name)
+        let p = if dt.is_struct() {
+            let (name, _, _) = dt.as_struct().unwrap();
+            name
+        } else {
+            format!("{:#?}", dt)
+        };
+        format!("0x{:#?}{}", p, f_name)
     }
 
     fn compile_const_var_infix_expression(

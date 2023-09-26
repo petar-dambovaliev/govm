@@ -522,6 +522,14 @@ impl VM {
                         i => unreachable!("{:#?}", i),
                     }
                 }
+                OpCode::IncCaptured => {
+                    let id = self.read_u16();
+                    let closure = self.closure_ctx.last_mut().unwrap().as_closure_mut();
+
+                    let val = unsafe { closure.captured.get_unchecked_mut(id as usize) };
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
+                }
                 OpCode::IncLocal => {
                     let id = self.read_u16();
                     //println!("{:#?}-{:#?}-{:#?}", id, self.bp, self.stack);

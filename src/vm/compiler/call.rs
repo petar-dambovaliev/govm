@@ -1,4 +1,4 @@
-use crate::parser::ast::{Call, Expression};
+use crate::parser::ast::{Call, Expression, Selector};
 use crate::vm::builtin::signature_from_t;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::symbols::DefineType;
@@ -46,46 +46,55 @@ impl CallType {
 
                 let method_name = sel.sel.name.to_string();
 
-                match sellt.clone() {
-                    DefineType::Interface { methods, .. } => {
-                        let m = find_method(&method_name, methods);
+                fn find_sel(
+                    c: &mut Compiler,
+                    sel: &Selector,
+                    dt: DefineType,
+                    method_name: String,
+                ) -> CallType {
+                    match dt.clone() {
+                        DefineType::Ref(inner) => find_sel(c, sel, *inner, method_name),
+                        DefineType::Interface { methods, .. } => {
+                            let m = find_method(&method_name, methods);
 
-                        match m {
-                            Some((m, i)) => Self::DynamicDispatch {
-                                method_index: i,
-                                method_dt: m,
-                                iface_expr: *sel.x.clone(),
-                            },
-                            None => panic!("interface method not found"),
-                        }
-                    }
-                    DefineType::Struct { name, .. } => {
-                        let (_, _, methods) = c
-                            .symbols
-                            .resolve(&name)
-                            .unwrap()
-                            .get_type()
-                            .as_struct()
-                            .unwrap();
-
-                        match find_method(&method_name, methods) {
-                            Some((m, _)) => {
-                                return Self::Method {
-                                    mangled_name: Self::make_method_name(
-                                        sellt.clone(),
-                                        &method_name,
-                                    ),
-                                    method_name,
-                                    struct_expr: *sel.x.clone(),
+                            match m {
+                                Some((m, i)) => CallType::DynamicDispatch {
+                                    method_index: i,
                                     method_dt: m,
-                                    struct_dt: sellt.clone(),
-                                };
+                                    iface_expr: *sel.x.clone(),
+                                },
+                                None => panic!("interface method not found"),
                             }
-                            None => panic!("struct method not found"),
                         }
+                        DefineType::Struct { name, .. } => {
+                            let (_, _, methods) = c
+                                .symbols
+                                .resolve(&name)
+                                .unwrap()
+                                .get_type()
+                                .as_struct()
+                                .unwrap();
+
+                            match find_method(&method_name, methods) {
+                                Some((m, _)) => {
+                                    return CallType::Method {
+                                        mangled_name: CallType::make_method_name(
+                                            dt.clone(),
+                                            &method_name,
+                                        ),
+                                        method_name,
+                                        struct_expr: *sel.x.clone(),
+                                        method_dt: m,
+                                        struct_dt: dt.clone(),
+                                    };
+                                }
+                                None => panic!("struct method not found"),
+                            }
+                        }
+                        _ => unimplemented!("call selector: {:#?}", dt),
                     }
-                    _ => unimplemented!("call selector: {:#?}", sellt),
                 }
+                find_sel(c, sel, sellt.clone(), method_name)
             }
             Expression::Ident(id) => {
                 let mut t = c
@@ -112,6 +121,12 @@ impl CallType {
         }
     }
     fn make_method_name(dt: DefineType, f_name: &str) -> String {
-        format!("0x{:#?}{}", dt, f_name)
+        let p = if dt.is_struct() {
+            let (name, _, _) = dt.as_struct().unwrap();
+            name
+        } else {
+            format!("{:#?}", dt)
+        };
+        format!("0x{:#?}{}", p, f_name)
     }
 }
