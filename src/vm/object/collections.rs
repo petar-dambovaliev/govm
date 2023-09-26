@@ -146,7 +146,7 @@ impl ObjIter {
         match obj.tag() {
             Type::Map => Self::from_map(obj.as_map().clone()),
             Type::Array => Self::from_vec(obj.as_vec().clone()),
-            Type::Slice => Self::from_vec(obj.as_vec().clone()),
+            Type::Slice => Self::from_vec(unsafe { Slice::read(&obj).clone() }),
             Type::String => Self::from_str(obj),
             Type::Variadic => {
                 let v = unsafe { Variadic::read(&obj) };

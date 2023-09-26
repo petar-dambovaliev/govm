@@ -21,54 +21,35 @@ fn main() {
         r#"
 package main
 
-import (
-    "fmt"
-    "slices"
-)
+import "fmt"
 
 func main() {
 
-    var s []string
-    
-    println("uninit:", s, s == nil, len(s) == 0)
-    
-    s = make([]string, 3)
-    println("emp:", s, "len:", len(s), "cap:", cap(s))
-    
-    s[0] = "a"
-    s[1] = "b"
-    s[2] = "c"
-    println("set:", s)
-    println("get:", s[2])
-    
-    println("len:", len(s))
-    
-    s = append(s, "d")
-    s = append(s, "e", "f")
-    println("apd:", s)
-    
-    c := make([]string, len(s))
-    copy(c, s)
-    println("cpy:", c)
-    
-    l := s[2:5]
-    println("sl1:", l)
-    
-    l = s[:5]
-    println("sl2:", l)
-    
-    l = s[2:]
-    println("sl3:", l)
-    
-    twoD := make([][]int, 3)
-    for i := 0; i < 3; i++ {
-        innerLen := i + 1
-        twoD[i] = make([]int, innerLen)
-        for j := 0; j < innerLen; j++ {
-            twoD[i][j] = i + j
+    nums := []int{2, 3, 4}
+    sum := 0
+    for _, num := range nums {
+        sum += num
+    }
+    println("sum:", sum)
+
+    for i, num := range nums {
+        if num == 3 {
+            println("index:", i)
         }
     }
-    println("2d: ", twoD)
+    
+    kvs := map[string]string{"a": "apple", "b": "banana"}
+    for k, v := range kvs {
+        println("%s -> %s\n", k, v)
+    }
+    
+    for k := range kvs {
+        println("key:", k)
+    }
+    
+    for i, c := range "go" {
+        println(i, c)
+    }
 }
     "#,
     );

@@ -2903,7 +2903,14 @@ impl Compiler {
                     }
                     self.emit_opcode(OpCode::MakeSlice);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
-                    return Ok(DefineType::Slice(Box::new(slice_t)));
+
+                    let rt = DefineType::Slice(Box::new(slice_t));
+
+                    let obj = rt.clone().to_object();
+                    let cid = self.add_constant(obj);
+                    self.emit_u16(cid);
+
+                    return Ok(rt);
                 }
 
                 //struct
@@ -3194,7 +3201,11 @@ impl Compiler {
                     }
                 }
                 //println!("{:#?} {:#?}", t, ind);
-                let i = ind.index.as_int_lit().unwrap_or_default() as usize;
+                let i = if ind.index.is_int_lit() {
+                    ind.index.as_int_lit().unwrap_or_default() as usize
+                } else {
+                    0
+                };
                 let rt = check_t(i, t.strip_var());
 
                 return Ok(rt);

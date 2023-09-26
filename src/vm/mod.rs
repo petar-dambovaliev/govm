@@ -991,10 +991,11 @@ impl VM {
                     self.push(r);
                 }
                 OpCode::MakeSlice => {
+                    let length = self.read_u16();
                     let ctv_id = self.read_u16();
+
                     let ctv = constants[ctv_id as usize].as_type_value().clone();
 
-                    let length = self.read_u16();
                     let mut vec = Vec::with_capacity(length as usize);
                     for _ in 0..length {
                         vec.push(self.pop());
