@@ -138,13 +138,14 @@ impl OpCode {
             | OpCode::SwapGL
             | OpCode::DynamicDispatch
             | OpCode::MakeArray
-            | OpCode::MakeSlice => &[2, 2],
+            | OpCode::MakeSlice
+            | OpCode::Slice => &[2, 2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call | OpCode::Slice => &[1],
+            OpCode::Call => &[1],
 
             OpCode::SetLocal
             | OpCode::GetGlobal

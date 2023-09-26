@@ -483,8 +483,9 @@ impl VM {
                     }
                 }
                 OpCode::Slice => {
+                    let num = self.read_u16();
                     let ctv_id = self.read_u16();
-                    let num = self.read_u8();
+
                     let ctv = constants[ctv_id as usize].as_type_value().clone();
 
                     match num {

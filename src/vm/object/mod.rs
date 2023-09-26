@@ -645,6 +645,8 @@ impl PartialEq for Object {
                 let reference = other.as_ref();
                 return reference.value.tag() == Type::Null;
             }
+            (Type::Slice, Type::Null) => return Slice::is_null(self),
+            (Type::Null, Type::Slice) => return Slice::is_null(other),
             _ => {
                 if self.tag() != other.tag() {
                     return false;
@@ -731,6 +733,12 @@ impl PartialEq for Object {
             Type::Float64 => self.as_float64() == other.as_float64(),
             Type::Float => unsafe { self.as_float() == other.as_float() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
+            Type::Type => {
+                let left = self.as_type_value();
+                let right = other.as_type_value();
+
+                left == right
+            }
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
             Type::Array
             | Type::Ref
@@ -740,7 +748,6 @@ impl PartialEq for Object {
             | Type::Rune
             | Type::Closure
             | Type::Interface
-            | Type::Type
             | Type::Slice
             | Type::Variadic => {
                 unimplemented!(
@@ -885,8 +892,6 @@ macro_rules! impl_cmp {
                 }
             }
 
-
-            //println!("{} < {}", self, rhs);
             // Delegate actual comparison to PartialOrd/PartialEq implementation
             Ok(Object::bool(self $op rhs,))
         }
@@ -924,7 +929,26 @@ impl Object {
         Ok(Object::bool(self <= rhs))
     }
 
-    impl_cmp!(eq, ==);
+    //impl_cmp!(eq, ==);
+    #[inline(always)]
+    pub fn eq(self, rhs: Self) -> Result<Object, Error> {
+        match (self.tag(), rhs.tag()) {
+            (Type::Ref, Type::Null) | (Type::Null, Type::Ref) => {}
+            (Type::Slice, Type::Null) | (Type::Null, Type::Slice) => {}
+            _ => {
+                if self.tag() != rhs.tag() {
+                    return Err(Error::TypeError(format!(
+                        "invalid types {} and {}",
+                        self.tag(),
+                        rhs.tag()
+                    )));
+                }
+            }
+        }
+
+        // Delegate actual comparison to PartialOrd/PartialEq implementation
+        Ok(Object::bool(self == rhs))
+    }
     impl_cmp!(neq, !=);
 
     impl_logical!(and, &&);

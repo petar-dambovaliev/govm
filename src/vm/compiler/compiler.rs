@@ -461,7 +461,7 @@ impl Compiler {
                                 }
                             }
 
-                            if rt.is_nil() && (dtp.is_ref() || dtp.is_func()) {
+                            if rt.is_nil() && (dtp.is_ref() || dtp.is_func() || dtp.is_slice()) {
                                 rt = dtp.clone();
                             }
                         }
@@ -3190,12 +3190,11 @@ impl Compiler {
                         DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
                         DefineType::Struct { fields, .. } => fields[i].get_type(),
                         DefineType::Ref(r) => DefineType::Ref(Box::new(check_t(i, *r))),
-                        k => unimplemented!("{:#?}", k),
+                        k => unimplemented!("i: {:#?} k: {:#?}", i, k),
                     }
                 }
-
+                //println!("{:#?} {:#?}", t, ind);
                 let i = ind.index.as_int_lit().unwrap_or_default() as usize;
-
                 let rt = check_t(i, t.strip_var());
 
                 return Ok(rt);
@@ -3544,7 +3543,7 @@ impl Compiler {
                 }
 
                 self.emit_opcode(OpCode::Slice);
-                self.emit_u8(index);
+                self.emit_u16(index);
 
                 let obj = t.to_object();
                 let type_value = obj.as_type_value();

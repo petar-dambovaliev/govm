@@ -136,7 +136,9 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
-    pub fn to_object(self) -> Object {
+    pub fn to_object(mut self) -> Object {
+        self = self.strip_var();
+
         match self {
             DefineType::Type(dt, _t) => match *dt.clone() {
                 DefineType::String => TypeValue::object(Type::String, None),

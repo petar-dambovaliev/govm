@@ -67,6 +67,9 @@ pub struct Slice {
 }
 
 impl Slice {
+    pub(crate) fn is_null(ptr: &Object) -> bool {
+        unsafe { ptr.get::<Self>().is_null }
+    }
     pub(crate) fn null(type_value: TypeValue) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Slice);
         let obj = unsafe { ptr.get_mut::<Self>() };
