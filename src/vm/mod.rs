@@ -450,10 +450,11 @@ impl VM {
             // );
             match self.next() {
                 OpCode::TypedNull => {
-                    let _p = self.pop();
-                    //println!("popped: {:#?} {:#?}", p, p.as_ptr());
                     let num = self.read_u16() as usize;
+                    let _p = self.pop();
+                    //println!("popped: {:#?}", p);
                     let c = constants[num];
+
                     self.push(c.typed_null());
                 }
                 OpCode::Variadic => {
@@ -482,18 +483,21 @@ impl VM {
                     }
                 }
                 OpCode::Slice => {
+                    let ctv_id = self.read_u16();
                     let num = self.read_u8();
+                    let ctv = constants[ctv_id as usize].as_type_value().clone();
 
                     match num {
                         0 => {
                             let slice = self.pop();
-                            self.push(Slice::from_slice(&slice.as_slice()[..]));
+                            self.push(Slice::from_slice(&slice.as_slice()[..], ctv));
                         }
                         1 => {
                             let start = self.pop();
                             let slice = self.pop();
                             self.push(Slice::from_slice(
                                 &slice.as_slice()[start.as_isize() as usize..],
+                                ctv,
                             ));
                         }
                         2 => {
@@ -501,6 +505,7 @@ impl VM {
                             let slice = self.pop();
                             self.push(Slice::from_slice(
                                 &slice.as_slice()[..end.as_isize() as usize],
+                                ctv,
                             ));
                         }
                         3 => {
@@ -510,6 +515,7 @@ impl VM {
                             self.push(Slice::from_slice(
                                 &slice.as_slice()
                                     [start.as_isize() as usize..end.as_isize() as usize],
+                                ctv,
                             ));
                         }
                         i => unreachable!("{:#?}", i),
@@ -685,7 +691,7 @@ impl VM {
                     let idx = self.read_u16();
                     let value = self.pop();
                     // if idx == 0 {
-                    //     println!("setlocal: {:#?}", value.as_ptr(),);
+                    //     println!("setlocal: {:#?}", value);
                     // }
                     // println!(
                     //     "setlocal: {:#?} to {:#?} {:#?}",
@@ -699,10 +705,7 @@ impl VM {
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
 
-                    if idx == 1 {
-                        //panic!("getlocal: id {:#?} value {:#?}", idx + self.bp, self.stack);
-                    }
-                    //println!("id: {} bp: {}", idx, self.bp);
+                    //println!("id: {} bp: {} stack: {:#?}", idx, self.bp, self.stack);
                     let value = self.get_local(idx);
                     //
                     self.push(value);
@@ -920,6 +923,7 @@ impl VM {
                     self.pushframe(ip, base_pointer);
                 }
                 OpCode::CallBuiltin => {
+                    //panic!("{:#?}", self.stack);
                     //todo
                     //this doesn't need to move memory
                     // change builtin call to accept a reversed iterator
@@ -933,8 +937,6 @@ impl VM {
                         args.push(self.pop());
                     }
                     args.reverse();
-
-                    //panic!("{:#?}", self.stack);
 
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
                     let result = builtin::call(builtin, &args)?;
@@ -987,22 +989,28 @@ impl VM {
                     ////
                     self.push(r);
                 }
-                OpCode::Array => {
+                OpCode::MakeSlice => {
+                    let ctv_id = self.read_u16();
+                    let ctv = constants[ctv_id as usize].as_type_value().clone();
+
                     let length = self.read_u16();
-                    let is_slice = self.read_u16() == 1;
                     let mut vec = Vec::with_capacity(length as usize);
                     for _ in 0..length {
                         vec.push(self.pop());
                     }
                     vec.reverse();
 
-                    let obj = if is_slice {
-                        Slice::from_vec(vec)
-                    } else {
-                        Object::array(vec)
-                    };
+                    self.push(Slice::from_vec(vec, ctv));
+                }
+                OpCode::MakeArray => {
+                    let length = self.read_u16();
+                    let mut vec = Vec::with_capacity(length as usize);
+                    for _ in 0..length {
+                        vec.push(self.pop());
+                    }
+                    vec.reverse();
 
-                    self.push(obj);
+                    self.push(Object::array(vec));
                 }
                 OpCode::Map => {
                     let length = self.read_u16();

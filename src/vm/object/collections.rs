@@ -1,4 +1,5 @@
 use crate::vm::object::rune::Rune;
+use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{allocate, Object, Type};
 use std::alloc::Layout;
 use std::collections::btree_map::IntoIter;
@@ -61,23 +62,35 @@ impl Array {
 #[repr(C)]
 pub struct Slice {
     pub(crate) value: Vec<Object>,
+    pub(crate) type_value: TypeValue,
+    pub(crate) is_null: bool,
 }
 
 impl Slice {
+    pub(crate) fn null(type_value: TypeValue) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Slice);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+
+        obj.is_null = true;
+        init!(obj.value => vec![]);
+        init!(obj.type_value => type_value);
+        ptr
+    }
     pub(crate) unsafe fn read(ptr: &Object) -> &Vec<Object> {
         ptr.get::<Self>().value.as_ref()
     }
 
-    pub(crate) fn from_vec(vec: Vec<Object>) -> Object {
+    pub(crate) fn from_vec(vec: Vec<Object>, type_value: TypeValue) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Slice);
         let obj = unsafe { ptr.get_mut::<Self>() };
 
         init!(obj.value => vec);
+        init!(obj.type_value => type_value);
         ptr
     }
 
-    pub(crate) fn from_slice(slice: &[Object]) -> Object {
-        Self::from_vec(slice.to_vec())
+    pub(crate) fn from_slice(slice: &[Object], type_value: TypeValue) -> Object {
+        Self::from_vec(slice.to_vec(), type_value)
     }
 }
 

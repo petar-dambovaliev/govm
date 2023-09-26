@@ -53,7 +53,8 @@ pub(crate) enum OpCode {
     MultiplyLocalConst,
     DivideLocalConst,
     ModuloLocalConst,
-    Array,
+    MakeArray,
+    MakeSlice,
     IndexGet,
     IndexSet,
     Ref,
@@ -136,7 +137,8 @@ impl OpCode {
             | OpCode::SwapGG
             | OpCode::SwapGL
             | OpCode::DynamicDispatch
-            | OpCode::Array => &[2, 2],
+            | OpCode::MakeArray
+            | OpCode::MakeSlice => &[2, 2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
@@ -371,7 +373,7 @@ impl Display for OpCode {
             Self::MultiplyLocalConst => "MultiplyLocalConst",
             Self::DivideLocalConst => "DivideLocalConst",
             Self::ModuloLocalConst => "ModuloLocalConst",
-            Self::Array => "Array",
+            Self::MakeArray => "Array",
             Self::Ref => "Ref",
             Self::IndexGet => "IndexGet",
             Self::IndexSet => "IndexSet",
@@ -404,6 +406,7 @@ impl Display for OpCode {
             Self::Slice => "Slice",
             Self::Variadic => "Variadic",
             Self::TypedNull => "TypedNull",
+            Self::MakeSlice => "MakeSlice",
             Self::Halt => "Halt",
         };
         f.write_str(s)

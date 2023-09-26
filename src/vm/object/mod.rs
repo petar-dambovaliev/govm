@@ -133,15 +133,33 @@ unsafe impl Sync for Object {}
 unsafe impl Send for Object {}
 
 impl Object {
+    pub fn as_type_value(&self) -> &TypeValue {
+        assert_eq!(self.tag(), Type::Type);
+
+        unsafe { TypeValue::read(&self) }
+    }
     pub fn typed_null(&self) -> Object {
         match self.tag() {
             Type::Closure => Closure::null(),
+            Type::Type => {
+                let tv = self.as_type_value();
+                match tv.value {
+                    Type::Slice => Slice::null(tv.inner_k.unwrap().as_type_value().clone()),
+                    _ => unimplemented!(),
+                }
+            }
             t => unimplemented!("typed_null: {:#?}", t),
         }
     }
+
+    // fn typed_null_slice(tv: TypeValue) -> Object {
+    //     Slice::from_vec()
+    // }
+
     pub(crate) fn deep_copy(&self) -> Object {
         match self.tag() {
             Type::Int => Int::from_isize(self.as_int().value),
+            Type::Float => Float::from_f64(self.as_float64()),
             Type::Interface => {
                 let interface = unsafe { Interface::read(self) };
                 let inner = interface.value.deep_copy();

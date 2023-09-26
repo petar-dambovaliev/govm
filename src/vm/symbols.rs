@@ -466,7 +466,14 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Array { .. } => true,
+            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Slice { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_slice(&self) -> bool {
+        match &self {
+            Self::Slice { .. } => true,
             _ => false,
         }
     }

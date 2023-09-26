@@ -66,6 +66,7 @@ impl Interface {
     }
 }
 
+#[derive(PartialEq, Clone, Debug)]
 #[repr(C)]
 pub struct TypeValue {
     pub(crate) value: Type,

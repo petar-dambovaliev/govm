@@ -298,7 +298,7 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
                 v.push(def_value);
             }
 
-            Slice::from_vec(v)
+            Slice::from_vec(v, tv.clone())
         }
         Type::Map => {
             let _k = unsafe { TypeValue::read(&tv.inner_k.unwrap()) };

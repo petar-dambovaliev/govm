@@ -110,64 +110,83 @@ impl Compiler {
             (
                 "int",
                 DefineType::Type(Box::new(DefineType::Int), Type::Int),
+                Type::Int,
             ),
             (
                 "int8",
                 DefineType::Type(Box::new(DefineType::Int8), Type::I8),
+                Type::I8,
             ),
             (
                 "int16",
                 DefineType::Type(Box::new(DefineType::Int16), Type::I16),
+                Type::I16,
             ),
             (
                 "int32",
                 DefineType::Type(Box::new(DefineType::Int32), Type::I32),
+                Type::I32,
             ),
             (
                 "int64",
                 DefineType::Type(Box::new(DefineType::Int64), Type::I64),
+                Type::I64,
             ),
             (
                 "uint",
                 DefineType::Type(Box::new(DefineType::Uint), Type::UI),
+                Type::UI,
             ),
             (
                 "uint8",
                 DefineType::Type(Box::new(DefineType::Uint8), Type::UI8),
+                Type::UI8,
             ),
             (
                 "uint16",
                 DefineType::Type(Box::new(DefineType::Uint16), Type::UI16),
+                Type::UI16,
             ),
             (
                 "uint32",
                 DefineType::Type(Box::new(DefineType::Uint32), Type::UI32),
+                Type::UI32,
             ),
             (
                 "uint64",
                 DefineType::Type(Box::new(DefineType::Uint64), Type::UI64),
+                Type::UI64,
             ),
             (
                 "byte",
                 DefineType::Type(Box::new(DefineType::Byte), Type::Byte),
+                Type::Byte,
             ),
             (
                 "float",
                 DefineType::Type(Box::new(DefineType::Float), Type::Float),
+                Type::Float,
             ),
             (
                 "float32",
                 DefineType::Type(Box::new(DefineType::Float32), Type::Float32),
+                Type::Float32,
             ),
             (
                 "float64",
                 DefineType::Type(Box::new(DefineType::Float64), Type::Float64),
+                Type::Float64,
             ),
         ];
 
         for number in numbers {
-            let _ = self.symbols.define(number.0, number.1, false);
-            //self.constants.push(Object::int(0));
+            let s = self.symbols.define(number.0, number.1, false);
+
+            let idx = self.add_constant(TypeValue::object(number.2, None));
+            self.emit_opcode(OpCode::Const);
+            self.emit_u16(idx);
+            self.emit_opcode(OpCode::SetGlobal);
+            self.emit_u16(s.index);
         }
 
         let _ = self.symbols.define(
@@ -395,6 +414,7 @@ impl Compiler {
                                 .as_ref()
                                 .expect("no declared values requires a declared type"),
                         );
+
                         declared_tp = Some(tp.clone());
                         let mut defaults = Vec::with_capacity(spec.name.len());
                         for _ in 0..spec.name.len() {
@@ -417,19 +437,27 @@ impl Compiler {
                             if value_is_default && dtp.is_nullable() {
                                 self.emit_opcode(OpCode::TypedNull);
 
-                                let mut found_closure = false;
-                                for (ind, constant) in self.constants.iter().enumerate() {
-                                    if constant.tag() == Type::Closure {
-                                        let c = constant.as_closure();
-                                        if c.is_null {
-                                            self.emit_u16(ind.try_into().unwrap());
-                                            found_closure = true;
-                                            break;
+                                //todo register all typed nulls
+                                if dtp.is_func() {
+                                    let mut found_closure = false;
+                                    for (ind, constant) in self.constants.iter().enumerate() {
+                                        if constant.tag() == Type::Closure {
+                                            let c = constant.as_closure();
+                                            if c.is_null {
+                                                self.emit_u16(ind.try_into().unwrap());
+                                                found_closure = true;
+                                                break;
+                                            }
                                         }
                                     }
-                                }
-                                if !found_closure {
-                                    panic!("could not find closure constant");
+                                    if !found_closure {
+                                        panic!("could not find closure constant");
+                                    }
+                                } else if dtp.is_slice() {
+                                    let cid = self.add_constant(dtp.clone().to_object());
+                                    self.emit_u16(cid);
+                                } else {
+                                    unimplemented!("typed null: {:#?}", dtp);
                                 }
                             }
 
@@ -2873,13 +2901,9 @@ impl Compiler {
                             }
                         }
                     }
-                    self.emit_opcode(OpCode::Array);
+                    self.emit_opcode(OpCode::MakeSlice);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
-                    self.emit_u16(1);
-                    return Ok(DefineType::Array {
-                        inner_type: Box::new(slice_t),
-                        len: clit.val.values.len(),
-                    });
+                    return Ok(DefineType::Slice(Box::new(slice_t)));
                 }
 
                 //struct
@@ -3049,9 +3073,9 @@ impl Compiler {
                             }
                         }
                     }
-                    self.emit_opcode(OpCode::Array);
+
+                    self.emit_opcode(OpCode::MakeArray);
                     self.emit_u16(clit.val.values.len().try_into().unwrap());
-                    self.emit_u16(0);
 
                     return Ok(DefineType::Array {
                         inner_type: Box::new(slice_t),
@@ -3170,7 +3194,7 @@ impl Compiler {
                     }
                 }
 
-                let i = ind.index.as_int_lit().unwrap() as usize;
+                let i = ind.index.as_int_lit().unwrap_or_default() as usize;
 
                 let rt = check_t(i, t.strip_var());
 
@@ -3200,6 +3224,7 @@ impl Compiler {
 
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
+                        //panic!("{:#?}", symbol.index);
 
                         Ok(dt)
                     }
@@ -3207,7 +3232,7 @@ impl Compiler {
                         // enclosed symbols cannot be global
                         self.emit_opcode(OpCode::GetCaptured);
                         self.emit_u16(s.index);
-
+                        //panic!("{:#?}", 2);
                         Ok(t)
                     }
                     None => Err(Error::ReferenceError(format!(
@@ -3520,6 +3545,21 @@ impl Compiler {
 
                 self.emit_opcode(OpCode::Slice);
                 self.emit_u8(index);
+
+                let obj = t.to_object();
+                let type_value = obj.as_type_value();
+                let mut ind = None;
+                for (i, c) in self.constants.iter().enumerate() {
+                    if c.tag() == Type::Type {
+                        let ctv = c.as_type_value();
+
+                        if ctv == type_value {
+                            ind = Some(i);
+                            break;
+                        }
+                    }
+                }
+                self.emit_u16(ind.unwrap().try_into().unwrap());
             }
             _ => {
                 return Err(Error::SyntaxError(format!(

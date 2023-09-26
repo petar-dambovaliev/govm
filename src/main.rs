@@ -12,6 +12,7 @@ static GLOBAL_ALLOCATOR: Allocator = Allocator;
 
 fn main() {
     unsafe { Allocator::initialize() }
+
     //todo definition order matters and it shouldn't
     let i = Instant::now();
     //todo
@@ -20,40 +21,26 @@ fn main() {
         r#"
 package main
 
-type User struct {
-	name string
-}
-
-func NewUser() *User {
-    return &User {
-        name: "john",
-	}
-}
-
-func Foo() {
-    a := []*User{}
-    
-	for i := 0; i < 4; i++ {
-	    for j := 0; j < 999999; j++ { 
-		    a = append(a, NewUser())
-	    }
-	    println(len(a))
-	    a = []*User{}
-	}
-}
-
-func l() {
-    println("loop")
-    for i := 0; i < 10000; i++ {
-	    for j := 0; j < 999990; j++ { 
-		    
-	    }
-	}
-}
-
 func main() {
-    Foo()
-	l()
+    var a [5]int
+    println(a)
+
+    a[4] = 100
+    println("set:", a)
+    println("get:", a[4])
+    
+    println("len:", len(a))
+    
+    b := [5]int{1, 2, 3, 4, 5}
+    println("dcl:", b)
+    
+    var twoD [2][3]int
+    for i := 0; i < 2; i++ {
+        for j := 0; j < 3; j++ {
+            twoD[i][j] = i + j
+        }
+    }
+    println("2d: ", twoD)
 }
     "#,
     );
