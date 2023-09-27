@@ -10,26 +10,6 @@ macro_rules! init {
 }
 
 #[repr(C)]
-pub struct Float {
-    value: f64,
-}
-
-impl Float {
-    #[inline]
-    pub(crate) unsafe fn read(obj: &Object) -> f64 {
-        obj.get::<Self>().value
-    }
-
-    pub(crate) fn from_f64(value: f64) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float);
-        let obj = unsafe { ptr.get_mut::<Self>() };
-
-        init!(obj.value => value );
-        ptr
-    }
-}
-
-#[repr(C)]
 pub struct Float32 {
     value: f32,
 }
@@ -61,7 +41,7 @@ impl Float64 {
     }
 
     pub(crate) fn from_f64(value: f64) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float32);
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Float64);
         let obj = unsafe { ptr.get_mut::<Self>() };
 
         init!(obj.value => value );

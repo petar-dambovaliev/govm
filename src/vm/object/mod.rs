@@ -8,7 +8,7 @@ pub mod string;
 pub mod structure;
 
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
-use crate::vm::object::float::{Float, Float32, Float64};
+use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::function::Closure;
 use crate::vm::object::int::{
     Byte, Complex128, Complex64, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64,
@@ -62,7 +62,6 @@ pub enum Type {
     UI16,
     UI32,
     UI64,
-    Float,
     Float32,
     Float64,
     Complex64,
@@ -102,7 +101,6 @@ impl Type {
             | Self::UI16
             | Self::UI32
             | Self::UI64
-            | Self::Float
             | Self::Float32
             | Self::Float64 => true,
             _ => false,
@@ -119,7 +117,6 @@ impl TryFrom<&str> for Type {
             "int" => Self::Int,
             "bool" => Self::Bool,
             "func" => Self::Function,
-            "float" => Self::Float,
             "string" => Self::String,
             _ => return Err(value.to_string()),
         })
@@ -159,7 +156,8 @@ impl Object {
     pub(crate) fn deep_copy(&self) -> Object {
         match self.tag() {
             Type::Int => Int::from_isize(self.as_int().value),
-            Type::Float => Float::from_f64(self.as_float64()),
+            Type::Float64 => Float64::from_f64(self.as_float64()),
+            Type::Float32 => Float32::from_f32(self.as_float32()),
             Type::Interface => {
                 let interface = unsafe { Interface::read(self) };
                 let inner = interface.value.deep_copy();
@@ -284,12 +282,6 @@ impl Object {
     pub fn function(ip: u32, num_locals: u16) -> Self {
         let value = ((ip as isize) << 16) | num_locals as isize;
         Self::with_type((value << VALUE_SHIFT_BITS) as _, Type::Function)
-    }
-
-    #[inline]
-    pub fn float(value: f64) -> Self {
-        let ptr = Float::from_f64(value);
-        ptr
     }
 
     #[inline]
@@ -430,13 +422,9 @@ impl Object {
     /// # Safety
     ///
     /// The caller should ensure this pointer points to an actual Float type
-    #[inline]
-    pub unsafe fn as_float(self) -> f64 {
-        Float::read(&self)
-    }
 
-    pub unsafe fn as_float32(self) -> f32 {
-        Float32::read(&self)
+    pub fn as_float32(self) -> f32 {
+        unsafe { Float32::read(&self) }
     }
 
     pub fn as_float64(self) -> f64 {
@@ -731,7 +719,6 @@ impl PartialEq for Object {
             }
             Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
             Type::Float64 => self.as_float64() == other.as_float64(),
-            Type::Float => unsafe { self.as_float() == other.as_float() },
             Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
             Type::Type => {
                 let left = self.as_type_value();
@@ -779,7 +766,6 @@ impl PartialOrd for Object {
             Type::UI16 => self.as_uint16().value.partial_cmp(&other.as_uint16().value),
             Type::UI32 => self.as_uint32().value.partial_cmp(&other.as_uint32().value),
             Type::UI64 => self.as_uint64().value.partial_cmp(&other.as_uint64().value),
-            Type::Float => unsafe { self.as_float().partial_cmp(&other.as_float()) },
             Type::Float64 => self.as_float64().partial_cmp(&other.as_float64()),
             Type::Float32 => unsafe { self.as_float32().partial_cmp(&other.as_float32()) },
             Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
@@ -834,9 +820,6 @@ macro_rules! impl_arith {
                 Type::UI64 => Object::uint64(self.as_uint64().value $op rhs.as_uint64().value),
 
                 // Safety: We've already asserted the object type
-                Type::Float => unsafe {
-                    Object::float(self.as_float() $op rhs.as_float())
-                }
                 Type::Float64 =>
                     Object::float64(self.as_float64() $op rhs.as_float64()),
 
@@ -960,7 +943,6 @@ impl Display for Object {
         match self.tag() {
             Type::Null => f.write_str("nil")?,
             Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
-            Type::Float => unsafe { f.write_str(&self.as_float().to_string())? },
             Type::Float32 => unsafe { f.write_str(&self.as_float32().to_string())? },
             Type::Float64 => f.write_str(&self.as_float64().to_string())?,
             Type::Int => f.write_str(&self.as_int().value.to_string())?,
@@ -1103,7 +1085,6 @@ impl Display for Type {
         let str = match self {
             Type::Null => "nil",
             Type::Bool => "bool",
-            Type::Float => "float",
             Type::Float32 => "float32",
             Type::Float64 => "float64",
             Type::Byte => "byte",
@@ -1223,8 +1204,8 @@ mod tests {
 
     #[test]
     fn test_pointer_float() {
-        let obj = Object::float(std::f64::consts::PI);
-        assert_eq!(obj.tag(), Type::Float);
+        let obj = Object::float64(std::f64::consts::PI);
+        assert_eq!(obj.tag(), Type::Float64);
         assert_eq!(obj.as_float64(), std::f64::consts::PI);
     }
 

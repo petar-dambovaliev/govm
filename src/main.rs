@@ -21,29 +21,46 @@ fn main() {
         r#"
 package main
 
-import "fmt"
+const Pi = 3.14159265358979323846264338327950288419716939937510582097494459
 
-type rect struct {
-    width, height int
+type geometry interface {
+    area() float64
+    perim() float64
 }
 
-func (r *rect) perim() int {
+type rect struct {
+    width, height float64
+}
+type circle struct {
+    radius float64
+}
+
+func (r rect) area() float64 {
+    return r.width * r.height
+}
+func (r rect) perim() float64 {
     return 2*r.width + 2*r.height
 }
 
-func (r rect) area() int {
-    return r.width * r.height
+func (c circle) area() float64 {
+    return Pi * c.radius * c.radius
+}
+func (c circle) perim() float64 {
+    return 2 * Pi * c.radius
+}
+
+func measure(g geometry) {
+    println(g)
+    println(g.area())
+    println(g.perim())
 }
 
 func main() {
-    r := rect{width: 10, height: 5}
-
-    println("area: ", r.area())
-    println("perim:", r.perim())
+    r := rect{width: 3, height: 4}
+    c := circle{radius: 5}
     
-    rp := &r
-    println("area: ", rp.area())
-    println("perim:", rp.perim())
+    measure(r)
+    measure(c)
 }
     "#,
     );

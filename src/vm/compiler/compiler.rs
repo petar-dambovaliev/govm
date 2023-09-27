@@ -163,11 +163,6 @@ impl Compiler {
                 Type::Byte,
             ),
             (
-                "float",
-                DefineType::Type(Box::new(DefineType::Float), Type::Float),
-                Type::Float,
-            ),
-            (
                 "float32",
                 DefineType::Type(Box::new(DefineType::Float32), Type::Float32),
                 Type::Float32,
@@ -644,6 +639,7 @@ impl Compiler {
                             break;
                         }
                     }
+
                     terminates = self.compile_block_statement(&body.list)?;
                 } else {
                     //todo
@@ -2190,7 +2186,7 @@ impl Compiler {
         operator: &Operator,
     ) -> Result<DefineType, Error> {
         let idx_constant = self.add_constant(Object::int(const_value));
-        let (symbol, _) = self
+        let (symbol, rt) = self
             .symbols
             .resolve(varname)
             .ok_or(Error::ReferenceError(format!("{varname} is not defined")))?
@@ -2221,7 +2217,7 @@ impl Compiler {
         self.emit_u16(symbol.index);
         self.emit_u16(idx_constant);
 
-        Ok(DefineType::Int)
+        Ok(rt)
     }
 
     fn make_type_default_val(&mut self, t: DefineType) -> Expression {
@@ -2297,13 +2293,11 @@ impl Compiler {
                 pos: 0,
                 name: "false".to_string(),
             }),
-            DefineType::Float | DefineType::Float32 | DefineType::Float64 => {
-                Expression::BasicLit(BasicLit {
-                    pos: 0,
-                    kind: LitKind::Float,
-                    value: "0.0".to_string(),
-                })
-            }
+            DefineType::Float32 | DefineType::Float64 => Expression::BasicLit(BasicLit {
+                pos: 0,
+                kind: LitKind::Float,
+                value: "0.0".to_string(),
+            }),
             DefineType::Struct {
                 name: n,
                 fields: inner_types,
@@ -2442,7 +2436,7 @@ impl Compiler {
                         let variadic_start = arg_types.len() - variadic_len;
 
                         for (i, (a, t)) in call.args.iter().zip(arg_types).enumerate() {
-                            let got = self.compile_expression(a)?;
+                            let got = self.compile_expression(a)?.strip_var();
                             let expected = t.get_type();
 
                             if expected.is_interface() && got.implements(&expected, self) {
@@ -2598,11 +2592,43 @@ impl Compiler {
                                 }
 
                                 // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
-                                self.compile_expression(op.x.as_ref())?;
-                                self.compile_expression(y.as_ref())?;
+                                let rt_left = self.compile_expression(op.x.as_ref())?.strip_var();
+                                let rt_right = self.compile_expression(y.as_ref())?.strip_var();
+
+                                fn emit_opcode(offset: u8, dt: &DefineType, c: &mut Compiler) {
+                                    match dt {
+                                        DefineType::Float32 => {
+                                            c.emit_opcode(OpCode::CastToFloat32);
+                                            c.emit_u8(offset);
+                                        }
+                                        DefineType::Float64 => {
+                                            c.emit_opcode(OpCode::CastToFloat64);
+                                            c.emit_u8(offset);
+                                        }
+                                        _ => unimplemented!(),
+                                    }
+                                }
+
+                                match (
+                                    rt_left.is_const_coerceable_to(&rt_right),
+                                    rt_right.is_const_coerceable_to(&rt_left),
+                                ) {
+                                    (true, false) => {
+                                        emit_opcode(1, &rt_right, self);
+                                    }
+                                    (false, true) => {
+                                        emit_opcode(0, &rt_right, self);
+                                    }
+                                    _ => assert_eq!(rt_left, rt_right, "{:#?}", op),
+                                }
+
                                 self.compile_operator(&op.op);
 
-                                return Ok(DefineType::Int);
+                                if op.x.as_ref().is_int_lit() && y.as_ref().is_int_lit() {
+                                    return Ok(DefineType::Const(Box::new(rt_right)));
+                                } else {
+                                    return Ok(rt_right);
+                                }
                             }
                             // *a // deref
                             None => {
@@ -2680,11 +2706,44 @@ impl Compiler {
                                 }
 
                                 // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
-                                self.compile_expression(op.x.as_ref())?;
-                                self.compile_expression(y.as_ref())?;
+                                let rt_left = self.compile_expression(op.x.as_ref())?;
+                                let rt_right = self.compile_expression(y.as_ref())?;
+
+                                fn emit_opcode(offset: u8, dt: &DefineType, c: &mut Compiler) {
+                                    match dt {
+                                        DefineType::Float32 => {
+                                            c.emit_opcode(OpCode::CastToFloat32);
+                                            c.emit_u8(offset);
+                                        }
+                                        DefineType::Float64 => {
+                                            c.emit_opcode(OpCode::CastToFloat64);
+                                            c.emit_u8(offset);
+                                        }
+                                        _ => unimplemented!(),
+                                    }
+                                }
+
+                                let rt = match (
+                                    rt_left.is_const_coerceable_to(&rt_right),
+                                    rt_right.is_const_coerceable_to(&rt_left),
+                                ) {
+                                    (true, false) => {
+                                        emit_opcode(1, &rt_right, self);
+                                        rt_right
+                                    }
+                                    (false, true) => {
+                                        emit_opcode(0, &rt_right, self);
+                                        rt_left
+                                    }
+                                    _ => {
+                                        assert_eq!(rt_left, rt_right);
+                                        rt_right
+                                    }
+                                };
+
                                 self.compile_operator(&op.op);
 
-                                return Ok(DefineType::Int);
+                                return Ok(rt);
                             }
                             None => {
                                 if op.op == Operator::Sub {
@@ -2743,12 +2802,19 @@ impl Compiler {
                 return Ok(DefineType::Bool);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
-                let obj = Object::float(lit.value.parse().unwrap());
+                let (obj, dt) = match lit.value.parse::<f64>() {
+                    Ok(f) => (Object::float64(f), DefineType::Float64),
+                    _ => (
+                        Object::float32(lit.value.parse().unwrap()),
+                        DefineType::Float32,
+                    ),
+                };
+
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
 
-                return Ok(DefineType::Float);
+                return Ok(dt);
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
                 // add to gc
@@ -2762,7 +2828,7 @@ impl Compiler {
                 self.emit_opcode(OpCode::Const);
                 self.emit_u16(idx);
 
-                return Ok(DefineType::Int);
+                return Ok(DefineType::Const(Box::new(DefineType::Int)));
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::String => {
                 let obj = Object::string(lit.value.clone());
@@ -3006,7 +3072,26 @@ impl Compiler {
                                 };
 
                                 if !(in_t.is_nullable() && rt.is_nil()) {
-                                    assert_eq!(in_t, rt.strip_var().strip_type(), "{:#?}", el_expr);
+                                    if rt.is_const_coerceable_to(&in_t) {
+                                        match in_t {
+                                            DefineType::Float32 => {
+                                                self.emit_opcode(OpCode::CastToFloat32);
+                                                self.emit_u8(0);
+                                            }
+                                            DefineType::Float64 => {
+                                                self.emit_opcode(OpCode::CastToFloat64);
+                                                self.emit_u8(0);
+                                            }
+                                            t => unimplemented!("cannot coerce: {:#?}", t),
+                                        }
+                                    } else {
+                                        assert_eq!(
+                                            in_t,
+                                            rt.strip_var().strip_type(),
+                                            "{:#?}",
+                                            el_expr
+                                        );
+                                    }
                                 }
                             }
                             None => {
@@ -3253,6 +3338,7 @@ impl Compiler {
             Expression::Selector(sel) => {
                 let name = sel.x.as_ident().unwrap();
                 let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
+
                 let inner = match dt {
                     DefineType::Var(inner) => *inner,
                     _ => panic!("{:#?}", dt),
@@ -3279,6 +3365,7 @@ impl Compiler {
                                 value: format!("{}", i),
                             })),
                         }))?;
+
                         return Ok(dt);
                     }
                 }

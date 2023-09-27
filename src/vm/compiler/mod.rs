@@ -88,6 +88,8 @@ pub(crate) enum OpCode {
     Slice,
     Variadic,
     TypedNull,
+    CastToFloat32,
+    CastToFloat64,
     Halt,
 }
 
@@ -147,7 +149,7 @@ impl OpCode {
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call => &[1],
+            OpCode::Call | OpCode::CastToFloat32 | OpCode::CastToFloat64 => &[1],
 
             OpCode::SetLocal
             | OpCode::GetGlobal
@@ -411,6 +413,8 @@ impl Display for OpCode {
             Self::Variadic => "Variadic",
             Self::TypedNull => "TypedNull",
             Self::MakeSlice => "MakeSlice",
+            Self::CastToFloat32 => "CastToFloat32",
+            Self::CastToFloat64 => "CastToFloat64",
             Self::Halt => "Halt",
         };
         f.write_str(s)

@@ -55,6 +55,7 @@ pub enum ContextType {
 pub enum DefineType {
     Null,
     Var(Box<Self>),
+    Const(Box<Self>),
     Struct {
         name: String,
         fields: Vec<ContextType>,
@@ -80,7 +81,6 @@ pub enum DefineType {
     Complex64,
     Complex128,
     Bool,
-    Float,
     Float32,
     Float64,
     String,
@@ -278,6 +278,21 @@ impl DefineType {
 
         is_subset(&expect_methods, &got_methods)
     }
+
+    pub fn is_float(&self) -> bool {
+        match self {
+            Self::Float32 => true,
+            Self::Float64 => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_const_coerceable_to(&self, other: &DefineType) -> bool {
+        match self {
+            Self::Const(inner) => inner.is_integer() && other.is_float(),
+            _ => false,
+        }
+    }
     pub fn is_coerceable_to(&self, other: &DefineType) -> bool {
         if self.is_integer() && other.is_integer() {
             return true;
@@ -371,7 +386,6 @@ impl DefineType {
             | Self::Uint16
             | Self::Uint32
             | Self::Uint64
-            | Self::Float
             | Self::Float32
             | Self::Float64 => true,
             _ => false,

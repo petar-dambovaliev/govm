@@ -15,6 +15,7 @@ use std::ptr;
 use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
+use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
@@ -449,6 +450,35 @@ impl VM {
             //     constants[7].as_isize()
             // );
             match self.next() {
+                OpCode::CastToFloat64 => {
+                    let i = self.read_u8();
+                    let len = self.stack.len();
+
+                    let n = &mut self.stack[len - 1 - i as usize];
+                    let f: f64 = match n.tag() {
+                        Type::Int => {
+                            let i = n.as_int();
+                            i.value as f64
+                        }
+                        _ => unimplemented!(),
+                    };
+
+                    *n = Float64::from_f64(f.clone());
+                }
+                OpCode::CastToFloat32 => {
+                    let i = self.read_u8();
+                    let len = self.stack.len();
+                    let n = &mut self.stack[len - 1 - i as usize];
+                    let f: f32 = match n.tag() {
+                        Type::Int => {
+                            let i = n.as_int();
+                            i.value as f32
+                        }
+                        _ => unimplemented!(),
+                    };
+
+                    *n = Float32::from_f32(f);
+                }
                 OpCode::TypedNull => {
                     let num = self.read_u16() as usize;
                     let _p = self.pop();
@@ -714,7 +744,6 @@ impl VM {
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
 
-                    //println!("id: {} bp: {} stack: {:#?}", idx, self.bp, self.stack);
                     let value = self.get_local(idx);
                     //
                     self.push(value);
@@ -885,7 +914,8 @@ impl VM {
                 OpCode::Negate => {
                     let left = self.pop();
                     let result = match left.tag() {
-                        Type::Float => unsafe { Object::float(-left.as_float()) },
+                        Type::Float64 => unsafe { Object::float64(-left.as_float64()) },
+                        Type::Float32 => unsafe { Object::float32(-left.as_float32()) },
                         Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(
@@ -1038,11 +1068,11 @@ impl VM {
                     let length = self.read_u16();
 
                     let mut fields = Vec::with_capacity(length as usize);
+
                     for _ in 0..length {
                         let value = self.pop();
                         fields.push(value);
                     }
-
                     let strct = self.pop_ref_mut();
                     let strct = strct.as_struct();
 
