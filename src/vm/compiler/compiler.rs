@@ -2720,7 +2720,10 @@ impl Compiler {
                                     return Some((path, current.clone()));
                                 }
                             }
-                            ContextType::Embedded(_, dt) => {
+                            ContextType::Embedded(s, dt) => {
+                                if s == target {
+                                    return Some((path, current.clone()));
+                                }
                                 if dt.is_struct() {
                                     let (_, children, _) = dt.as_struct().unwrap();
                                     for (i, child) in children.iter().enumerate() {
