@@ -29,6 +29,7 @@ pub enum Builtin {
     Delete,
     Clear,
     GcCollect,
+    Sprintf,
 }
 
 impl Builtin {
@@ -65,6 +66,7 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "delete" => Some(Builtin::Delete),
         "clear" => Some(Builtin::Clear),
         "gccollect" => Some(Builtin::GcCollect),
+        "sprintf" => Some(Builtin::Sprintf),
         _ => None,
     }
 }
@@ -115,8 +117,20 @@ pub fn call(builtin: Builtin, args: &[Object]) -> Result<Object, Error> {
         Builtin::Delete => call_delete(args),
         Builtin::Clear => call_clear(args),
         Builtin::GcCollect => call_collect(args),
+        Builtin::Sprintf => call_sprintf(args),
         _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_sprintf(args: &[Object]) -> Result<Object, Error> {
+    let mut iter = args.iter();
+    let mut s = String::with_capacity(args.len());
+
+    while let Some(a) = iter.next() {
+        s.push_str(&format!("{}", a));
+    }
+
+    Ok(Object::string(s))
 }
 
 fn call_collect(args: &[Object]) -> Result<Object, Error> {

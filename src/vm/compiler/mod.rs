@@ -1,5 +1,7 @@
 mod call;
 pub mod compiler;
+pub mod declaration;
+pub mod literal;
 
 use crate::vm::symbols::*;
 use crate::vm::Object;
@@ -306,7 +308,7 @@ impl LoopContext {
 }
 
 /// Type to keep track of function constructs so we can emit the proper jump instructions
-struct FuncContext {
+pub(crate) struct FuncContext {
     /// Points to the first instruction of the (current) loop condition
     /// This is where continue statements should jump to
     #[allow(unused)]

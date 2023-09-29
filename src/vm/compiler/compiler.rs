@@ -9,10 +9,13 @@ use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
-    bytecode_to_human, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
+    bytecode_to_human, literal, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
     JUMP_PLACEHOLDER,
 };
 
+use crate::vm::compiler::declaration::{
+    compile_const, compile_function, compile_variable, type_interface, type_struct,
+};
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -26,11 +29,11 @@ use ahash::AHashMap;
 
 pub struct Compiler {
     pub(crate) symbols: SymbolTable,
-    constants: Vec<Object>,
+    pub(crate) constants: Vec<Object>,
     pub(crate) instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
     contexts: Vec<Context>,
-    func_contexts: Vec<FuncContext>,
+    pub(crate) func_contexts: Vec<FuncContext>,
     label_contexts: AHashMap<(usize, usize), String>,
     anonymous_struct: usize,
 }
@@ -216,24 +219,24 @@ impl Compiler {
     }
 
     #[inline]
-    fn emit_opcode(&mut self, op: OpCode) {
+    pub(crate) fn emit_opcode(&mut self, op: OpCode) {
         self.instructions.push(op as u8);
         self.last_instruction = Some(op);
     }
 
     #[inline]
-    fn emit_u8(&mut self, v: u8) {
+    pub(crate) fn emit_u8(&mut self, v: u8) {
         self.instructions.push(v)
     }
 
     #[inline]
-    fn emit_u16(&mut self, v: u16) {
+    pub(crate) fn emit_u16(&mut self, v: u16) {
         self.instructions.push((v & 0xFF) as u8);
         self.instructions.push(((v >> 8) & 0xFF) as u8);
     }
 
     #[inline]
-    fn change_jump_operand_at(&mut self, idx: usize, v: u16) {
+    pub(crate) fn change_jump_operand_at(&mut self, idx: usize, v: u16) {
         assert!(
             self.instructions[idx] == OpCode::Jump as u8
                 || self.instructions[idx] == OpCode::JumpIfFalse as u8
@@ -243,12 +246,12 @@ impl Compiler {
     }
 
     #[inline]
-    fn last_instruction_is(&self, op: OpCode) -> bool {
+    pub(crate) fn last_instruction_is(&self, op: OpCode) -> bool {
         self.last_instruction == Some(op)
     }
 
     #[inline]
-    fn remove_last_instruction(&mut self) {
+    pub(crate) fn remove_last_instruction(&mut self) {
         debug_assert!(self.last_instruction.is_some());
         debug_assert_eq!(self.last_instruction.unwrap().operands().len(), 0);
         self.instructions.pop();
@@ -322,7 +325,7 @@ impl Compiler {
         (r_t, decl_r_types)
     }
 
-    fn expression_to_define_type(&mut self, expr: &Expression) -> DefineType {
+    pub(crate) fn expression_to_define_type(&mut self, expr: &Expression) -> DefineType {
         match expr {
             Expression::Ident(id) => self.symbols.resolve(id.name.as_str()).unwrap().get_type(),
             Expression::TypeFunction(tf) => {
@@ -397,562 +400,30 @@ impl Compiler {
     }
 
     fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
-        //println!("{:#?}", decl);
         match decl {
             Declaration::Variable(v) => {
-                for spec in &v.specs {
-                    let mut declared_tp = None;
-                    let mut value_is_default = false;
-                    let values = if spec.values.is_empty() {
-                        let tp = self.expression_to_define_type(
-                            spec.typ
-                                .as_ref()
-                                .expect("no declared values requires a declared type"),
-                        );
-
-                        declared_tp = Some(tp.clone());
-                        let mut defaults = Vec::with_capacity(spec.name.len());
-                        for _ in 0..spec.name.len() {
-                            defaults.push(self.make_type_default_val(tp.clone()));
-                        }
-                        value_is_default = true;
-                        defaults
-                    } else {
-                        spec.values.clone()
-                    };
-
-                    for (name, value) in spec.name.iter().zip(values.iter()) {
-                        let mut rt = self.compile_expression(value)?;
-
-                        if rt.is_invar() {
-                            panic!("var cant be invar");
-                        }
-
-                        if let Some(dtp) = &declared_tp {
-                            if value_is_default && dtp.is_nullable() {
-                                self.emit_opcode(OpCode::TypedNull);
-
-                                //todo register all typed nulls
-                                if dtp.is_func() {
-                                    let mut found_closure = false;
-                                    for (ind, constant) in self.constants.iter().enumerate() {
-                                        if constant.tag() == Type::Closure {
-                                            let c = constant.as_closure();
-                                            if c.is_null {
-                                                self.emit_u16(ind.try_into().unwrap());
-                                                found_closure = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !found_closure {
-                                        panic!("could not find closure constant");
-                                    }
-                                } else if dtp.is_slice() {
-                                    let cid = self.add_constant(dtp.clone().to_object());
-                                    self.emit_u16(cid);
-                                } else {
-                                    unimplemented!("typed null: {:#?}", dtp);
-                                }
-                            }
-
-                            if rt.is_nil() && (dtp.is_ref() || dtp.is_func() || dtp.is_slice()) {
-                                rt = dtp.clone();
-                            }
-                        }
-
-                        let mut should_upcast = false;
-
-                        if let Some(dtp) = &declared_tp {
-                            if rt != *dtp {
-                                if value.is_int_lit() {
-                                    let i = value.as_int_lit().unwrap();
-                                    if i >= u8::MIN as isize && i <= u8::MAX as isize {
-                                        rt = dtp.clone();
-                                    }
-                                } else if dtp.is_interface() {
-                                    rt = dtp.clone();
-                                    should_upcast = true;
-                                }
-                            }
-                        }
-
-                        let symbol = self.symbols.define(
-                            name.name.as_str(),
-                            DefineType::Var(Box::new(rt.clone())),
-                            rt.is_invar(),
-                        );
-
-                        if should_upcast {
-                            if let Some(dtp) = &declared_tp {
-                                let (name, _) = dtp.as_interface();
-                                let (s, _) = self.symbols.resolve(&name).unwrap().as_local();
-
-                                self.emit_opcode(OpCode::Upcast);
-                                self.emit_u16(s.index);
-                            }
-                        }
-
-                        let op = if symbol.scope == Scope::Global {
-                            OpCode::SetGlobal
-                        } else {
-                            OpCode::SetLocal
-                        };
-                        self.emit_opcode(op);
-                        self.emit_u16(symbol.index);
-                    }
-                }
+                compile_variable(v, self)?;
             }
             Declaration::Function(f) => {
-                let pos_jump = self.instructions.len();
-
-                self.func_contexts.push(FuncContext::new(pos_jump));
-
-                self.emit_opcode(OpCode::Jump);
-                self.emit_u16(JUMP_PLACEHOLDER);
-
-                let (f_name, recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
-                    let recv = recv.list.first().unwrap();
-                    let t = self.expression_to_define_type(&recv.typ);
-
-                    let ret = (
-                        Self::make_method_name(t.strip_ref(), &f.name.name),
-                        Some(recv),
-                        Some(Box::new(t)),
-                    );
-
-                    ret
-                } else {
-                    (f.name.name.clone(), None, None)
-                };
-
-                let symbol = self.symbols.define(
-                    &f_name,
-                    DefineType::Func {
-                        name: f.name.name.clone(),
-                        recv: recv_t.clone(),
-                        args: vec![],
-                        rt: Box::new(DefineType::Null),
-                    },
-                    false,
-                );
-
-                let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
-
-                // Compile function in a new scope
-                self.symbols.new_context(false);
-
-                if let Some(recv) = recv {
-                    let t = self.expression_to_define_type(&recv.typ);
-
-                    //check if there is a field with the same name
-                    if let DefineType::Struct { fields, .. } = &t.strip_ref() {
-                        for field in fields {
-                            let (field_name, _) = field.as_named().unwrap();
-                            if field_name == f.name.name {
-                                panic!("field and method with the same name {}", field_name);
-                            }
-                        }
-                    }
-
-                    self.symbols.define(
-                        &recv.name.first().unwrap().name,
-                        DefineType::Var(Box::new(t.clone())),
-                        t.is_invar(),
-                    );
-                }
-
-                for p in &f.typ.params.list {
-                    let t = self.expression_to_define_type(&p.typ);
-                    for name in &p.name {
-                        decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
-
-                        self.symbols.define(
-                            &name.name,
-                            DefineType::Var(Box::new(t.clone())),
-                            t.is_invar(),
-                        );
-                    }
-                }
-
-                let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
-
-                for el in &f.typ.result.list {
-                    let t = self.expression_to_define_type(&el.typ);
-                    decl_r_types.push(t);
-                }
-
-                let r_t = if decl_r_types.is_empty() {
-                    DefineType::Null
-                } else if decl_r_types.len() == 1 {
-                    decl_r_types[0].clone()
-                } else {
-                    DefineType::Tuple(decl_r_types.clone())
-                };
-
-                let func_def = DefineType::Func {
-                    name: f.name.name.clone(),
-                    recv: recv_t,
-                    args: decl_arg_types,
-                    rt: Box::new(r_t.clone()),
-                };
-                let updated = self.symbols.update_dt(&f_name, func_def.clone());
-                assert!(updated);
-
-                self.func_contexts.last_mut().unwrap().expected_ret = r_t;
-
-                //add method to struct symbol
-                if let Some(recv) = recv {
-                    let t = self.expression_to_define_type(&recv.typ);
-
-                    let (r_name, r_fields, mut r_methods) = self
-                        .symbols
-                        .resolve(&t.get_type_name())
-                        .unwrap()
-                        .get_type()
-                        .as_struct()
-                        .unwrap();
-
-                    r_methods.push(func_def.clone());
-                    let updated = self.symbols.update_dt(
-                        &r_name,
-                        DefineType::Struct {
-                            name: r_name.to_string(),
-                            fields: r_fields,
-                            methods: r_methods,
-                        },
-                    );
-                    assert!(updated);
-                }
-
-                let pos_start_function = self.instructions.len();
-
-                //todo ugly
-
-                // type checking if all returns are correct types
-                let mut terminates = None;
-                let mut has_top_return = false;
-                if let Some(body) = &f.body {
-                    for stmt in &body.list {
-                        if let Statement::Return(_) = stmt {
-                            has_top_return = true;
-                            break;
-                        }
-                    }
-
-                    terminates = self.compile_block_statement(&body.list)?;
-                } else {
-                    //todo
-                    // assert if the function is void but there is a return
-                    //assert_eq!(rts.is_none());
-                }
-                let ctx = self.func_contexts.pop().unwrap();
-
-                if !decl_r_types.is_empty() {
-                    let sorted_decl_r_types: Vec<DefineType> = decl_r_types
-                        .iter()
-                        .map(|b| {
-                            if let DefineType::Type(inner, _) = b.clone() {
-                                return *inner;
-                            }
-
-                            b.clone()
-                        })
-                        .collect();
-
-                    //todo use terminates to assert if top scope level return is needed
-
-                    let expected_t = if sorted_decl_r_types.is_empty() {
-                        DefineType::Null
-                    } else if sorted_decl_r_types.len() == 1 {
-                        sorted_decl_r_types[0].clone()
-                    } else {
-                        DefineType::Tuple(sorted_decl_r_types)
-                    };
-
-                    //println!("{:#?}", un_rts);
-                    if (!terminates.unwrap_or_default()
-                        && expected_t != DefineType::Null
-                        && !has_top_return)
-                        || (expected_t != DefineType::Null && ctx.ret_types.is_empty())
-                    {
-                        panic!("expected return");
-                    }
-
-                    for (mut ret_type, is_type_assert) in ctx.ret_types {
-                        if ret_type.is_var() {
-                            ret_type = ret_type.as_var();
-                        }
-
-                        if ret_type.is_type() {
-                            ret_type = ret_type.as_type().0;
-                        }
-
-                        if let DefineType::Tuple(tuple) = ret_type {
-                            let mut res_tuple = vec![];
-
-                            for el in tuple {
-                                let ell = match el {
-                                    DefineType::Type(a, _) => a,
-                                    _ => Box::new(el),
-                                };
-                                res_tuple.push(*ell);
-                            }
-
-                            ret_type = DefineType::Tuple(res_tuple);
-                        }
-
-                        if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                            if is_type_assert && !expected_t.is_tuple() && ret_type.is_tuple() {
-                                let tuple = ret_type.as_tuple();
-                                assert_eq!(expected_t, tuple[0]);
-                            } else {
-                                assert_eq!(
-                                    expected_t.strip_type(),
-                                    ret_type.strip_type(),
-                                    "{:#?}",
-                                    f.name.name
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    for (ret_type, _) in &ctx.ret_types {
-                        assert_eq!(ret_type, &DefineType::Null);
-                    }
-                }
-                // end type checking on return types
-
-                if self.last_instruction_is(OpCode::Pop) && !decl_r_types.is_empty() {
-                    self.remove_last_instruction();
-                    assert!(decl_r_types.len() < u16::MAX as usize);
-                    let num_r_types = decl_r_types.len() as u16;
-
-                    self.emit_opcode(OpCode::ReturnValue);
-                    self.emit_u16(num_r_types);
-                } else if self.last_instruction_is(OpCode::Pop) && decl_r_types.is_empty() {
-                    self.remove_last_instruction();
-                    self.emit_opcode(OpCode::Return);
-                } else if !self.last_instruction_is(OpCode::ReturnValue) {
-                    self.emit_opcode(OpCode::Return);
-                }
-
-                self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
-
-                // Switch back to previous scope again
-                let ctx = self.symbols.leave_context();
-
-                //add method start position for dynamic dispatch
-                if let Some(recv) = recv {
-                    let t = self.expression_to_define_type(&recv.typ);
-                    let mut added = false;
-
-                    if let DefineType::Struct { name, .. } = &t.strip_ref() {
-                        for constant in &mut self.constants {
-                            if constant.tag() == Type::Struct {
-                                let strct = constant.as_struct_mut();
-                                if &strct.name == name {
-                                    added = true;
-                                    strct
-                                        .method_dispatch
-                                        .push((f.name.name.clone(), pos_start_function));
-                                    //println!("add {:#?} to {:#?}", f.name.name, strct.name);
-                                }
-                                //println!("{:#?}", constant);
-                            }
-                        }
-
-                        if !added {
-                            panic!("internal error: could not added method to struct");
-                        }
-                    }
-                }
-
-                // Create function object and store as constant
-                let obj = Object::function(
-                    pos_start_function.try_into().unwrap(),
-                    ctx.max_size().try_into().unwrap(),
-                );
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                let opcode = if symbol.scope == Scope::Global {
-                    OpCode::SetGlobal
-                } else {
-                    OpCode::SetLocal
-                };
-                self.emit_opcode(opcode);
-                self.emit_u16(symbol.index);
-
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
+                compile_function(f, self)?;
             }
             Declaration::Const(c) => {
-                for spec in &c.specs {
-                    for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-                        let rt = self.compile_expression(value)?;
-
-                        let symbol = self.symbols.define(
-                            name.name.as_str(),
-                            DefineType::Var(Box::new(rt.clone())),
-                            rt.is_invar(),
-                        );
-
-                        let op = if symbol.scope == Scope::Global {
-                            OpCode::SetGlobal
-                        } else {
-                            OpCode::SetLocal
-                        };
-                        self.emit_opcode(op);
-                        self.emit_u16(symbol.index);
-                    }
-                }
+                compile_const(c, self)?;
             }
             Declaration::Type(t) => {
                 for spec in &t.specs {
                     if !spec.alias {
-                        let t = spec.name.clone();
-
                         match &spec.typ {
                             Expression::TypeInterface(it) => {
-                                let mut funcs = Vec::with_capacity(it.methods.list.len());
-                                let mut func_names = Vec::with_capacity(it.methods.list.len());
-
-                                for field in &it.methods.list {
-                                    let func_name = field.name.first().unwrap();
-                                    let (_, _, args, rt) =
-                                        self.expression_to_define_type(&field.typ).as_func();
-
-                                    funcs.push(DefineType::Func {
-                                        name: func_name.name.to_string(),
-                                        recv: None,
-                                        args,
-                                        rt,
-                                    });
-                                    func_names.push(func_name.name.to_string());
-                                }
-
-                                let s = self.symbols.define(
-                                    &spec.name.name.clone(),
-                                    DefineType::Interface {
-                                        name: spec.name.name.clone(),
-                                        methods: funcs,
-                                    },
-                                    false,
-                                );
-
-                                let obj = Interface::object(
-                                    spec.name.name.clone(),
-                                    func_names,
-                                    Object::null(),
-                                );
-                                let idx = self.add_constant(obj);
-                                self.emit_opcode(OpCode::Const);
-                                self.emit_u16(idx);
-
-                                let opcode = if s.scope == Scope::Global {
-                                    OpCode::SetGlobal
-                                } else {
-                                    OpCode::SetLocal
-                                };
-                                self.emit_opcode(opcode);
-                                self.emit_u16(s.index);
-
-                                self.emit_opcode(OpCode::Const);
-                                self.emit_u16(idx);
+                                type_interface(spec, it, self);
                             }
                             Expression::TypeStruct(ta) => {
-                                let mut field_types = vec![];
-
-                                //todo tags
-                                for field in &ta.fields {
-                                    let (inner_t, is_ref) = match &field.typ {
-                                        Expression::TypePointer(p) => {
-                                            (p.typ.as_ident().unwrap(), true)
-                                        }
-                                        _ => (field.typ.as_ident().unwrap(), false),
-                                    };
-
-                                    if !is_ref && t.name == inner_t.name {
-                                        panic!("recursive definition");
-                                    }
-
-                                    let r = self.symbols.resolve(&inner_t.name).unwrap().get_type();
-
-                                    let dt = if is_ref {
-                                        DefineType::Ref(Box::new(r.strip_type()))
-                                    } else {
-                                        r.strip_type()
-                                    };
-
-                                    for name in &field.name {
-                                        field_types.push(ContextType::Named(
-                                            name.name.as_str().to_string(),
-                                            dt.clone(),
-                                        ));
-                                    }
-                                }
-
-                                let ftl = field_types.len();
-
-                                let mut field_values = Vec::with_capacity(ftl);
-
-                                for _ in 0..ftl {
-                                    field_values.push(Object::null());
-                                }
-
-                                let name = spec.name.name.as_str();
-                                let symbol = self.symbols.define(
-                                    name,
-                                    DefineType::Struct {
-                                        name: name.to_string(),
-                                        fields: field_types.clone(),
-                                        methods: vec![],
-                                    },
-                                    false,
-                                );
-
-                                for field_type in &mut field_types {
-                                    let (s, dt) = field_type.as_named().unwrap();
-                                    let resolved = match dt {
-                                        DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
-                                        _ => dt,
-                                    };
-
-                                    *field_type = ContextType::Named(s, resolved);
-                                }
-
-                                let updated = self.symbols.update_dt(
-                                    name,
-                                    DefineType::Struct {
-                                        name: name.to_string(),
-                                        fields: field_types,
-                                        methods: vec![],
-                                    },
-                                );
-
-                                assert!(updated);
-
-                                let obj =
-                                    Struct::object(name.to_string(), field_values, vec![], false);
-                                let idx = self.add_constant(obj);
-                                self.emit_opcode(OpCode::Const);
-                                self.emit_u16(idx);
-
-                                let opcode = if symbol.scope == Scope::Global {
-                                    OpCode::SetGlobal
-                                } else {
-                                    OpCode::SetLocal
-                                };
-                                self.emit_opcode(opcode);
-                                self.emit_u16(symbol.index);
-
-                                self.emit_opcode(OpCode::Const);
-                                self.emit_u16(idx);
+                                type_struct(spec, ta, self);
                             }
                             _ => unimplemented!("{:#?}", spec),
                         }
+                    } else {
+                        unimplemented!("type aliases");
                     }
                 }
             }
@@ -960,7 +431,10 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_block_statement(&mut self, block: &[Statement]) -> Result<Option<bool>, Error> {
+    pub(crate) fn compile_block_statement(
+        &mut self,
+        block: &[Statement],
+    ) -> Result<Option<bool>, Error> {
         // if block statement does not contain any other statements or expressions
         // simply push a NULL onto the stack
         if block.is_empty() {
@@ -2169,7 +1643,7 @@ impl Compiler {
         self.emit_opcode(opcode);
     }
 
-    fn make_method_name(dt: DefineType, f_name: &str) -> String {
+    pub(crate) fn make_method_name(dt: DefineType, f_name: &str) -> String {
         let p = if dt.is_struct() {
             let (name, _, _) = dt.as_struct().unwrap();
             name
@@ -2220,7 +1694,7 @@ impl Compiler {
         Ok(rt)
     }
 
-    fn make_type_default_val(&mut self, t: DefineType) -> Expression {
+    pub(crate) fn make_type_default_val(&mut self, t: DefineType) -> Expression {
         match t {
             DefineType::Type(inner, _) => self.make_type_default_val(*inner),
             DefineType::String => Expression::BasicLit(BasicLit {
@@ -2375,7 +1849,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_expression(&mut self, expr: &Expression) -> Result<DefineType, Error> {
+    pub(crate) fn compile_expression(&mut self, expr: &Expression) -> Result<DefineType, Error> {
         match expr {
             //todo this is a total mess: fix me
             Expression::Call(call) => {
@@ -2539,6 +2013,9 @@ impl Compiler {
                             let got = self.compile_expression(a)?;
                             match t {
                                 ContextType::Named(_, adt) => {
+                                    assert_eq!(adt, got);
+                                }
+                                ContextType::Embedded(_, adt) => {
                                     assert_eq!(adt, got);
                                 }
                                 ContextType::Unnamed(adt) => {
@@ -2981,138 +2458,7 @@ impl Compiler {
                 //struct
                 if let Expression::Ident(name) = clit.typ.as_ref() {
                     //todo this can be locally defined type
-                    let (s, dt) = match self.symbols.resolve(name.name.as_str()) {
-                        Some(s) => s.as_local(),
-                        None => panic!("struct `{}` does not exist", name.name),
-                    };
-
-                    let (name, inner_types) = match dt {
-                        DefineType::Struct { name, fields, .. } => (name, fields),
-                        _ => panic!("expect struct"),
-                    };
-
-                    if let Some(ct) = inner_types.first() {
-                        let _ = ct.as_named().unwrap();
-                    }
-
-                    let opcode = if s.scope == Scope::Global {
-                        OpCode::GetGlobal
-                    } else {
-                        OpCode::GetLocal
-                    };
-                    self.emit_opcode(opcode);
-                    self.emit_u16(s.index);
-
-                    //sort by order of definition
-                    let mut clit_values = clit.val.values.clone();
-
-                    let key_required = clit
-                        .val
-                        .values
-                        .first()
-                        .map(|a| a.key.is_some())
-                        .unwrap_or_default();
-
-                    if key_required {
-                        clit_values.sort_by_key(|val| {
-                            inner_types
-                                .iter()
-                                .map(|inner_type| inner_type.as_named().unwrap())
-                                .position(|x| {
-                                    assert_eq!(key_required, val.key.is_some(), "val: {:#?}", val);
-                                    let k_el = val.key.as_ref().unwrap();
-                                    let k = match k_el {
-                                        Element::Expr(expr) => expr.as_ident().unwrap().clone(),
-                                        _ => panic!("ident"),
-                                    };
-
-                                    x.0 == k.name.as_str()
-                                })
-                        });
-                    } else {
-                        assert_eq!(inner_types.len(), clit_values.len());
-
-                        for (clit_value, ct) in clit_values.iter_mut().zip(inner_types.clone()) {
-                            clit_value.key = Some(Element::Expr(Expression::Ident(Ident {
-                                pos: 0,
-                                name: ct.as_named().unwrap().0,
-                            })));
-                        }
-                    }
-
-                    for inner_type in inner_types.iter().rev() {
-                        let (kk, inner_type) = inner_type.as_named().unwrap();
-
-                        let found = clit_values.iter().find(|a| {
-                            let k = a.key.as_ref().unwrap();
-
-                            let id = match k {
-                                Element::Expr(expr) => expr.clone(),
-                                _ => panic!("expr"),
-                            }
-                            .as_ident()
-                            .unwrap()
-                            .clone();
-                            id.name == kk
-                        });
-
-                        match found {
-                            Some(kel) => {
-                                //compile values
-                                let el_expr = match &kel.val {
-                                    Element::Expr(expr) => expr.clone(),
-                                    _ => panic!("expr"),
-                                };
-
-                                let rt = self.compile_expression(&el_expr)?;
-
-                                let in_t = match inner_type {
-                                    DefineType::Type(a, _b) => *a,
-                                    _ => inner_type.clone(),
-                                };
-
-                                if !(in_t.is_nullable() && rt.is_nil()) {
-                                    if rt.is_const_coerceable_to(&in_t) {
-                                        match in_t {
-                                            DefineType::Float32 => {
-                                                self.emit_opcode(OpCode::CastToFloat32);
-                                                self.emit_u8(0);
-                                            }
-                                            DefineType::Float64 => {
-                                                self.emit_opcode(OpCode::CastToFloat64);
-                                                self.emit_u8(0);
-                                            }
-                                            t => unimplemented!("cannot coerce: {:#?}", t),
-                                        }
-                                    } else {
-                                        assert_eq!(
-                                            in_t,
-                                            rt.strip_var().strip_type(),
-                                            "{:#?}",
-                                            el_expr
-                                        );
-                                    }
-                                }
-                            }
-                            None => {
-                                let def_val = self.make_type_default_val(inner_type);
-                                let _ = self.compile_expression(&def_val)?;
-                            }
-                        }
-                    }
-
-                    // let obj = Object::string(name.clone(), &mut self.gc);
-                    // let idx = self.add_constant(obj);
-                    // self.emit_opcode(OpCode::Const);
-                    // self.emit_u16(idx);
-
-                    self.emit_opcode(OpCode::Struct);
-                    self.emit_u16(inner_types.len().try_into().unwrap());
-                    return Ok(DefineType::Struct {
-                        name,
-                        fields: inner_types,
-                        methods: vec![],
-                    });
+                    return Ok(literal::compile_struct(clit, name, self)?);
                 }
 
                 //array
@@ -3353,24 +2699,62 @@ impl Compiler {
                     _ => panic!("{:#?}", inner),
                 };
 
-                for (i, inner_type) in inner_types.into_iter().enumerate() {
-                    let (key, dt) = inner_type.as_named().unwrap();
-                    if key == sel.sel.name {
-                        self.compile_expression(&Expression::Index(Index {
-                            pos: (0, 0),
-                            left: Box::new(Expression::Ident(name.clone())),
-                            index: Box::new(Expression::BasicLit(BasicLit {
-                                pos: 0,
-                                kind: LitKind::Integer,
-                                value: format!("{}", i),
-                            })),
-                        }))?;
+                // breadth first search find field name
+                // necessary because of embedding
+                fn find_field(
+                    it: &[ContextType],
+                    target: &str,
+                ) -> Option<(Vec<usize>, ContextType)> {
+                    use std::collections::VecDeque;
 
-                        return Ok(dt);
+                    let mut queue = VecDeque::new();
+
+                    for (i, item) in it.iter().enumerate() {
+                        queue.push_back((vec![i], item.clone()));
                     }
+
+                    while let Some((path, current)) = queue.pop_front() {
+                        match &current {
+                            ContextType::Named(s, _) => {
+                                if s == target {
+                                    return Some((path, current.clone()));
+                                }
+                            }
+                            ContextType::Embedded(_, dt) => {
+                                if dt.is_struct() {
+                                    let (_, children, _) = dt.as_struct().unwrap();
+                                    for (i, child) in children.iter().enumerate() {
+                                        let mut child_path = path.clone();
+                                        child_path.push(i);
+                                        queue.push_back((child_path, child.clone()));
+                                    }
+                                }
+                            }
+                            _ => unimplemented!(),
+                        }
+                    }
+
+                    None
                 }
 
-                panic!("cannot find field");
+                let (path, rt) = find_field(inner_types.as_ref(), sel.sel.name.as_str())
+                    .expect("field not found");
+
+                let mut ind_str = String::with_capacity(path.len() * 2);
+                ind_str.push_str(name.name.as_str());
+
+                for p in path {
+                    ind_str.push('[');
+                    ind_str.push_str(&format!("{}", p));
+                    ind_str.push(']');
+                }
+
+                let mut p = Parser::from(ind_str);
+
+                let ind_expr = p.expression().unwrap();
+                self.compile_expression(&ind_expr)?;
+
+                return Ok(rt.get_type());
             }
             Expression::FuncLit(f) => {
                 let pos_jump = self.instructions.len();
@@ -3668,7 +3052,7 @@ impl Compiler {
         Ok(DefineType::Null)
     }
 
-    fn add_constant(&mut self, obj: Object) -> u16 {
+    pub(crate) fn add_constant(&mut self, obj: Object) -> u16 {
         // re-use already defined constants
         // if let Some(pos) = self
         //     .constants

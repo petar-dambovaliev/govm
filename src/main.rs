@@ -21,46 +21,40 @@ fn main() {
         r#"
 package main
 
-const Pi = 3.14159265358979323846264338327950288419716939937510582097494459
-
-type geometry interface {
-    area() float64
-    perim() float64
+type base struct {
+    num int
 }
 
-type rect struct {
-    width, height float64
-}
-type circle struct {
-    radius float64
+func (b base) describe() string {
+    return sprintf("base with num=", b.num)
 }
 
-func (r rect) area() float64 {
-    return r.width * r.height
-}
-func (r rect) perim() float64 {
-    return 2*r.width + 2*r.height
-}
-
-func (c circle) area() float64 {
-    return Pi * c.radius * c.radius
-}
-func (c circle) perim() float64 {
-    return 2 * Pi * c.radius
-}
-
-func measure(g geometry) {
-    println(g)
-    println(g.area())
-    println(g.perim())
+type container struct {
+    base
+    str string
 }
 
 func main() {
-    r := rect{width: 3, height: 4}
-    c := circle{radius: 5}
+    type describer interface {
+        describe() string
+    }
     
-    measure(r)
-    measure(c)
+    co := container {
+        base: base{
+            num: 1,
+        },
+        str: "some name",
+    }
+
+    println("co=", co)
+    println(co.num, co.str)
+    
+    // println("also num:", co.base.num)
+    // 
+    // println("describe:", co.describe())
+    // 
+    // var d describer = co
+    // println("describer:", d.describe())
 }
     "#,
     );

@@ -48,6 +48,7 @@ pub enum Scope {
 pub enum ContextType {
     //    key,  type
     Named(String, DefineType),
+    Embedded(String, DefineType),
     Unnamed(DefineType),
 }
 
@@ -104,6 +105,33 @@ pub enum DefineType {
     Variadic(Box<Self>),
 }
 
+// impl PartialEq for DefineType {
+//     fn eq(&self, other: &Self) -> bool {
+//         match (self, other) {
+//             (DefineType::Struct { .. }, DefineType::Struct { .. }) => {
+//                 let (n1, _, _) = self.as_struct().unwrap();
+//                 let (n2, _, _) = other.as_struct().unwrap();
+//                 n1 == n2
+//             }
+//             (DefineType::Null, DefineType::Null) => true,
+//             (DefineType::Array { .. }, DefineType::Array { .. }) => {
+//                 let (ll, ldt) = self.as_array();
+//                 let (lr, rdt) = self.as_array();
+//
+//                 ll == lr && ldt == rdt
+//             }
+//             (DefineType::Int, DefineType::Int) => true,
+//             (DefineType::Float64, DefineType::Float64) => true,
+//             (DefineType::Float32, DefineType::Float32) => true,
+//             (DefineType::Slice(t1), DefineType::Slice(t2)) => t1 == t2,
+//             (DefineType::Type(dt1, t1), DefineType::Type(dt2, t2)) => dt1 == dt2 && t1 == t2,
+//             (DefineType::Map(k1, v1), DefineType::Map(k2, v2)) => k1 == k2 && v1 == v2,
+//             (DefineType::)
+//             _ => false,
+//         }
+//     }
+// }
+
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
     if !t.is_integer() {
         return false;
@@ -136,6 +164,18 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
+    pub fn eq_structs(l: &Self, r: &Self) -> bool {
+        let (n1, fields1, _) = l.as_struct().unwrap();
+        let (n2, fields2, _) = r.as_struct().unwrap();
+
+        n1 == n2 && fields1 == fields2
+    }
+    pub fn as_array(&self) -> (usize, Self) {
+        match &self {
+            Self::Array { len, inner_type } => (len.clone(), *inner_type.clone()),
+            _ => panic!("expected Self::Tuple, got {:#?}", self),
+        }
+    }
     pub fn to_object(mut self) -> Object {
         self = self.strip_var();
 
@@ -224,9 +264,9 @@ impl DefineType {
         };
 
         let mut got_methods = if strct.is_struct() {
-            let (name, _, _) = strct.as_struct().unwrap();
+            let (name, fields, _) = strct.as_struct().unwrap();
 
-            let (_, _, got_methods) = c
+            let (_, _, mut got_methods) = c
                 .symbols
                 .resolve(&name)
                 .unwrap()
@@ -234,6 +274,13 @@ impl DefineType {
                 .1
                 .as_struct()
                 .unwrap();
+
+            for field in fields {
+                if let ContextType::Embedded(e_name, e_t) = field {
+                    panic!("{:#?}", e_t);
+                }
+            }
+
             got_methods
         } else {
             vec![]
@@ -444,6 +491,14 @@ impl DefineType {
             self.clone()
         }
     }
+
+    pub fn strip_const(&self) -> DefineType {
+        if let Self::Const(v) = self {
+            *v.clone()
+        } else {
+            self.clone()
+        }
+    }
     pub fn strip_ret(&self) -> DefineType {
         match &self {
             DefineType::Type(r, _) => r.clone().strip_ret(),
@@ -637,6 +692,7 @@ impl ContextType {
         match self {
             Self::Unnamed(t) => t.clone(),
             Self::Named(_, t) => t.clone(),
+            Self::Embedded(_, t) => t.clone(),
         }
     }
     pub fn as_named(&self) -> Result<(String, DefineType), Error> {
