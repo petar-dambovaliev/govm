@@ -32,6 +32,7 @@ func (b base) describe() string {
 type container struct {
     base
     str string
+    num int
 }
 
 func main() {
@@ -46,10 +47,9 @@ func main() {
         str: "some name",
     }
 
-    println("co=", co)
-    println(co.num, co.str)
+    println(co.num, co.base.num)
     
-    // println("also num:", co.base.num)
+    println("also num:", co.describe())
     // 
     // println("describe:", co.describe())
     // 

@@ -5,6 +5,7 @@ use crate::vm::object::structure::TypeValue;
 use crate::vm::object::Object;
 use crate::vm::object::Type;
 use crate::vm::Error;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub(crate) struct SymbolTable {
@@ -105,6 +106,17 @@ pub enum DefineType {
     Variadic(Box<Self>),
 }
 
+impl Display for DefineType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Struct { name, .. } => name.to_string(),
+            _ => unimplemented!(),
+        };
+
+        f.write_str(&s)
+    }
+}
+
 // impl PartialEq for DefineType {
 //     fn eq(&self, other: &Self) -> bool {
 //         match (self, other) {
@@ -164,6 +176,36 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
 }
 
 impl DefineType {
+    pub fn fmt_rt(&self) -> String {
+        match self {
+            Self::Struct { name, .. } => name.clone(),
+            Self::Tuple(types) => {
+                let mut s = Vec::with_capacity(types.len());
+
+                for t in types {
+                    s.push(t.fmt_rt());
+                }
+
+                let r = s.join(",");
+                r
+            }
+            Self::Type(_, t) => t.to_string(),
+            t => unimplemented!("{:#?}", t),
+        }
+    }
+    pub fn struct_has_method(&self, name: &str) -> bool {
+        let (_, _, methods) = self.as_struct().unwrap();
+
+        for method in methods {
+            let (f_name, _, _, _) = method.as_func();
+
+            if name == f_name {
+                return true;
+            }
+        }
+
+        false
+    }
     pub fn eq_structs(l: &Self, r: &Self) -> bool {
         let (n1, fields1, _) = l.as_struct().unwrap();
         let (n2, fields2, _) = r.as_struct().unwrap();
@@ -796,6 +838,23 @@ impl Context {
         }
         false
     }
+
+    pub fn update_struct_fields(&mut self, name: &str, fields: Vec<ContextType>) -> bool {
+        for scope in self.symbols.iter_mut().rev() {
+            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+                assert!(scope[index].1.is_struct());
+                let (name, _, methods) = scope[index].1.as_struct().unwrap();
+
+                scope[index].1 = DefineType::Struct {
+                    name,
+                    fields,
+                    methods,
+                };
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -925,6 +984,24 @@ impl SymbolTable {
 
         if len > 1 {
             self.contexts[0].update_dt(name, dt)
+        } else {
+            false
+        }
+    }
+
+    pub fn update_struct_fields(&mut self, name: &str, fields: Vec<ContextType>) -> bool {
+        let len = self.contexts.len();
+
+        // Try getting a mutable reference from the current context
+        if self
+            .current_context()
+            .update_struct_fields(name, fields.clone())
+        {
+            return true;
+        }
+
+        if len > 1 {
+            self.contexts[0].update_struct_fields(name, fields)
         } else {
             false
         }

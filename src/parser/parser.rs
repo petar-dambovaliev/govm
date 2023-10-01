@@ -326,7 +326,7 @@ impl Parser {
         Ok(ast::Import { name, path })
     }
 
-    fn parse_func_decl(&mut self) -> Result<ast::FuncDecl> {
+    pub(crate) fn parse_func_decl(&mut self) -> Result<ast::FuncDecl> {
         let docs = self.drain_comments();
         let pos = self.expect(Keyword::Func)?;
         let recv = self

@@ -1,6 +1,8 @@
 use crate::parser::ast::{
-    ConstSpec, Decl, Expression, FuncDecl, InterfaceType, Statement, StructType, TypeSpec, VarSpec,
+    ConstSpec, Decl, Declaration, Expression, FuncDecl, InterfaceType, Statement, StructType,
+    TypeSpec, VarSpec,
 };
+use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::compiler::{FuncContext, OpCode, JUMP_PLACEHOLDER};
 use crate::vm::object::structure::{Interface, Struct};
@@ -159,7 +161,11 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
         //check if there is a field with the same name
         if let DefineType::Struct { fields, .. } = &t.strip_ref() {
             for field in fields {
-                let (field_name, _) = field.as_named().unwrap();
+                let field_name = match field {
+                    ContextType::Named(s, _) => s.clone(),
+                    ContextType::Embedded(s, _) => s.clone(),
+                    _ => unimplemented!(),
+                };
                 if field_name == f.name.name {
                     panic!("field and method with the same name {}", field_name);
                 }
@@ -542,14 +548,7 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
         };
     }
 
-    let updated = c.symbols.update_dt(
-        name,
-        DefineType::Struct {
-            name: name.to_string(),
-            fields: field_types,
-            methods: vec![],
-        },
-    );
+    let updated = c.symbols.update_struct_fields(name, field_types.clone());
 
     assert!(updated);
 
@@ -568,4 +567,56 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
 
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
+
+    let strct = c.symbols.resolve(name).unwrap().get_type();
+
+    for field_type in &mut field_types {
+        if let ContextType::Embedded(s, dt) = field_type {
+            if dt.is_struct() {
+                let (_, _, methods) = dt.as_struct().unwrap();
+                let r = if dt.is_ref() { "*" } else { "" };
+
+                for method in methods {
+                    let (f_name, _recv, args, rets) = method.as_func();
+                    if !strct.struct_has_method(&f_name) {
+                        let args_def: Vec<String> = args
+                            .iter()
+                            .map(|a| {
+                                let (n, t) = a.as_named().unwrap();
+                                format!("{n} {t}")
+                            })
+                            .collect();
+
+                        let args_def_str = args_def.join(",");
+
+                        let args_pass: Vec<String> = args
+                            .iter()
+                            .map(|a| {
+                                let (n, _t) = a.as_named().unwrap();
+                                n
+                            })
+                            .collect();
+
+                        let args_pass_str = args_pass.join(",");
+                        let rets_str = rets.fmt_rt();
+
+                        let gen_m_str = format!(
+                            r#"
+                            func (a {r}{name}) {f_name}({args_def_str}) ({rets_str}) {{
+                                return a.{s}.{f_name}({args_pass_str})  
+                            }}
+                        "#,
+                        );
+
+                        let mut p = Parser::from(gen_m_str);
+
+                        let gen_m = p.parse_func_decl().unwrap();
+
+                        c.compile_declaration(&Declaration::Function(gen_m))
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
 }

@@ -399,7 +399,7 @@ impl Compiler {
         }
     }
 
-    fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
+    pub(crate) fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), Error> {
         match decl {
             Declaration::Variable(v) => {
                 compile_variable(v, self)?;
@@ -2682,21 +2682,18 @@ impl Compiler {
                 };
             }
             Expression::Selector(sel) => {
-                let name = sel.x.as_ident().unwrap();
-                let (_, dt) = self.symbols.resolve(name.name.as_str()).unwrap().as_local();
+                let dt = self
+                    .compile_expression(sel.x.as_ref())?
+                    .strip_var()
+                    .strip_ref();
 
-                let inner = match dt {
-                    DefineType::Var(inner) => *inner,
-                    _ => panic!("{:#?}", dt),
-                };
-
-                let (_, inner_types) = match inner.strip_ref() {
+                let (_, inner_types) = match dt.strip_ref() {
                     DefineType::Struct {
                         name,
                         fields: inner_types,
                         ..
                     } => (name, inner_types),
-                    _ => panic!("{:#?}", inner),
+                    _ => panic!("{:#?}", dt),
                 };
 
                 // breadth first search find field name
@@ -2740,22 +2737,20 @@ impl Compiler {
                     None
                 }
 
-                let (path, rt) = find_field(inner_types.as_ref(), sel.sel.name.as_str())
-                    .expect("field not found");
-
-                let mut ind_str = String::with_capacity(path.len() * 2);
-                ind_str.push_str(name.name.as_str());
+                let (path, rt) =
+                    find_field(inner_types.as_ref(), sel.sel.name.as_str()).expect(&format!(
+                        "field not found: {} in fields: {:#?}",
+                        sel.sel.name, inner_types
+                    ));
 
                 for p in path {
-                    ind_str.push('[');
-                    ind_str.push_str(&format!("{}", p));
-                    ind_str.push(']');
+                    self.compile_expression(&Expression::BasicLit(BasicLit {
+                        pos: 0,
+                        kind: LitKind::Integer,
+                        value: format!("{}", p),
+                    }))?;
+                    self.emit_opcode(OpCode::IndexGet);
                 }
-
-                let mut p = Parser::from(ind_str);
-
-                let ind_expr = p.expression().unwrap();
-                self.compile_expression(&ind_expr)?;
 
                 return Ok(rt.get_type());
             }

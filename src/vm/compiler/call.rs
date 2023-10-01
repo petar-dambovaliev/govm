@@ -1,7 +1,7 @@
 use crate::parser::ast::{Call, Expression, Selector};
 use crate::vm::builtin::signature_from_t;
 use crate::vm::compiler::compiler::Compiler;
-use crate::vm::symbols::DefineType;
+use crate::vm::symbols::{ContextType, DefineType};
 
 #[derive(Debug)]
 pub enum CallType {
@@ -23,13 +23,42 @@ pub enum CallType {
     },
 }
 
-fn find_method(name: &str, methods: Vec<DefineType>) -> Option<(DefineType, usize)> {
+fn find_method(name: &str, methods: Vec<DefineType>) -> Option<(usize, DefineType)> {
     for (i, method) in methods.iter().enumerate() {
         let (m, _, _, _) = method.as_func();
         if m == name {
-            return Some((method.clone(), i));
+            return Some((i, method.clone()));
         }
     }
+    None
+}
+
+fn find_method_by_name_with_path(
+    strct: DefineType,
+    name: &str,
+    mut current_path: Vec<usize>,
+) -> Option<(Vec<usize>, DefineType)> {
+    let (_, children, m) = strct.as_struct().unwrap();
+    if let Some((a, b)) = find_method(name, m) {
+        current_path.push(a);
+        return Some((current_path, b));
+    }
+
+    for (i, child) in children.iter().enumerate() {
+        if let ContextType::Embedded(_, dt) = child {
+            if dt.is_struct() {
+                let mut child_path = current_path.clone();
+                child_path.push(i);
+
+                if let Some((path, method_name)) =
+                    find_method_by_name_with_path(dt.clone(), name, child_path)
+                {
+                    return Some((path, method_name));
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -37,13 +66,7 @@ impl CallType {
     pub fn from_call(call: &Call, c: &mut Compiler) -> Self {
         match call.func.as_ref() {
             Expression::Selector(sel) => {
-                let sellt = c
-                    .symbols
-                    .resolve(&sel.x.as_ident().unwrap().name)
-                    .unwrap()
-                    .get_type()
-                    .strip_var();
-
+                let sellt = c.compile_expression(&sel.x).unwrap().strip_var();
                 let method_name = sel.sel.name.to_string();
 
                 fn find_sel(
@@ -58,7 +81,7 @@ impl CallType {
                             let m = find_method(&method_name, methods);
 
                             match m {
-                                Some((m, i)) => CallType::DynamicDispatch {
+                                Some((i, m)) => CallType::DynamicDispatch {
                                     method_index: i,
                                     method_dt: m,
                                     iface_expr: *sel.x.clone(),
@@ -76,7 +99,7 @@ impl CallType {
                                 .unwrap();
 
                             match find_method(&method_name, methods) {
-                                Some((m, _)) => {
+                                Some((_, m)) => {
                                     return CallType::Method {
                                         mangled_name: CallType::make_method_name(
                                             dt.clone(),
