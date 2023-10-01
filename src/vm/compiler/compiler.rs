@@ -1968,15 +1968,15 @@ impl Compiler {
                         struct_dt,
                         ..
                     } => {
-                        let (_, _, arg_types, rts) = method_dt.as_func();
+                        let (_, recv, arg_types, rts) = method_dt.as_func();
                         let rts = rts.type_to_val_t();
                         assert_eq!(arg_types.len(), call.args.len());
 
                         //here we do automatic passing by reference
                         // if the signature of the function is by ref
                         // and our value is not we emit a ref opcode
-                        let got = self.compile_expression(&struct_expr)?;
-                        if struct_dt.is_ref() && !got.is_ref() {
+                        //let got = self.compile_expression(&struct_expr)?;
+                        if struct_dt.is_ref() && !recv.unwrap().is_ref() {
                             self.emit_opcode(OpCode::Ref);
                         }
 

@@ -76,7 +76,7 @@ impl CallType {
                     method_name: String,
                 ) -> CallType {
                     match dt.clone() {
-                        DefineType::Ref(inner) => find_sel(c, sel, *inner, method_name),
+                        DefineType::Ref(inner) => find_sel(c, sel, inner.strip_var(), method_name),
                         DefineType::Interface { methods, .. } => {
                             let m = find_method(&method_name, methods);
 
@@ -117,7 +117,7 @@ impl CallType {
                         _ => unimplemented!("call selector: {:#?}", dt),
                     }
                 }
-                find_sel(c, sel, sellt.clone(), method_name)
+                find_sel(c, sel, sellt.clone().strip_var(), method_name)
             }
             Expression::Ident(id) => {
                 let mut t = c

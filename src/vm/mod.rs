@@ -969,7 +969,7 @@ impl VM {
                     // also take all arguments from the stack in 1 op
 
                     let builtin = self.read_u8();
-                    //println!("builtin: {}", builtin);
+                    //println!("builtin: {:#?}", self.stack);
                     let num_args = self.read_u8() as usize;
                     let mut args = Vec::with_capacity(num_args);
                     for _ in 0..num_args {
