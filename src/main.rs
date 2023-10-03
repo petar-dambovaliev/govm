@@ -21,39 +21,17 @@ fn main() {
         r#"
 package main
 
-func (b base) describe() string {
-    return sprintf("base with num=%v", b.num)
-}
+var b = a + 1 + c
+var a = newnum()
+var c = 3
 
-type base struct {
-    num int
-}
-
-type container struct {
-    base
-    str string
+func newnum() int {
+    return 1
 }
 
 func main() {
-    co := container{
-        base: base{
-            num: 1,
-        },
-        str: "some name",
-    }
-
-    println("co={num: %v, str: %v}\n", co.num, co.str)
-
-    println("also num:", co.base.num)
-
-    println("describe:", co.describe())
-
-    type describer interface {
-        describe() string
-    }
-
-    var d describer = co
-    println("describer:", d.describe())
+    println(b)
+    println(a)
 }
     "#,
     );

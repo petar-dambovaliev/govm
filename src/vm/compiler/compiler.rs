@@ -200,7 +200,7 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
-        let (strcts, funcs) = register_global_types(&ast.decl, self);
+        let strcts = register_global_types(&ast.decl, self);
         let (graph, map_declr) = make_var_const_dep_graph(&ast.decl, self);
 
         for declr_id in graph.into_iter() {
@@ -210,10 +210,6 @@ impl Compiler {
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
         for s in &strcts {
-            self.compile_declaration(s)?;
-        }
-
-        for s in &funcs {
             self.compile_declaration(s)?;
         }
 
@@ -2226,7 +2222,10 @@ impl Compiler {
                                         rt_left
                                     }
                                     _ => {
-                                        assert_eq!(rt_left, rt_right);
+                                        assert_eq!(
+                                            rt_left.strip_var().strip_const(),
+                                            rt_right.strip_var().strip_const()
+                                        );
                                         rt_right
                                     }
                                 };
