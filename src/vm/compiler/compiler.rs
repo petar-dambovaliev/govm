@@ -16,6 +16,7 @@ use crate::vm::compiler::{
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
+use crate::vm::compiler::declaration::{make_var_const_dep_graph, register_global_types};
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -199,9 +200,20 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
+        let (strcts, funcs) = register_global_types(&ast.decl, self);
+        let (graph, map_declr) = make_var_const_dep_graph(&ast.decl, self);
+
+        for declr_id in graph.into_iter() {
+            self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
+        }
+
         // Call compile_statement on each child node directly
         // We don't re-use compile_block_statement here because it exits the global scope
-        for s in &ast.decl {
+        for s in &strcts {
+            self.compile_declaration(s)?;
+        }
+
+        for s in &funcs {
             self.compile_declaration(s)?;
         }
 
@@ -325,25 +337,25 @@ impl Compiler {
         (r_t, decl_r_types)
     }
 
-    pub(crate) fn expression_to_define_type(&mut self, expr: &Expression) -> DefineType {
+    pub(crate) fn expression_to_define_type(&mut self, expr: &Expression) -> Option<DefineType> {
         match expr {
-            Expression::Ident(id) => self.symbols.resolve(id.name.as_str()).unwrap().get_type(),
+            Expression::Ident(id) => Some(self.symbols.resolve(id.name.as_str())?.get_type()),
             Expression::TypeFunction(tf) => {
                 let (_, args) = self.field_list_to_define_type(&tf.params);
                 let (ret, _) = self.field_list_to_define_type(&tf.result);
-                DefineType::Func {
+                Some(DefineType::Func {
                     name: "".to_string(),
                     recv: None,
                     args: self.define_type_to_context_type(args.as_ref()),
                     rt: Box::new(ret),
-                }
+                })
             }
-            Expression::TypePointer(tp) => {
-                DefineType::Ref(Box::new(self.expression_to_define_type(&tp.typ)))
-            }
+            Expression::TypePointer(tp) => Some(DefineType::Ref(Box::new(
+                self.expression_to_define_type(&tp.typ)?,
+            ))),
             Expression::TypeMap(map) => {
-                let k = self.expression_to_define_type(map.key.as_ref());
-                let v = self.expression_to_define_type(map.val.as_ref());
+                let k = self.expression_to_define_type(map.key.as_ref())?;
+                let v = self.expression_to_define_type(map.val.as_ref())?;
 
                 // if k.is_type() {
                 //     k = k.as_type().0;
@@ -353,47 +365,48 @@ impl Compiler {
                 //     v = v.as_type().0;
                 // }
 
-                DefineType::Map(Box::new(k), Box::new(v))
+                Some(DefineType::Map(Box::new(k), Box::new(v)))
             }
-            Expression::Invar(invar) => DefineType::Invar(Box::new(
-                self.expression_to_define_type(invar.expr.as_ref()),
-            )),
+            Expression::Invar(invar) => Some(DefineType::Invar(Box::new(
+                self.expression_to_define_type(invar.expr.as_ref())?,
+            ))),
             Expression::TypeInterface(i) => {
                 assert!(i.methods.list.is_empty());
-                DefineType::Interface {
+                Some(DefineType::Interface {
                     name: "".to_string(),
                     methods: vec![],
-                }
+                })
             }
             Expression::TypeArray(ta) => {
-                let inner = self.expression_to_define_type(&ta.typ);
+                let inner = self.expression_to_define_type(&ta.typ)?;
                 let len = ta.len.as_int_lit().unwrap();
-                DefineType::Array {
+                Some(DefineType::Array {
                     inner_type: Box::new(inner),
                     len: len as usize,
-                }
+                })
             }
             Expression::TypeSlice(ts) => {
-                let inner = self.expression_to_define_type(&ts.typ);
-                DefineType::Slice(Box::new(inner))
+                let inner = self.expression_to_define_type(&ts.typ)?;
+                Some(DefineType::Slice(Box::new(inner)))
             }
             Expression::Ellipsis(variadic) => {
-                let inner = self.expression_to_define_type(variadic.elt.as_ref().unwrap().as_ref());
-                DefineType::Variadic(Box::new(inner))
+                let inner =
+                    self.expression_to_define_type(variadic.elt.as_ref().unwrap().as_ref())?;
+                Some(DefineType::Variadic(Box::new(inner)))
             }
             Expression::TypeStruct(st) => {
                 let mut fields = Vec::with_capacity(st.fields.len());
                 for field in &st.fields {
                     fields.push(ContextType::Named(
                         field.name.first().unwrap().name.clone(),
-                        self.expression_to_define_type(&field.typ),
+                        self.expression_to_define_type(&field.typ)?,
                     ));
                 }
-                DefineType::Struct {
+                Some(DefineType::Struct {
                     name: format!("anonymous_struct {}", self.anonymous_struct),
                     fields,
                     methods: vec![],
-                }
+                })
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
@@ -2038,7 +2051,7 @@ impl Compiler {
                 return Ok(rt);
             }
             Expression::TypeMap(_tm) => {
-                let rt = self.expression_to_define_type(expr);
+                let rt = self.expression_to_define_type(expr).unwrap();
                 let obj = rt.clone().to_object();
                 let idx = self.add_constant(obj);
                 self.emit_opcode(OpCode::Const);
@@ -2414,7 +2427,7 @@ impl Compiler {
                     //todo assert length
                     //if ta.len != clit.val.values.len() { }
 
-                    let slice_t = self.expression_to_define_type(ta.typ.as_ref());
+                    let slice_t = self.expression_to_define_type(ta.typ.as_ref()).unwrap();
                     let mut el_t = None;
                     let key_required = clit
                         .val
@@ -2475,7 +2488,7 @@ impl Compiler {
                             .1
                             .strip_type(),
                         Expression::TypeArray(_at) => {
-                            self.expression_to_define_type(ta.typ.as_ref())
+                            self.expression_to_define_type(ta.typ.as_ref()).unwrap()
                         }
                         _ => {
                             unimplemented!("array element type: {:#?}", ta.typ)
@@ -2737,11 +2750,9 @@ impl Compiler {
                     None
                 }
 
-                let (path, rt) =
-                    find_field(inner_types.as_ref(), sel.sel.name.as_str()).expect(&format!(
-                        "field not found: {} in fields: {:#?}",
-                        sel.sel.name, inner_types
-                    ));
+                let (path, rt) = find_field(inner_types.as_ref(), sel.sel.name.as_str()).expect(
+                    &format!("field not found: {} in struct: {:#?}", sel.sel.name, dt),
+                );
 
                 for p in path {
                     self.compile_expression(&Expression::BasicLit(BasicLit {
@@ -2768,7 +2779,7 @@ impl Compiler {
                 // Compile function in a new scope
                 self.symbols.new_context(true);
                 for p in &f.typ.params.list {
-                    let t = self.expression_to_define_type(&p.typ);
+                    let t = self.expression_to_define_type(&p.typ).unwrap();
                     for name in &p.name {
                         decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
@@ -2783,7 +2794,7 @@ impl Compiler {
                 let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
                 for el in &f.typ.result.list {
-                    let t = self.expression_to_define_type(&el.typ);
+                    let t = self.expression_to_define_type(&el.typ).unwrap();
                     decl_r_types.push(t);
                 }
 
@@ -2978,7 +2989,7 @@ impl Compiler {
                 }
             }
             Expression::TypeSlice(_ts) => {
-                let rt = self.expression_to_define_type(expr);
+                let rt = self.expression_to_define_type(expr).unwrap();
                 let obj = rt.clone().to_object();
                 //panic!("{:#?}", rt);
                 let idx = self.add_constant(obj);

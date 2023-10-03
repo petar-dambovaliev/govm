@@ -98,20 +98,25 @@ impl CallType {
                                 .as_struct()
                                 .unwrap();
 
-                            match find_method(&method_name, methods) {
+                            match find_method(&method_name, methods.clone()) {
                                 Some((_, m)) => {
                                     return CallType::Method {
                                         mangled_name: CallType::make_method_name(
                                             dt.clone(),
                                             &method_name,
                                         ),
-                                        method_name,
+                                        method_name: method_name.clone(),
                                         struct_expr: *sel.x.clone(),
                                         method_dt: m,
                                         struct_dt: dt.clone(),
                                     };
                                 }
-                                None => panic!("struct method not found"),
+                                None => {
+                                    panic!(
+                                        "method '{}' not found in struct: {} methods: {:#?}",
+                                        method_name, name, methods
+                                    )
+                                }
                             }
                         }
                         _ => unimplemented!("call selector: {:#?}", dt),

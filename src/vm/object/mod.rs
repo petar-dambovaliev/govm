@@ -45,7 +45,7 @@ const MIN_INT: isize = isize::MIN;
 // ARM uses 49 bits and x86-64 uses 48 bits (some newer cpus have opt-in using 57 bits)
 // we have at least 7 bits to work with
 // this is 5 bits and it supports up to 32 variants
-#[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq)]
+#[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq, Hash)]
 #[repr(u8)]
 pub enum Type {
     Null = 0b00000,

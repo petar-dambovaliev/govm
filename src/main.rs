@@ -21,12 +21,12 @@ fn main() {
         r#"
 package main
 
-type base struct {
-    num int
-}
-
 func (b base) describe() string {
     return sprintf("base with num=%v", b.num)
+}
+
+type base struct {
+    num int
 }
 
 type container struct {
@@ -35,7 +35,6 @@ type container struct {
 }
 
 func main() {
-
     co := container{
         base: base{
             num: 1,

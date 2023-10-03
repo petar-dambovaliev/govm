@@ -45,7 +45,7 @@ pub enum Scope {
 //  `label`
 //      1. A labeled statement labeling a terminating statement
 
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub enum ContextType {
     //    key,  type
     Named(String, DefineType),
@@ -53,7 +53,7 @@ pub enum ContextType {
     Unnamed(DefineType),
 }
 
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub enum DefineType {
     Null,
     Var(Box<Self>),
@@ -864,6 +864,11 @@ pub enum Resolved {
 }
 
 impl Resolved {
+    pub fn get_symbol(&self) -> Symbol {
+        match &self {
+            Self::Local((s, _)) | Self::Enclosed((s, _)) => s.clone(),
+        }
+    }
     pub fn get_type(&self) -> DefineType {
         match &self {
             Self::Local((_, t)) | Self::Enclosed((_, t)) => t.clone(),
