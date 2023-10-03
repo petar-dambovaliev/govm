@@ -13,10 +13,10 @@ use crate::vm::compiler::{
     JUMP_PLACEHOLDER,
 };
 
+use crate::vm::compiler::declaration::make_dep_graph;
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
-use crate::vm::compiler::declaration::{make_var_const_dep_graph, register_global_types};
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -200,17 +200,11 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
-        let strcts = register_global_types(&ast.decl, self);
-        let (graph, map_declr) = make_var_const_dep_graph(&ast.decl, self);
+        let (graph, map_declr) = make_dep_graph(&ast.decl, self);
 
         for declr_id in graph.into_iter() {
+            println!("declr: {}", declr_id.0);
             self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
-        }
-
-        // Call compile_statement on each child node directly
-        // We don't re-use compile_block_statement here because it exits the global scope
-        for s in &strcts {
-            self.compile_declaration(s)?;
         }
 
         let entry = Parser::from("main()").expression().unwrap();

@@ -6,7 +6,7 @@ use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::compiler::{FuncContext, OpCode, JUMP_PLACEHOLDER};
 use crate::vm::object::structure::{Interface, Struct};
-use crate::vm::object::{is_builtin_const, Object, Type};
+use crate::vm::object::{Object, Type};
 use crate::vm::symbols::{ContextType, DefineType, Scope};
 use crate::vm::{builtin, Error};
 use ahash::{HashMap, HashMapExt};
@@ -14,7 +14,7 @@ use ahash::{HashMap, HashMapExt};
 use crate::parser::token::LitKind;
 use dep_graph::{DepGraph, Node};
 
-pub fn make_var_const_dep_graph(
+pub fn make_dep_graph(
     declrs: &[Declaration],
     c: &mut Compiler,
 ) -> (
@@ -23,6 +23,51 @@ pub fn make_var_const_dep_graph(
 ) {
     let mut nodes = vec![];
     let mut declrs_map = HashMap::new();
+
+    for declr in declrs {
+        match declr {
+            Declaration::Type(tspec) => {
+                for spec in &tspec.specs {
+                    if !spec.alias {
+                        match &spec.typ {
+                            Expression::TypeInterface(_it) => {
+                                let dt = DefineType::Interface {
+                                    name: spec.name.name.clone(),
+                                    methods: vec![],
+                                };
+                                let key = (spec.name.name.to_string(), dt.clone());
+                                let node = Node::new(key.clone());
+                                nodes.push(node);
+                                declrs_map.insert(key.clone(), declr.clone());
+
+                                let _ = c.symbols.define(&spec.name.name.clone(), dt, false);
+                            }
+                            Expression::TypeStruct(_ta) => {
+                                let name = spec.name.name.as_str();
+
+                                let dt = DefineType::Struct {
+                                    name: name.to_string(),
+                                    fields: vec![],
+                                    methods: vec![],
+                                };
+
+                                let key = (name.to_string(), dt.clone());
+                                let node = Node::new(key.clone());
+                                nodes.push(node);
+                                declrs_map.insert(key.clone(), declr.clone());
+
+                                let _ = c.symbols.define(name, dt, false);
+                            }
+                            _ => unimplemented!("{:#?}", spec),
+                        }
+                    } else {
+                        unimplemented!("type aliases");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     for declr in declrs {
         match declr {
@@ -195,12 +240,78 @@ pub fn make_var_const_dep_graph(
                     idents.append(&mut get_const_idents_from_stmt(stmt, c));
                 }
 
+                for res in &f.typ.result.list {
+                    idents.append(&mut get_const_idents_from_expr(&res.typ, c));
+                }
+
+                for arg in &f.typ.params.list {
+                    idents.append(&mut get_const_idents_from_expr(&arg.typ, c));
+                }
+
                 for (name, dt) in idents {
                     if let Some(dep) = nodes.iter().find(|n| n.id().0 == name).cloned() {
                         nodes[pos].add_dep(dep.id().clone());
                     }
                 }
             }
+            Declaration::Type(tspec) => {
+                for spec in &tspec.specs {
+                    if !spec.alias {
+                        match &spec.typ {
+                            Expression::TypeInterface(it) => {
+                                let pos = nodes
+                                    .iter()
+                                    .position(|n| {
+                                        let id = n.id();
+                                        id.0 == spec.name.name.clone() && id.1.is_interface()
+                                    })
+                                    .unwrap();
+
+                                let mut idents = vec![];
+
+                                for method in &it.methods.list {
+                                    idents.append(&mut get_const_idents_from_expr(&method.typ, c));
+                                }
+
+                                for (name, dt) in idents {
+                                    if let Some(dep) =
+                                        nodes.iter().find(|n| n.id().0 == name).cloned()
+                                    {
+                                        nodes[pos].add_dep(dep.id().clone());
+                                    }
+                                }
+                            }
+                            Expression::TypeStruct(ta) => {
+                                let pos = nodes
+                                    .iter()
+                                    .position(|n| {
+                                        let id = n.id();
+                                        id.0 == spec.name.name.clone() && id.1.is_struct()
+                                    })
+                                    .unwrap();
+
+                                let mut idents = vec![];
+
+                                for field in &ta.fields {
+                                    idents.append(&mut get_const_idents_from_expr(&field.typ, c));
+                                }
+
+                                for (name, dt) in idents {
+                                    if let Some(dep) =
+                                        nodes.iter().find(|n| n.id().0 == name).cloned()
+                                    {
+                                        nodes[pos].add_dep(dep.id().clone());
+                                    }
+                                }
+                            }
+                            _ => unimplemented!("{:#?}", spec),
+                        }
+                    } else {
+                        unimplemented!("type aliases");
+                    }
+                }
+            }
+
             _ => {}
         }
     }
@@ -275,57 +386,12 @@ fn get_const_idents_from_expr(expr: &Expression, c: &mut Compiler) -> Vec<(Strin
                 idents.append(&mut get_const_idents_from_expr(&arg, c));
             }
         }
+        Expression::CompositeLit(clit) => {
+            idents.append(&mut get_const_idents_from_expr(clit.typ.as_ref(), c));
+        }
         t => println!("get_const_idents_from_expr: not implemented {:#?}", t),
     }
     idents
-}
-
-pub fn register_global_types(declrs: &[Declaration], c: &mut Compiler) -> (Vec<Declaration>) {
-    let mut strcts = vec![];
-
-    for declr in declrs {
-        match declr {
-            Declaration::Type(tspec) => {
-                for spec in &tspec.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            Expression::TypeInterface(_it) => {
-                                strcts.push(declr.clone());
-                                let _ = c.symbols.define(
-                                    &spec.name.name.clone(),
-                                    DefineType::Interface {
-                                        name: spec.name.name.clone(),
-                                        methods: vec![],
-                                    },
-                                    false,
-                                );
-                            }
-                            Expression::TypeStruct(_ta) => {
-                                strcts.push(declr.clone());
-                                let name = spec.name.name.as_str();
-                                println!("register struct: {}", name);
-                                let _ = c.symbols.define(
-                                    name,
-                                    DefineType::Struct {
-                                        name: name.to_string(),
-                                        fields: vec![],
-                                        methods: vec![],
-                                    },
-                                    false,
-                                );
-                            }
-                            _ => unimplemented!("{:#?}", spec),
-                        }
-                    } else {
-                        unimplemented!("type aliases");
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    strcts
 }
 
 pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
@@ -746,6 +812,8 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     c.emit_opcode(opcode);
     c.emit_u16(symbol.index);
 
+    //println!("f: {} op: {} id: {}", f_name, opcode, symbol.index);
+
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
 
@@ -926,6 +994,7 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
     } else {
         OpCode::SetLocal
     };
+    //panic!("{}", symbol.index);
     c.emit_opcode(opcode);
     c.emit_u16(symbol.index);
 

@@ -1073,6 +1073,7 @@ impl VM {
                         let value = self.pop();
                         fields.push(value);
                     }
+
                     let strct = self.pop_ref_mut();
                     let strct = strct.as_struct();
 

@@ -21,18 +21,17 @@ fn main() {
         r#"
 package main
 
-var b = a + 1 + c
-var a = newnum()
-var c = 3
-
-func newnum() int {
-    return 1
-}
-
 func main() {
-    println(b)
     println(a)
 }
+
+var a = newFoo()
+
+func newFoo() Foo {
+    return Foo{}
+}
+
+type Foo struct{}
     "#,
     );
 
