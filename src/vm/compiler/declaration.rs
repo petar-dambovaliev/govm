@@ -14,6 +14,10 @@ use ahash::{HashMap, HashMapExt};
 use crate::parser::token::LitKind;
 use dep_graph::{DepGraph, Node};
 
+//todo this only looks for identifiers
+// it needs to check those are actually globals
+// also implement all expressions in the analysis of functions
+
 pub fn make_dep_graph(
     declrs: &[Declaration],
     c: &mut Compiler,

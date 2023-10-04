@@ -492,8 +492,12 @@ impl DefineType {
                 let fields = fields
                     .iter()
                     .map(|f| {
-                        let field = f.as_named().unwrap();
-                        ContextType::Named(field.0, field.1.strip_type())
+                        let field = match f {
+                            ContextType::Named(n, t) => (n, t),
+                            ContextType::Embedded(n, t) => (n, t),
+                            _ => unimplemented!(),
+                        };
+                        ContextType::Named(field.0.clone(), field.1.strip_type())
                     })
                     .collect();
 

@@ -28,10 +28,11 @@ func main() {
 var a = newFoo()
 
 func newFoo() Foo {
-    return Foo{}
+    return Foo{Bar{}}
 }
 
-type Foo struct{}
+type Foo struct{Bar}
+type Bar struct{}
     "#,
     );
 

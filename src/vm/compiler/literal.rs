@@ -67,10 +67,12 @@ pub(crate) fn compile_struct(
         assert_eq!(inner_types.len(), clit_values.len());
 
         for (clit_value, ct) in clit_values.iter_mut().zip(inner_types.clone()) {
-            clit_value.key = Some(Element::Expr(Expression::Ident(Ident {
-                pos: 0,
-                name: ct.as_named().unwrap().0,
-            })));
+            let name = match ct {
+                ContextType::Named(n, _) => n,
+                ContextType::Embedded(n, _) => n,
+                _ => unimplemented!(),
+            };
+            clit_value.key = Some(Element::Expr(Expression::Ident(Ident { pos: 0, name })));
         }
     }
 
