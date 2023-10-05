@@ -21,18 +21,16 @@ fn main() {
         r#"
 package main
 
+const (
+	A, B = iota, iota
+	C = iota
+)
+
 func main() {
-    println(a)
+    println(A)
+    println(B)
+    println(C)
 }
-
-var a = newFoo()
-
-func newFoo() Foo {
-    return Foo{Bar{}}
-}
-
-type Foo struct{Bar}
-type Bar struct{}
     "#,
     );
 

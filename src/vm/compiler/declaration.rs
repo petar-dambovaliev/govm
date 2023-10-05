@@ -1,6 +1,6 @@
 use crate::parser::ast::{
-    ConstSpec, Decl, Declaration, Expression, FuncDecl, InterfaceType, Statement, StructType,
-    TypeSpec, VarSpec,
+    ConstSpec, Decl, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
+    StructType, TypeSpec, VarSpec,
 };
 use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
@@ -356,7 +356,7 @@ fn get_const_idents_from_expr(expr: &Expression, c: &mut Compiler) -> Vec<(Strin
     let mut idents = vec![];
     match expr {
         Expression::Ident(id) => {
-            if builtin::resolve(id.name.as_str()).is_none() {
+            if id.name != "iota" && builtin::resolve(id.name.as_str()).is_none() {
                 let dt = c
                     .symbols
                     .resolve(id.name.as_str())
@@ -825,25 +825,73 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
 }
 
 pub fn compile_const(c: &Decl<ConstSpec>, compiler: &mut Compiler) -> Result<(), Error> {
-    for spec in &c.specs {
-        for (name, value) in spec.name.iter().zip(spec.values.iter()) {
-            let rt = compiler.compile_expression(value)?;
+    let mut c_iter = c.specs.iter();
+    let mut grouped_constants = vec![];
+    let mut current_group = vec![];
 
-            let symbol = compiler.symbols.define(
-                name.name.as_str(),
-                DefineType::Const(Box::new(rt.clone())),
-                false,
-            );
+    while let Some(spec) = c_iter.next() {
+        // add the first one that has a init expression
+        if current_group.is_empty() {
+            assert!(!spec.values.is_empty());
+            assert_eq!(spec.name.len(), spec.values.len());
+            current_group.push(spec);
+            continue;
+        }
 
-            let op = if symbol.scope == Scope::Global {
-                OpCode::SetGlobal
-            } else {
-                OpCode::SetLocal
-            };
-            compiler.emit_opcode(op);
-            compiler.emit_u16(symbol.index);
+        // start a new group, if the number of constants changes
+        let value_spec = current_group.first().expect("should not happen");
+        if spec.name.len() != value_spec.name.len() {
+            assert!(!spec.values.is_empty());
+            assert_eq!(spec.name.len(), spec.values.len());
+            grouped_constants.push(current_group.clone());
+            current_group = vec![spec];
+            continue;
+        }
+
+        // if no values, it should be grouped with the current group
+        // otherwise, create a new group
+        if spec.values.is_empty() {
+            current_group.push(spec);
+        } else {
+            assert_eq!(spec.name.len(), spec.values.len());
+            grouped_constants.push(current_group.clone());
+            current_group = vec![spec];
         }
     }
+
+    grouped_constants.push(current_group);
+
+    compiler.iota = 0;
+
+    for grouped_constant in grouped_constants {
+        for cnst in grouped_constant.clone() {
+            for (name, value) in cnst.name.iter().zip(
+                grouped_constant
+                    .first()
+                    .expect("not to happen")
+                    .values
+                    .clone(),
+            ) {
+                let rt = compiler.compile_expression(&value)?;
+
+                let symbol = compiler.symbols.define(
+                    name.name.as_str(),
+                    DefineType::Const(Box::new(rt.clone())),
+                    false,
+                );
+
+                let op = if symbol.scope == Scope::Global {
+                    OpCode::SetGlobal
+                } else {
+                    OpCode::SetLocal
+                };
+                compiler.emit_opcode(op);
+                compiler.emit_u16(symbol.index);
+            }
+            compiler.iota += 1;
+        }
+    }
+
     Ok(())
 }
 

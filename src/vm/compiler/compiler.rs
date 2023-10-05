@@ -37,6 +37,7 @@ pub struct Compiler {
     pub(crate) func_contexts: Vec<FuncContext>,
     label_contexts: AHashMap<(usize, usize), String>,
     anonymous_struct: usize,
+    pub(crate) iota: usize,
 }
 
 impl Compiler {
@@ -51,6 +52,7 @@ impl Compiler {
             func_contexts: Vec::new(),
             label_contexts: AHashMap::new(),
             anonymous_struct: 0,
+            iota: 0,
         }
     }
 
@@ -203,7 +205,6 @@ impl Compiler {
         let (graph, map_declr) = make_dep_graph(&ast.decl, self);
 
         for declr_id in graph.into_iter() {
-            println!("declr: {}", declr_id.0);
             self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
         }
 
@@ -2272,6 +2273,13 @@ impl Compiler {
                 }
                 //
             }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Ident && (lit.value == "iota") => {
+                return self.compile_expression(&Expression::BasicLit(BasicLit {
+                    pos: 0,
+                    kind: LitKind::Integer,
+                    value: self.iota.to_string(),
+                }));
+            }
             Expression::BasicLit(lit)
                 if lit.kind == LitKind::Ident && (lit.value == "true" || lit.value == "false") =>
             {
@@ -2653,6 +2661,14 @@ impl Compiler {
                 } else if &ident.name == "false" {
                     self.emit_opcode(OpCode::False);
                     return Ok(DefineType::Bool);
+                }
+
+                if ident.name == "iota" {
+                    return self.compile_expression(&Expression::BasicLit(BasicLit {
+                        pos: 0,
+                        kind: LitKind::Integer,
+                        value: self.iota.to_string(),
+                    }));
                 }
 
                 // panic!("{:#?}", self.symbols);
