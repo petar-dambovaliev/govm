@@ -13,10 +13,10 @@ use crate::vm::compiler::{
     JUMP_PLACEHOLDER,
 };
 
-use crate::vm::compiler::declaration::make_dep_graph;
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
+use crate::vm::compiler::declaration::{make_dep_graph, type_spec};
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -33,9 +33,9 @@ pub struct Compiler {
     pub(crate) constants: Vec<Object>,
     pub(crate) instructions: Vec<u8>,
     last_instruction: Option<OpCode>,
-    contexts: Vec<Context>,
+    pub(crate) contexts: Vec<Context>,
     pub(crate) func_contexts: Vec<FuncContext>,
-    label_contexts: AHashMap<(usize, usize), String>,
+    pub(crate) label_contexts: AHashMap<(usize, usize), String>,
     anonymous_struct: usize,
     pub(crate) iota: usize,
 }
@@ -202,7 +202,23 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
+        let instructions = self.instructions.clone();
+        let last_instruction = self.last_instruction.clone();
+        let contexts = self.contexts.clone();
+        let symbols = self.symbols.clone();
+        let func_contexts = self.func_contexts.clone();
+        let label_contexts = self.label_contexts.clone();
+        let anonymous_struct = self.anonymous_struct;
+
         let (graph, map_declr) = make_dep_graph(&ast.decl, self);
+
+        self.instructions = instructions;
+        self.last_instruction = last_instruction;
+        self.symbols = symbols;
+        self.contexts = contexts;
+        self.func_contexts = func_contexts;
+        self.label_contexts = label_contexts;
+        self.anonymous_struct = anonymous_struct;
 
         for declr_id in graph.into_iter() {
             self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
@@ -423,6 +439,9 @@ impl Compiler {
                             }
                             Expression::TypeStruct(ta) => {
                                 type_struct(spec, ta, self);
+                            }
+                            Expression::Ident(_id) => {
+                                type_spec(spec, self);
                             }
                             _ => unimplemented!("{:#?}", spec),
                         }
@@ -1650,6 +1669,9 @@ impl Compiler {
     pub(crate) fn make_method_name(dt: DefineType, f_name: &str) -> String {
         let p = if dt.is_struct() {
             let (name, _, _) = dt.as_struct().unwrap();
+            name
+        } else if dt.is_spec() {
+            let (name, _, _, _) = dt.as_spec().unwrap();
             name
         } else {
             format!("{:#?}", dt)

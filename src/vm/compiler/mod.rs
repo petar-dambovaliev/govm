@@ -1,6 +1,7 @@
 mod call;
 pub mod compiler;
 pub mod declaration;
+pub mod dep_graph;
 pub mod literal;
 
 use crate::vm::symbols::*;
@@ -92,6 +93,7 @@ pub(crate) enum OpCode {
     TypedNull,
     CastToFloat32,
     CastToFloat64,
+    CastToAlias,
     Halt,
 }
 
@@ -151,7 +153,9 @@ impl OpCode {
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call | OpCode::CastToFloat32 | OpCode::CastToFloat64 => &[1],
+            OpCode::Call | OpCode::CastToFloat32 | OpCode::CastToFloat64 | OpCode::CastToAlias => {
+                &[1]
+            }
 
             OpCode::SetLocal
             | OpCode::GetGlobal
@@ -206,6 +210,7 @@ pub struct Bytecode {
     pub instructions: Vec<u8>,
 }
 
+#[derive(Clone)]
 enum Context {
     Switch(SwitchContext),
     For(LoopContext),
@@ -257,6 +262,7 @@ impl Context {
 }
 
 /// Type to keep track of switch constructs so we can emit the proper jump instructions
+#[derive(Clone)]
 struct SwitchContext {
     /// Points to the first instruction of the (current) loop condition
     /// This is where continue statements should jump to
@@ -279,6 +285,7 @@ impl SwitchContext {
     }
 }
 
+#[derive(Clone)]
 /// Type to keep track of loop constructs so we can emit the proper jump instructions
 struct LoopContext {
     /// Points to the first instruction of the (current) loop condition
@@ -307,6 +314,7 @@ impl LoopContext {
     }
 }
 
+#[derive(Clone)]
 /// Type to keep track of function constructs so we can emit the proper jump instructions
 pub(crate) struct FuncContext {
     /// Points to the first instruction of the (current) loop condition
@@ -417,6 +425,7 @@ impl Display for OpCode {
             Self::MakeSlice => "MakeSlice",
             Self::CastToFloat32 => "CastToFloat32",
             Self::CastToFloat64 => "CastToFloat64",
+            Self::CastToAlias => "CastToAlias",
             Self::Halt => "Halt",
         };
         f.write_str(s)

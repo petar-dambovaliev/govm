@@ -1,420 +1,30 @@
 use crate::parser::ast::{
-    ConstSpec, Decl, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
+    ConstSpec, Decl, DeclStmt, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
     StructType, TypeSpec, VarSpec,
 };
 use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::compiler::{FuncContext, OpCode, JUMP_PLACEHOLDER};
-use crate::vm::object::structure::{Interface, Struct};
+use crate::vm::object::structure::{Alias, Interface, Struct};
 use crate::vm::object::{Object, Type};
 use crate::vm::symbols::{ContextType, DefineType, Scope};
-use crate::vm::{builtin, Error};
-use ahash::{HashMap, HashMapExt};
-
-use crate::parser::token::LitKind;
-use dep_graph::{DepGraph, Node};
-
-//todo this only looks for identifiers
-// it needs to check those are actually globals
-// also implement all expressions in the analysis of functions
-
-pub fn make_dep_graph(
-    declrs: &[Declaration],
-    c: &mut Compiler,
-) -> (
-    DepGraph<(String, DefineType)>,
-    HashMap<(String, DefineType), Declaration>,
-) {
-    let mut nodes = vec![];
-    let mut declrs_map = HashMap::new();
-
-    for declr in declrs {
-        match declr {
-            Declaration::Type(tspec) => {
-                for spec in &tspec.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            Expression::TypeInterface(_it) => {
-                                let dt = DefineType::Interface {
-                                    name: spec.name.name.clone(),
-                                    methods: vec![],
-                                };
-                                let key = (spec.name.name.to_string(), dt.clone());
-                                let node = Node::new(key.clone());
-                                nodes.push(node);
-                                declrs_map.insert(key.clone(), declr.clone());
-
-                                let _ = c.symbols.define(&spec.name.name.clone(), dt, false);
-                            }
-                            Expression::TypeStruct(_ta) => {
-                                let name = spec.name.name.as_str();
-
-                                let dt = DefineType::Struct {
-                                    name: name.to_string(),
-                                    fields: vec![],
-                                    methods: vec![],
-                                };
-
-                                let key = (name.to_string(), dt.clone());
-                                let node = Node::new(key.clone());
-                                nodes.push(node);
-                                declrs_map.insert(key.clone(), declr.clone());
-
-                                let _ = c.symbols.define(name, dt, false);
-                            }
-                            _ => unimplemented!("{:#?}", spec),
-                        }
-                    } else {
-                        unimplemented!("type aliases");
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    for declr in declrs {
-        match declr {
-            Declaration::Const(v) => {
-                for spec in &v.specs {
-                    for name in &spec.name {
-                        let dt = DefineType::Const(Box::new(DefineType::Null));
-                        let key = (name.name.to_string(), dt.clone());
-                        let node = Node::new(key.clone());
-                        nodes.push(node);
-                        declrs_map.insert(key.clone(), declr.clone());
-
-                        let _ = c.symbols.define(name.name.as_str(), dt.clone(), false);
-                    }
-                }
-            }
-            Declaration::Variable(v) => {
-                for spec in &v.specs {
-                    for name in &spec.name {
-                        let dt = DefineType::Var(Box::new(DefineType::Null));
-                        let key = (name.name.to_string(), dt.clone());
-                        let node = Node::new(key.clone());
-                        nodes.push(node);
-
-                        declrs_map.insert(key.clone(), declr.clone());
-
-                        let _ = c.symbols.define(name.name.as_str(), dt.clone(), false);
-                    }
-                }
-            }
-            Declaration::Function(f) => {
-                let (f_name, _recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
-                    let recv = recv.list.first().unwrap();
-                    let t = c.expression_to_define_type(&recv.typ).unwrap();
-
-                    let ret = (
-                        Compiler::make_method_name(t.strip_ref(), &f.name.name),
-                        Some(recv),
-                        Some(Box::new(t)),
-                    );
-
-                    ret
-                } else {
-                    (f.name.name.clone(), None, None)
-                };
-
-                let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
-
-                for p in &f.typ.params.list {
-                    let t = c.expression_to_define_type(&p.typ).unwrap();
-                    for name in &p.name {
-                        decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
-                    }
-                }
-
-                let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
-
-                for el in &f.typ.result.list {
-                    let t = c.expression_to_define_type(&el.typ).unwrap();
-                    decl_r_types.push(t);
-                }
-
-                let r_t = if decl_r_types.is_empty() {
-                    DefineType::Null
-                } else if decl_r_types.len() == 1 {
-                    decl_r_types[0].clone()
-                } else {
-                    DefineType::Tuple(decl_r_types.clone())
-                };
-
-                let func_def = DefineType::Func {
-                    name: f.name.name.clone(),
-                    recv: recv_t.clone(),
-                    args: decl_arg_types,
-                    rt: Box::new(r_t),
-                };
-
-                let _ = c.symbols.define(&f_name, func_def.clone(), false);
-
-                //add method to struct symbol
-                if let Some(recv) = recv_t {
-                    let (r_name, r_fields, mut r_methods) = c
-                        .symbols
-                        .resolve(&recv.get_type_name())
-                        .unwrap()
-                        .get_type()
-                        .as_struct()
-                        .unwrap();
-
-                    r_methods.push(func_def.clone());
-                    let updated = c.symbols.update_dt(
-                        &r_name,
-                        DefineType::Struct {
-                            name: r_name.to_string(),
-                            fields: r_fields.clone(),
-                            methods: r_methods.clone(),
-                        },
-                    );
-                    assert!(updated);
-                }
-
-                let key = (f.name.name.to_string(), func_def.clone());
-                let node = Node::new(key.clone());
-                nodes.push(node);
-
-                declrs_map.insert(key.clone(), declr.clone());
-            }
-            _ => {}
-        }
-    }
-
-    for declr in declrs {
-        match declr {
-            Declaration::Const(v) => {
-                for spec in &v.specs {
-                    for (name, expr) in spec.name.iter().zip(&spec.values) {
-                        let pos = nodes
-                            .iter()
-                            .position(|n| {
-                                n.id()
-                                    == &(
-                                        name.name.clone(),
-                                        DefineType::Const(Box::new(DefineType::Null)),
-                                    )
-                            })
-                            .unwrap();
-
-                        let deps = get_const_idents_from_expr(expr, c);
-
-                        for dep_id in deps {
-                            nodes[pos].add_dep(dep_id);
-                        }
-                    }
-                }
-            }
-            Declaration::Variable(v) => {
-                for spec in &v.specs {
-                    for (name, expr) in spec.name.iter().zip(&spec.values) {
-                        let pos = nodes
-                            .iter()
-                            .position(|n| {
-                                n.id()
-                                    == &(
-                                        name.name.clone(),
-                                        DefineType::Var(Box::new(DefineType::Null)),
-                                    )
-                            })
-                            .unwrap();
-
-                        let deps = get_const_idents_from_expr(expr, c);
-
-                        for dep_id in deps {
-                            nodes[pos].add_dep(dep_id);
-                        }
-                    }
-                }
-            }
-            Declaration::Function(f) => {
-                let pos = nodes
-                    .iter()
-                    .position(|n| {
-                        let id = n.id();
-                        id.0 == f.name.name.clone() && id.1.is_func()
-                    })
-                    .unwrap();
-
-                let mut idents = vec![];
-
-                for stmt in &f.body.as_ref().unwrap().list {
-                    idents.append(&mut get_const_idents_from_stmt(stmt, c));
-                }
-
-                for res in &f.typ.result.list {
-                    idents.append(&mut get_const_idents_from_expr(&res.typ, c));
-                }
-
-                for arg in &f.typ.params.list {
-                    idents.append(&mut get_const_idents_from_expr(&arg.typ, c));
-                }
-
-                for (name, dt) in idents {
-                    if let Some(dep) = nodes.iter().find(|n| n.id().0 == name).cloned() {
-                        nodes[pos].add_dep(dep.id().clone());
-                    }
-                }
-            }
-            Declaration::Type(tspec) => {
-                for spec in &tspec.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            Expression::TypeInterface(it) => {
-                                let pos = nodes
-                                    .iter()
-                                    .position(|n| {
-                                        let id = n.id();
-                                        id.0 == spec.name.name.clone() && id.1.is_interface()
-                                    })
-                                    .unwrap();
-
-                                let mut idents = vec![];
-
-                                for method in &it.methods.list {
-                                    idents.append(&mut get_const_idents_from_expr(&method.typ, c));
-                                }
-
-                                for (name, dt) in idents {
-                                    if let Some(dep) =
-                                        nodes.iter().find(|n| n.id().0 == name).cloned()
-                                    {
-                                        nodes[pos].add_dep(dep.id().clone());
-                                    }
-                                }
-                            }
-                            Expression::TypeStruct(ta) => {
-                                let pos = nodes
-                                    .iter()
-                                    .position(|n| {
-                                        let id = n.id();
-                                        id.0 == spec.name.name.clone() && id.1.is_struct()
-                                    })
-                                    .unwrap();
-
-                                let mut idents = vec![];
-
-                                for field in &ta.fields {
-                                    idents.append(&mut get_const_idents_from_expr(&field.typ, c));
-                                }
-
-                                for (name, dt) in idents {
-                                    if let Some(dep) =
-                                        nodes.iter().find(|n| n.id().0 == name).cloned()
-                                    {
-                                        nodes[pos].add_dep(dep.id().clone());
-                                    }
-                                }
-                            }
-                            _ => unimplemented!("{:#?}", spec),
-                        }
-                    } else {
-                        unimplemented!("type aliases");
-                    }
-                }
-            }
-
-            _ => {}
-        }
-    }
-
-    let graph = DepGraph::new(&nodes);
-    (graph, declrs_map)
-}
-
-fn get_const_idents_from_stmt(stmt: &Statement, c: &mut Compiler) -> Vec<(String, DefineType)> {
-    let mut idents = vec![];
-    match stmt {
-        Statement::Expr(expr) => {
-            idents.append(&mut get_const_idents_from_expr(&expr.expr, c));
-        }
-        Statement::Return(ret) => {
-            for r in &ret.ret {
-                idents.append(&mut get_const_idents_from_expr(r, c));
-            }
-        }
-        Statement::If(ifstmt) => {
-            for s in &ifstmt.body.list {
-                idents.append(&mut get_const_idents_from_stmt(s, c));
-            }
-            if let Some(init) = &ifstmt.init {
-                idents.append(&mut get_const_idents_from_stmt(init.as_ref(), c));
-            }
-            idents.append(&mut get_const_idents_from_expr(&ifstmt.cond, c));
-            if let Some(els) = &ifstmt.else_ {
-                idents.append(&mut get_const_idents_from_stmt(els.as_ref(), c));
-            }
-        }
-        t => println!("get_const_idents_from_stmt: not implemented {:#?}", t),
-    }
-    idents
-}
-
-fn get_const_idents_from_expr(expr: &Expression, c: &mut Compiler) -> Vec<(String, DefineType)> {
-    let mut idents = vec![];
-    match expr {
-        Expression::Ident(id) => {
-            if id.name != "iota" && builtin::resolve(id.name.as_str()).is_none() {
-                let dt = c
-                    .symbols
-                    .resolve(id.name.as_str())
-                    .expect(&format!(
-                        "get_const_idents_from_expr: ident not found {}",
-                        id.name.as_str()
-                    ))
-                    .get_type();
-                idents.push((id.name.clone(), dt));
-            }
-        }
-        Expression::BasicLit(bl) => {
-            if bl.kind == LitKind::Ident {
-                let dt = c.symbols.resolve(bl.value.as_str()).unwrap().get_type();
-                idents.push((bl.value.clone(), dt));
-            }
-        }
-        Expression::Operation(op) => {
-            idents.append(&mut get_const_idents_from_expr(
-                &mut op.x.as_ref().clone(),
-                c,
-            ));
-
-            if let Some(s) = &op.y {
-                idents.append(&mut get_const_idents_from_expr(&mut s.as_ref().clone(), c));
-            }
-        }
-        Expression::Call(call) => {
-            idents.append(&mut get_const_idents_from_expr(&call.func, c));
-            for arg in &call.args {
-                idents.append(&mut get_const_idents_from_expr(&arg, c));
-            }
-        }
-        Expression::CompositeLit(clit) => {
-            idents.append(&mut get_const_idents_from_expr(clit.typ.as_ref(), c));
-        }
-        t => println!("get_const_idents_from_expr: not implemented {:#?}", t),
-    }
-    idents
-}
+use crate::vm::Error;
 
 pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
     for spec in &v.specs {
-        let mut declared_tp = None;
+        let declared_tp = c
+            .expression_to_define_type(
+                spec.typ
+                    .as_ref()
+                    .expect("no declared values requires a declared type"),
+            )
+            .unwrap();
+
         let mut value_is_default = false;
         let values = if spec.values.is_empty() {
-            let tp = c
-                .expression_to_define_type(
-                    spec.typ
-                        .as_ref()
-                        .expect("no declared values requires a declared type"),
-                )
-                .unwrap();
-
-            declared_tp = Some(tp.clone());
             let mut defaults = Vec::with_capacity(spec.name.len());
             for _ in 0..spec.name.len() {
-                defaults.push(c.make_type_default_val(tp.clone()));
+                defaults.push(c.make_type_default_val(declared_tp.clone()));
             }
             value_is_default = true;
             defaults
@@ -424,56 +34,57 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
 
         for (name, value) in spec.name.iter().zip(values.iter()) {
             let mut rt = c.compile_expression(value)?;
+            if value_is_default && declared_tp.is_nullable() {
+                c.emit_opcode(OpCode::TypedNull);
 
-            if rt.is_invar() {
-                panic!("var cant be invar");
-            }
-
-            if let Some(dtp) = &declared_tp {
-                if value_is_default && dtp.is_nullable() {
-                    c.emit_opcode(OpCode::TypedNull);
-
-                    //todo register all typed nulls
-                    if dtp.is_func() {
-                        let mut found_closure = false;
-                        for (ind, constant) in c.constants.iter().enumerate() {
-                            if constant.tag() == Type::Closure {
-                                let closure = constant.as_closure();
-                                if closure.is_null {
-                                    c.emit_u16(ind.try_into().unwrap());
-                                    found_closure = true;
-                                    break;
-                                }
+                //todo register all typed nulls
+                if declared_tp.is_func() {
+                    let mut found_closure = false;
+                    for (ind, constant) in c.constants.iter().enumerate() {
+                        if constant.tag() == Type::Closure {
+                            let closure = constant.as_closure();
+                            if closure.is_null {
+                                c.emit_u16(ind.try_into().unwrap());
+                                found_closure = true;
+                                break;
                             }
                         }
-                        if !found_closure {
-                            panic!("could not find closure constant");
-                        }
-                    } else if dtp.is_slice() {
-                        let cid = c.add_constant(dtp.clone().to_object());
-                        c.emit_u16(cid);
-                    } else {
-                        unimplemented!("typed null: {:#?}", dtp);
                     }
+                    if !found_closure {
+                        panic!("could not find closure constant");
+                    }
+                } else if declared_tp.is_slice() {
+                    let cid = c.add_constant(declared_tp.clone().to_object());
+                    c.emit_u16(cid);
+                } else {
+                    unimplemented!("typed null: {:#?}", declared_tp);
                 }
+            }
 
-                if rt.is_nil() && (dtp.is_ref() || dtp.is_func() || dtp.is_slice()) {
-                    rt = dtp.clone();
-                }
+            if rt.is_nil()
+                && (declared_tp.is_ref() || declared_tp.is_func() || declared_tp.is_slice())
+            {
+                rt = declared_tp.clone();
             }
 
             let mut should_upcast = false;
+            let mut should_cast_alias = false;
 
-            if let Some(dtp) = &declared_tp {
-                if rt != *dtp {
-                    if value.is_int_lit() {
-                        let i = value.as_int_lit().unwrap();
-                        if i >= u8::MIN as isize && i <= u8::MAX as isize {
-                            rt = dtp.clone();
-                        }
-                    } else if dtp.is_interface() {
-                        rt = dtp.clone();
-                        should_upcast = true;
+            if rt != declared_tp {
+                if value.is_int_lit() {
+                    let i = value.as_int_lit().unwrap();
+                    if i >= u8::MIN as isize && i <= u8::MAX as isize {
+                        rt = declared_tp.clone();
+                    }
+                } else if declared_tp.is_interface() {
+                    rt = declared_tp.clone();
+                    should_upcast = true;
+                } else if declared_tp.is_spec() {
+                    let spec = declared_tp.as_spec().unwrap();
+
+                    if spec.1 == rt {
+                        rt = declared_tp.clone();
+                        should_cast_alias = true;
                     }
                 }
             }
@@ -495,13 +106,17 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
             };
 
             if should_upcast {
-                if let Some(dtp) = &declared_tp {
-                    let (name, _) = dtp.as_interface();
-                    let (s, _) = c.symbols.resolve(&name).unwrap().as_local();
+                let (name, _) = declared_tp.as_interface();
+                let (s, _) = c.symbols.resolve(&name).unwrap().as_local();
 
-                    c.emit_opcode(OpCode::Upcast);
-                    c.emit_u16(s.index);
-                }
+                c.emit_opcode(OpCode::Upcast);
+                c.emit_u16(s.index);
+            } else if should_cast_alias {
+                let (name, _, _, _) = declared_tp.as_spec().unwrap();
+                let (s, _) = c.symbols.resolve(&name).unwrap().as_local();
+
+                c.emit_opcode(OpCode::CastToAlias);
+                c.emit_u16(s.index);
             }
 
             let op = if symbol.scope == Scope::Global {
@@ -638,24 +253,38 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     if let Some(recv) = recv {
         let t = c.expression_to_define_type(&recv.typ).unwrap();
 
-        let (r_name, r_fields, mut r_methods) = c
-            .symbols
-            .resolve(&t.get_type_name())
-            .unwrap()
-            .get_type()
-            .as_struct()
-            .unwrap();
+        let tt = c.symbols.resolve(&t.get_type_name()).unwrap().get_type();
 
-        r_methods.push(func_def.clone());
-        let updated = c.symbols.update_dt(
-            &r_name,
-            DefineType::Struct {
-                name: r_name.to_string(),
-                fields: r_fields,
-                methods: r_methods,
-            },
-        );
-        assert!(updated);
+        if tt.is_struct() {
+            let (r_name, r_fields, mut r_methods) = tt.as_struct().unwrap();
+
+            r_methods.push(func_def.clone());
+            let updated = c.symbols.update_dt(
+                &r_name,
+                DefineType::Struct {
+                    name: r_name.to_string(),
+                    fields: r_fields,
+                    methods: r_methods,
+                },
+            );
+            assert!(updated);
+        } else if tt.is_spec() {
+            let (name, inner, mut methods, is_transparent) = tt.as_spec().unwrap();
+            assert!(!is_transparent);
+
+            methods.push(func_def.clone());
+
+            let updated = c.symbols.update_dt(
+                &name,
+                DefineType::Spec {
+                    name: name.to_string(),
+                    inner: Box::new(inner),
+                    methods,
+                    is_transparent,
+                },
+            );
+            assert!(updated);
+        }
     }
 
     let pos_start_function = c.instructions.len();
@@ -796,6 +425,26 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
             if !added {
                 panic!("internal error: could not added method to struct");
             }
+        } else if let DefineType::Spec { name, .. } = &t.strip_ref() {
+            for constant in &mut c.constants {
+                if constant.tag() == Type::Alias {
+                    let alias = constant.as_alias_mut();
+                    if &alias.name == name {
+                        added = true;
+                        alias
+                            .method_dispatch
+                            .push((f.name.name.clone(), pos_start_function));
+                        //println!("add {:#?} to {:#?}", f.name.name, strct.name);
+                    }
+                    //println!("{:#?}", constant);
+                }
+            }
+
+            if !added {
+                panic!("internal error: could not added method to spec");
+            }
+        } else {
+            unimplemented!("{:#?}", t.strip_ref());
         }
     }
 
@@ -947,6 +596,56 @@ pub fn type_interface(spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
     };
     c.emit_opcode(opcode);
     c.emit_u16(s.index);
+
+    c.emit_opcode(OpCode::Const);
+    c.emit_u16(idx);
+}
+
+pub fn type_spec(spec: &TypeSpec, c: &mut Compiler) {
+    let t = spec.name.clone();
+    let inner_t = c.expression_to_define_type(&spec.typ).unwrap();
+
+    let symbol = match c.symbols.resolve(&t.name) {
+        Some(s) => {
+            let s = s.get_symbol();
+            let updated = c.symbols.update_dt(
+                &t.name,
+                DefineType::Spec {
+                    name: t.name.to_string(),
+                    inner: Box::new(inner_t),
+                    methods: vec![],
+                    is_transparent: spec.alias,
+                },
+            );
+            assert!(updated);
+
+            s
+        }
+        None => c.symbols.define(
+            &t.name,
+            DefineType::Spec {
+                name: t.name.to_string(),
+                inner: Box::new(inner_t),
+                methods: vec![],
+                is_transparent: spec.alias,
+            },
+            false,
+        ),
+    };
+
+    let obj = Alias::object(t.name.to_string(), Object::null(), vec![], spec.alias);
+    let idx = c.add_constant(obj);
+    c.emit_opcode(OpCode::Const);
+    c.emit_u16(idx);
+
+    let opcode = if symbol.scope == Scope::Global {
+        OpCode::SetGlobal
+    } else {
+        OpCode::SetLocal
+    };
+    //panic!("{}", symbol.index);
+    c.emit_opcode(opcode);
+    c.emit_u16(symbol.index);
 
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);

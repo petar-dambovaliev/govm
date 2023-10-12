@@ -16,7 +16,7 @@ use crate::vm::object::int::{
 };
 use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
-use crate::vm::object::structure::{Interface, Struct, TypeValue};
+use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
 use crate::vm::Error;
 use std::alloc::{handle_alloc_error, Layout};
 use std::cmp::Ordering;
@@ -78,6 +78,7 @@ pub enum Type {
     Type,
     Slice,
     Variadic,
+    Alias,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -506,6 +507,12 @@ impl Object {
     }
 
     #[inline]
+    pub fn as_alias_mut(&mut self) -> &mut Alias {
+        assert_eq!(self.tag(), Type::Alias);
+        unsafe { Alias::read_mut(self) }
+    }
+
+    #[inline]
     pub fn as_closure(&self) -> &Closure {
         assert_eq!(self.tag(), Type::Closure);
         unsafe { Closure::read(self) }
@@ -624,108 +631,112 @@ impl FromVec<&[Object]> for Object {
 impl PartialEq for Object {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        match (self.tag(), other.tag()) {
+        let this = unwrap_alias(*self);
+        let other = unwrap_alias(*other);
+
+        match (this.tag(), other.tag()) {
             (Type::Ref, Type::Null) => {
-                let reference = self.as_ref();
+                let reference = this.as_ref();
                 return reference.value.tag() == Type::Null;
             }
             (Type::Null, Type::Ref) => {
                 let reference = other.as_ref();
                 return reference.value.tag() == Type::Null;
             }
-            (Type::Slice, Type::Null) => return Slice::is_null(self),
-            (Type::Null, Type::Slice) => return Slice::is_null(other),
+            (Type::Slice, Type::Null) => return Slice::is_null(&this),
+            (Type::Null, Type::Slice) => return Slice::is_null(&other),
             _ => {
-                if self.tag() != other.tag() {
+                if this.tag() != other.tag() {
                     return false;
                 }
             }
         }
-        //panic!("{:#?}=={:#?}", self.tag(), other.tag());
+        //panic!("{:#?}=={:#?}", this.tag(), other.tag());
         // TODO: Maybe delay type check (on other object) to here
         //  (and then only for heap-allocated objects)
-        match self.tag() {
+        match this.tag() {
             Type::Null => true,
-            Type::Function => self.0 == other.0,
+            Type::Function => this.0 == other.0,
             Type::Bool => {
-                let l = self.as_bool();
+                let l = this.as_bool();
                 let r = other.as_bool();
                 l == r
             }
             Type::Int => {
-                let l = self.as_isize();
+                let l = this.as_isize();
                 let r = other.as_isize();
                 l == r
             }
             Type::I8 => {
-                let l = self.as_int8();
+                let l = this.as_int8();
                 let r = other.as_int8();
                 l.value == r.value
             }
             Type::I16 => {
-                let l = self.as_int16();
+                let l = this.as_int16();
                 let r = other.as_int16();
                 l.value == r.value
             }
             Type::I32 => {
-                let l = self.as_int32();
+                let l = this.as_int32();
                 let r = other.as_int32();
                 l.value == r.value
             }
             Type::I64 => {
-                let l = self.as_int64();
+                let l = this.as_int64();
                 let r = other.as_int64();
                 l.value == r.value
             }
             Type::UI => {
-                let l = self.as_uint();
+                let l = this.as_uint();
                 let r = other.as_uint();
                 l.value == r.value
             }
             Type::UI8 => {
-                let l = self.as_uint8();
+                let l = this.as_uint8();
                 let r = other.as_uint8();
                 l.value == r.value
             }
             Type::UI16 => {
-                let l = self.as_uint16();
+                let l = this.as_uint16();
                 let r = other.as_uint16();
                 l.value == r.value
             }
             Type::UI32 => {
-                let l = self.as_uint32();
+                let l = this.as_uint32();
                 let r = other.as_uint32();
                 l.value == r.value
             }
             Type::UI64 => {
-                let l = self.as_uint64();
+                let l = this.as_uint64();
                 let r = other.as_uint64();
                 l.value == r.value
             }
             Type::Byte => {
-                let l = self.as_byte();
+                let l = this.as_byte();
                 let r = other.as_byte();
                 l.value == r.value
             }
             Type::Complex64 => {
-                let l = self.as_complex64();
+                let l = this.as_complex64();
                 let r = other.as_complex64();
                 l.value == r.value
             }
             Type::Complex128 => {
-                let l = self.as_complex128();
+                let l = this.as_complex128();
                 let r = other.as_complex128();
                 l.value == r.value
             }
-            Type::Float32 => unsafe { self.as_float32() == other.as_float32() },
-            Type::Float64 => self.as_float64() == other.as_float64(),
-            Type::String => unsafe { self.as_str_unchecked() == other.as_str_unchecked() },
+            Type::Float32 => unsafe { this.as_float32() == other.as_float32() },
+            Type::Float64 => this.as_float64() == other.as_float64(),
+            Type::String => unsafe { this.as_str_unchecked() == other.as_str_unchecked() },
             Type::Type => {
-                let left = self.as_type_value();
+                let left = this.as_type_value();
                 let right = other.as_type_value();
 
                 left == right
             }
+            Type::Alias => unreachable!(),
             //Type::Rune => unsafe{self.as_rune() == other.as_rune()},
             Type::Array
             | Type::Ref
@@ -739,12 +750,20 @@ impl PartialEq for Object {
             | Type::Variadic => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
-                    self.tag(),
+                    this.tag(),
                     other.tag()
                 )
             }
         }
     }
+}
+
+pub(crate) fn unwrap_alias(mut obj: Object) -> Object {
+    while obj.tag() == Type::Alias {
+        let alias = unsafe { Alias::read(&obj) };
+        obj = alias.value;
+    }
+    obj
 }
 
 impl PartialOrd for Object {
@@ -753,26 +772,30 @@ impl PartialOrd for Object {
         // we assert this in the various wrapper functions, eg Object::lt
         debug_assert_eq!(self.tag(), other.tag());
 
-        match self.tag() {
-            Type::Null | Type::Bool => self.0.partial_cmp(&other.0),
-            Type::Int => self.as_int().value.partial_cmp(&other.as_int().value),
-            Type::I8 => self.as_int8().value.partial_cmp(&other.as_int8().value),
-            Type::I16 => self.as_int16().value.partial_cmp(&other.as_int16().value),
-            Type::I32 => self.as_int32().value.partial_cmp(&other.as_int32().value),
-            Type::I64 => self.as_int64().value.partial_cmp(&other.as_int64().value),
-            Type::Byte => self.as_byte().value.partial_cmp(&other.as_byte().value),
-            Type::UI => self.as_uint().value.partial_cmp(&other.as_uint().value),
-            Type::UI8 => self.as_uint8().value.partial_cmp(&other.as_uint8().value),
-            Type::UI16 => self.as_uint16().value.partial_cmp(&other.as_uint16().value),
-            Type::UI32 => self.as_uint32().value.partial_cmp(&other.as_uint32().value),
-            Type::UI64 => self.as_uint64().value.partial_cmp(&other.as_uint64().value),
-            Type::Float64 => self.as_float64().partial_cmp(&other.as_float64()),
-            Type::Float32 => unsafe { self.as_float32().partial_cmp(&other.as_float32()) },
-            Type::String => unsafe { self.as_str_unchecked().partial_cmp(other.as_str()) },
+        let this = unwrap_alias(*self);
+        let other = unwrap_alias(*other);
+
+        match this.tag() {
+            Type::Null | Type::Bool => this.0.partial_cmp(&other.0),
+            Type::Int => this.as_int().value.partial_cmp(&other.as_int().value),
+            Type::I8 => this.as_int8().value.partial_cmp(&other.as_int8().value),
+            Type::I16 => this.as_int16().value.partial_cmp(&other.as_int16().value),
+            Type::I32 => this.as_int32().value.partial_cmp(&other.as_int32().value),
+            Type::I64 => this.as_int64().value.partial_cmp(&other.as_int64().value),
+            Type::Byte => this.as_byte().value.partial_cmp(&other.as_byte().value),
+            Type::UI => this.as_uint().value.partial_cmp(&other.as_uint().value),
+            Type::UI8 => this.as_uint8().value.partial_cmp(&other.as_uint8().value),
+            Type::UI16 => this.as_uint16().value.partial_cmp(&other.as_uint16().value),
+            Type::UI32 => this.as_uint32().value.partial_cmp(&other.as_uint32().value),
+            Type::UI64 => this.as_uint64().value.partial_cmp(&other.as_uint64().value),
+            Type::Float64 => this.as_float64().partial_cmp(&other.as_float64()),
+            Type::Float32 => unsafe { this.as_float32().partial_cmp(&other.as_float32()) },
+            Type::String => unsafe { this.as_str_unchecked().partial_cmp(other.as_str()) },
             Type::Complex64 | Type::Complex128 => {
                 unimplemented!()
             }
-            Type::Rune => self.as_rune().value.partial_cmp(&other.as_rune().value),
+            Type::Rune => this.as_rune().value.partial_cmp(&other.as_rune().value),
+            Type::Alias => unreachable!(),
             Type::Array
             | Type::Function
             | Type::Ref
@@ -940,27 +963,30 @@ impl Object {
 
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.tag() {
+        let this = unwrap_alias(*self);
+
+        match this.tag() {
+            Type::Alias => unreachable!(),
             Type::Null => f.write_str("nil")?,
-            Type::Bool => f.write_str(if self.as_bool() { "true" } else { "false" })?,
-            Type::Float32 => unsafe { f.write_str(&self.as_float32().to_string())? },
-            Type::Float64 => f.write_str(&self.as_float64().to_string())?,
-            Type::Int => f.write_str(&self.as_int().value.to_string())?,
-            Type::I8 => f.write_str(&self.as_int8().value.to_string())?,
-            Type::I16 => f.write_str(&self.as_int16().value.to_string())?,
-            Type::I32 => f.write_str(&self.as_int32().value.to_string())?,
-            Type::I64 => f.write_str(&self.as_int64().value.to_string())?,
-            Type::UI => f.write_str(&self.as_uint().value.to_string())?,
-            Type::UI8 => f.write_str(&self.as_uint8().value.to_string())?,
-            Type::UI16 => f.write_str(&self.as_uint16().value.to_string())?,
-            Type::UI32 => f.write_str(&self.as_uint32().value.to_string())?,
-            Type::UI64 => f.write_str(&self.as_uint64().value.to_string())?,
-            Type::Byte => f.write_str(&self.as_byte().value.to_string())?,
-            Type::String => unsafe { f.write_str(self.as_str_unchecked())? },
-            Type::Complex64 => f.write_str(&self.as_complex64().value.to_string())?,
-            Type::Complex128 => f.write_str(&self.as_complex128().value.to_string())?,
+            Type::Bool => f.write_str(if this.as_bool() { "true" } else { "false" })?,
+            Type::Float32 => unsafe { f.write_str(&this.as_float32().to_string())? },
+            Type::Float64 => f.write_str(&this.as_float64().to_string())?,
+            Type::Int => f.write_str(&this.as_int().value.to_string())?,
+            Type::I8 => f.write_str(&this.as_int8().value.to_string())?,
+            Type::I16 => f.write_str(&this.as_int16().value.to_string())?,
+            Type::I32 => f.write_str(&this.as_int32().value.to_string())?,
+            Type::I64 => f.write_str(&this.as_int64().value.to_string())?,
+            Type::UI => f.write_str(&this.as_uint().value.to_string())?,
+            Type::UI8 => f.write_str(&this.as_uint8().value.to_string())?,
+            Type::UI16 => f.write_str(&this.as_uint16().value.to_string())?,
+            Type::UI32 => f.write_str(&this.as_uint32().value.to_string())?,
+            Type::UI64 => f.write_str(&this.as_uint64().value.to_string())?,
+            Type::Byte => f.write_str(&this.as_byte().value.to_string())?,
+            Type::String => unsafe { f.write_str(this.as_str_unchecked())? },
+            Type::Complex64 => f.write_str(&this.as_complex64().value.to_string())?,
+            Type::Complex128 => f.write_str(&this.as_complex128().value.to_string())?,
             Type::Array => {
-                let values = unsafe { self.as_vec_unchecked() };
+                let values = unsafe { this.as_vec_unchecked() };
                 f.write_char('[')?;
                 for (i, obj) in values.iter().enumerate() {
                     if i > 0 {
@@ -971,7 +997,7 @@ impl Display for Object {
                 f.write_char(']')?;
             }
             Type::Slice => {
-                let values = unsafe { self.as_vec_unchecked() };
+                let values = unsafe { this.as_vec_unchecked() };
                 f.write_char('[')?;
                 for (i, obj) in values.iter().enumerate() {
                     if i > 0 {
@@ -982,7 +1008,7 @@ impl Display for Object {
                 f.write_char(']')?;
             }
             Type::Struct => {
-                let strct = self.as_struct();
+                let strct = this.as_struct();
 
                 let name = if strct.is_anonymous {
                     "struct"
@@ -1009,10 +1035,10 @@ impl Display for Object {
                 f.write_str(")}")?;
             }
             Type::Rune => {
-                f.write_str(&format!("rune({})", self.as_rune().value.to_string()))?;
+                f.write_str(&format!("rune({})", this.as_rune().value.to_string()))?;
             }
             Type::Map => {
-                let strct = self.as_map();
+                let strct = this.as_map();
 
                 f.write_char('{')?;
                 for (i, obj) in strct.iter() {
@@ -1023,7 +1049,7 @@ impl Display for Object {
                 f.write_char('}')?;
             }
             Type::Closure => {
-                let closure = self.as_closure();
+                let closure = this.as_closure();
 
                 f.write_str(&format!(
                     "func(): captured: {:#?} is_nil: {:#?}",
@@ -1037,15 +1063,15 @@ impl Display for Object {
             Type::Function => f.write_str("func")?,
             Type::Ref => {
                 f.write_char('&')?;
-                let hex = format!("{:p}", self.0);
+                let hex = format!("{:p}", this.0);
                 f.write_str("{addr:")?;
                 std::fmt::Display::fmt(&hex, f)?;
                 f.write_str(", value: ")?;
-                std::fmt::Display::fmt(&self.as_ref().value, f)?;
+                std::fmt::Display::fmt(&this.as_ref().value, f)?;
                 f.write_str("}")?;
             }
             Type::Interface => {
-                let i = unsafe { Interface::read(&self) };
+                let i = unsafe { Interface::read(&this) };
                 f.write_str("Interface ")?;
                 f.write_str(i.name.as_str())?;
                 f.write_char('(')?;
@@ -1053,13 +1079,13 @@ impl Display for Object {
                 f.write_char(')')?;
             }
             Type::Type => {
-                let t = unsafe { TypeValue::read(&self) };
+                let t = unsafe { TypeValue::read(&this) };
                 f.write_str("Type(")?;
                 f.write_str(&t.value.to_string())?;
                 f.write_char(')')?;
             }
             Type::Variadic => {
-                let values = unsafe { Variadic::read(&self) };
+                let values = unsafe { Variadic::read(&this) };
                 f.write_char('[')?;
                 for (i, obj) in values.iter().enumerate() {
                     if i > 0 {
@@ -1113,6 +1139,7 @@ impl Display for Type {
             Type::Type => "type",
             Type::Slice => "slice",
             Type::Variadic => "variadic",
+            Type::Alias => "alias",
         };
         f.write_str(str)
     }

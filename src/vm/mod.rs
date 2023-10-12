@@ -16,7 +16,7 @@ use crate::compiler::bytecode_to_human;
 use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float32, Float64};
-use crate::vm::object::structure::{Interface, Struct, TypeValue};
+use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
@@ -450,6 +450,26 @@ impl VM {
             //     constants[7].as_isize()
             // );
             match self.next() {
+                OpCode::CastToAlias => {
+                    let alias_id = self.read_u16();
+                    let value = self.pop();
+                    let c = self.globals[alias_id as usize];
+                    if c.tag() != Type::Alias {
+                        panic!(
+                            "expected alias: got {:#?} globals: {:#?} id: {:#?}",
+                            c, self.globals, alias_id
+                        );
+                    }
+
+                    let alias = unsafe { Alias::read(&c) };
+
+                    self.push(Alias::object(
+                        alias.name.clone(),
+                        value,
+                        alias.method_dispatch.clone(),
+                        alias.is_transparent,
+                    ));
+                }
                 OpCode::CastToFloat64 => {
                     let i = self.read_u8();
                     let len = self.stack.len();

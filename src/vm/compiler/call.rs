@@ -33,35 +33,6 @@ fn find_method(name: &str, methods: Vec<DefineType>) -> Option<(usize, DefineTyp
     None
 }
 
-fn find_method_by_name_with_path(
-    strct: DefineType,
-    name: &str,
-    mut current_path: Vec<usize>,
-) -> Option<(Vec<usize>, DefineType)> {
-    let (_, children, m) = strct.as_struct().unwrap();
-    if let Some((a, b)) = find_method(name, m) {
-        current_path.push(a);
-        return Some((current_path, b));
-    }
-
-    for (i, child) in children.iter().enumerate() {
-        if let ContextType::Embedded(_, dt) = child {
-            if dt.is_struct() {
-                let mut child_path = current_path.clone();
-                child_path.push(i);
-
-                if let Some((path, method_name)) =
-                    find_method_by_name_with_path(dt.clone(), name, child_path)
-                {
-                    return Some((path, method_name));
-                }
-            }
-        }
-    }
-
-    None
-}
-
 impl CallType {
     pub fn from_call(call: &Call, c: &mut Compiler) -> Self {
         match call.func.as_ref() {
@@ -119,10 +90,41 @@ impl CallType {
                                 }
                             }
                         }
+                        DefineType::Spec { name, .. } => {
+                            let (_, _, methods, _) = c
+                                .symbols
+                                .resolve(&name)
+                                .unwrap()
+                                .get_type()
+                                .as_spec()
+                                .unwrap();
+
+                            match find_method(&method_name, methods.clone()) {
+                                Some((_, m)) => {
+                                    return CallType::Method {
+                                        mangled_name: CallType::make_method_name(
+                                            dt.clone(),
+                                            &method_name,
+                                        ),
+                                        method_name: method_name.clone(),
+                                        struct_expr: *sel.x.clone(),
+                                        method_dt: m,
+                                        struct_dt: dt.clone(),
+                                    };
+                                }
+                                None => {
+                                    panic!(
+                                        "method '{}' not found in struct: {} methods: {:#?}",
+                                        method_name, name, methods
+                                    )
+                                }
+                            }
+                        }
                         _ => unimplemented!("call selector: {:#?}", dt),
                     }
                 }
-                find_sel(c, sel, sellt.clone().strip_var(), method_name)
+
+                find_sel(c, sel, sellt.clone().strip_var().strip_const(), method_name)
             }
             Expression::Ident(id) => {
                 let mut t = c
@@ -151,6 +153,9 @@ impl CallType {
     fn make_method_name(dt: DefineType, f_name: &str) -> String {
         let p = if dt.is_struct() {
             let (name, _, _) = dt.as_struct().unwrap();
+            name
+        } else if dt.is_spec() {
+            let (name, _, _, _) = dt.as_spec().unwrap();
             name
         } else {
             format!("{:#?}", dt)

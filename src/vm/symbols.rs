@@ -7,7 +7,7 @@ use crate::vm::object::Type;
 use crate::vm::Error;
 use std::fmt::{Display, Formatter};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SymbolTable {
     /// A vector of contexts
     /// The context at index 0 will always be the global context,
@@ -104,6 +104,25 @@ pub enum DefineType {
         methods: Vec<Self>,
     },
     Variadic(Box<Self>),
+    Spec {
+        name: String,
+        inner: Box<Self>,
+        is_transparent: bool,
+        methods: Vec<Self>,
+    },
+}
+
+impl DefineType {
+    pub fn udt_ident(&self) -> Option<String> {
+        match self {
+            Self::Spec { name, .. } => Some(name.clone()),
+            Self::Ref(inner) => inner.udt_ident(),
+            Self::Type(inner, _) => inner.udt_ident(),
+            Self::Interface { name, .. } => Some(name.clone()),
+            Self::Func { name, .. } => Some(name.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl Display for DefineType {
@@ -271,6 +290,7 @@ impl DefineType {
         match self {
             Self::Struct { name: n, .. } => n.to_string(),
             Self::Ref(inner) => inner.get_type_name(),
+            Self::Spec { name: n, .. } => n.to_string(),
             _ => panic!("not implemented for {:#?}", self),
         }
     }
@@ -601,6 +621,13 @@ impl DefineType {
         }
     }
 
+    pub fn is_spec(&self) -> bool {
+        match &self {
+            Self::Spec { .. } => true,
+            _ => false,
+        }
+    }
+
     pub fn is_byte(&self) -> bool {
         match &self {
             Self::Byte => true,
@@ -692,6 +719,26 @@ impl DefineType {
         }
     }
 
+    pub fn as_spec(&self) -> Result<(String, DefineType, Vec<DefineType>, bool), Error> {
+        match &self {
+            Self::Spec {
+                name,
+                inner,
+                methods,
+                is_transparent,
+            } => Ok((
+                name.clone(),
+                *inner.clone(),
+                methods.clone(),
+                is_transparent.clone(),
+            )),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Spec, got {:#?}",
+                self
+            ))),
+        }
+    }
+
     pub fn as_interface(&self) -> (String, Vec<DefineType>) {
         match &self {
             Self::Interface { methods, name } => (name.clone(), methods.clone()),
@@ -760,7 +807,7 @@ impl ContextType {
 }
 
 /// A context is a type of environment to store values in. This can be either a global context or a local (to a function) context.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Context {
     pub scope: Scope,
     max_size: usize,
@@ -808,7 +855,7 @@ impl Context {
 
     /// Resolves a symbol in this context along with its absolute index (relative to the context its top scope)
     #[inline]
-    fn resolve(&self, name: &str) -> Option<(Symbol, DefineType)> {
+    pub(crate) fn resolve(&self, name: &str) -> Option<(Symbol, DefineType)> {
         let mut abs_index = self.total_len();
 
         for scope in self.symbols.iter().rev() {

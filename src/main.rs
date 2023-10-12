@@ -21,15 +21,15 @@ fn main() {
         r#"
 package main
 
-const (
-	A, B = iota, iota
-	C = iota
-)
+type Bits uint8
+
+func (b Bits) print() {
+    println(b)
+}
 
 func main() {
-    println(A)
-    println(B)
-    println(C)
+   var b Bits = 5
+   b.print()
 }
     "#,
     );

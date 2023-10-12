@@ -10,6 +10,40 @@ macro_rules! init {
 }
 
 #[repr(C)]
+pub struct Alias {
+    pub(crate) name: String,
+    pub value: Object,
+    pub method_dispatch: Vec<(String, usize)>,
+    pub is_transparent: bool,
+}
+
+impl Alias {
+    pub(crate) unsafe fn read(ptr: &Object) -> &Self {
+        ptr.get::<Self>()
+    }
+
+    pub(crate) unsafe fn read_mut(ptr: &Object) -> &mut Self {
+        ptr.get_mut::<Self>()
+    }
+
+    pub fn object(
+        name: String,
+        value: Object,
+        method_dispatch: Vec<(String, usize)>,
+        is_transparent: bool,
+    ) -> Object {
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Alias);
+        let obj = unsafe { ptr.get_mut::<Self>() };
+
+        obj.is_transparent = is_transparent;
+        init!(obj.value => value);
+        init!(obj.method_dispatch => method_dispatch);
+        init!(obj.name => name);
+        ptr
+    }
+}
+
+#[repr(C)]
 pub struct Struct {
     pub(crate) name: String,
     pub values: Vec<Object>,
