@@ -211,7 +211,7 @@ pub struct Bytecode {
 }
 
 #[derive(Clone)]
-enum Context {
+pub enum Context {
     Switch(SwitchContext),
     For(LoopContext),
 }
@@ -263,7 +263,7 @@ impl Context {
 
 /// Type to keep track of switch constructs so we can emit the proper jump instructions
 #[derive(Clone)]
-struct SwitchContext {
+pub struct SwitchContext {
     /// Points to the first instruction of the (current) loop condition
     /// This is where continue statements should jump to
     start: usize,
@@ -287,7 +287,7 @@ impl SwitchContext {
 
 #[derive(Clone)]
 /// Type to keep track of loop constructs so we can emit the proper jump instructions
-struct LoopContext {
+pub struct LoopContext {
     /// Points to the first instruction of the (current) loop condition
     /// This is where continue statements should jump to
     start: usize,

@@ -169,7 +169,8 @@ impl Object {
             | Type::Null
             | Type::String
             | Type::Closure
-            | Type::Struct => *self,
+            | Type::Struct
+            | Type::Alias => *self,
             _ => unimplemented!("{:#?}", self.tag()),
         }
     }

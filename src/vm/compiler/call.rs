@@ -113,10 +113,23 @@ impl CallType {
                                     };
                                 }
                                 None => {
-                                    panic!(
-                                        "method '{}' not found in struct: {} methods: {:#?}",
-                                        method_name, name, methods
-                                    )
+                                    let n = CallType::make_method_name(dt.clone(), &method_name);
+                                    match c.symbols.resolve(&n) {
+                                        Some(s) => {
+                                            let m = s.get_type();
+                                            return CallType::Method {
+                                                mangled_name: CallType::make_method_name(
+                                                    dt.clone(),
+                                                    &method_name,
+                                                ),
+                                                method_name: method_name.clone(),
+                                                struct_expr: *sel.x.clone(),
+                                                method_dt: m,
+                                                struct_dt: dt.clone(),
+                                            };
+                                        }
+                                        None => panic!("cannot find function {}", method_name),
+                                    }
                                 }
                             }
                         }
@@ -150,7 +163,7 @@ impl CallType {
             _ => unimplemented!("call: {:#?}", call),
         }
     }
-    fn make_method_name(dt: DefineType, f_name: &str) -> String {
+    pub fn make_method_name(dt: DefineType, f_name: &str) -> String {
         let p = if dt.is_struct() {
             let (name, _, _) = dt.as_struct().unwrap();
             name

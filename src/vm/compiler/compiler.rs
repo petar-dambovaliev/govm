@@ -2,21 +2,21 @@ use crate::parser::ast::InterfaceType;
 use crate::parser::ast::{ArrayType, Field};
 use crate::parser::ast::{
     AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
-    ExprStmt, Expression, FieldList, File, Ident, Index, KeyedElement, LiteralValue, Operation,
-    Statement, TypeSpec,
+    ExprStmt, Expression, FieldList, File, Ident, KeyedElement, LiteralValue, Operation, Statement,
+    TypeSpec,
 };
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
-    bytecode_to_human, literal, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
-    JUMP_PLACEHOLDER,
+    literal, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext, JUMP_PLACEHOLDER,
 };
 
+use crate::vm::compiler::declaration::type_spec;
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
-use crate::vm::compiler::declaration::{make_dep_graph, type_spec};
+use crate::vm::compiler::dep_graph::make_dep_graph;
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -202,23 +202,7 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
-        let instructions = self.instructions.clone();
-        let last_instruction = self.last_instruction.clone();
-        let contexts = self.contexts.clone();
-        let symbols = self.symbols.clone();
-        let func_contexts = self.func_contexts.clone();
-        let label_contexts = self.label_contexts.clone();
-        let anonymous_struct = self.anonymous_struct;
-
         let (graph, map_declr) = make_dep_graph(&ast.decl, self);
-
-        self.instructions = instructions;
-        self.last_instruction = last_instruction;
-        self.symbols = symbols;
-        self.contexts = contexts;
-        self.func_contexts = func_contexts;
-        self.label_contexts = label_contexts;
-        self.anonymous_struct = anonymous_struct;
 
         for declr_id in graph.into_iter() {
             self.compile_declaration(map_declr.get(&declr_id).unwrap())?;

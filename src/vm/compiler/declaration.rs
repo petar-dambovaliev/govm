@@ -94,7 +94,7 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
                     .symbols
                     .update_dt(name.name.as_str(), DefineType::Var(Box::new(rt.clone())));
 
-                assert!(updated);
+                assert!(updated, "{}", name.name);
 
                 c.symbols.resolve(name.name.as_str()).unwrap().get_symbol()
             } else {
