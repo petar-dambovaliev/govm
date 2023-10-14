@@ -1,5 +1,5 @@
 use crate::parser::ast::{
-    ConstSpec, Decl, DeclStmt, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
+    ConstSpec, Decl, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
     StructType, TypeSpec, VarSpec,
 };
 use crate::parser::Parser;

@@ -416,21 +416,20 @@ impl Compiler {
             }
             Declaration::Type(t) => {
                 for spec in &t.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            Expression::TypeInterface(it) => {
-                                type_interface(spec, it, self);
-                            }
-                            Expression::TypeStruct(ta) => {
-                                type_struct(spec, ta, self);
-                            }
-                            Expression::Ident(_id) => {
-                                type_spec(spec, self);
-                            }
-                            _ => unimplemented!("{:#?}", spec),
+                    match &spec.typ {
+                        Expression::TypeInterface(it) => {
+                            type_interface(spec, it, self);
                         }
-                    } else {
-                        unimplemented!("type aliases");
+                        Expression::TypeStruct(ta) => {
+                            if spec.alias {
+                                unimplemented!("type aliases");
+                            }
+                            type_struct(spec, ta, self);
+                        }
+                        Expression::Ident(_id) => {
+                            type_spec(spec, self);
+                        }
+                        _ => unimplemented!("{:#?}", spec),
                     }
                 }
             }
@@ -872,7 +871,7 @@ impl Compiler {
                                 },
                             };
 
-                            let got_t = self.compile_expression(right)?;
+                            let got_t = self.compile_expression(right)?.strip_var().strip_const();
 
                             if is_deref {
                                 if expect_t.is_invar() {
@@ -896,11 +895,17 @@ impl Compiler {
 
                                     if !(got_t.is_coerceable_to(&stripped) && is_value_coercable) {
                                         assert_eq!(
-                                            expect_t.strip_type(),
-                                            got_t,
+                                            stripped, got_t,
                                             "left:{:#?}---right:{:#?}",
-                                            left,
-                                            right
+                                            left, right
+                                        );
+                                    }
+                                } else {
+                                    if !got_t.is_coerceable_to(&stripped) {
+                                        assert_eq!(
+                                            stripped, got_t,
+                                            "expect:{:#?} got:{:#?}",
+                                            left, right
                                         );
                                     }
                                 }
@@ -2692,6 +2697,7 @@ impl Compiler {
 
                         self.emit_opcode(opcode);
                         self.emit_u16(symbol.index);
+                        //println!("{}-{}-{}", ident.name, symbol.index, opcode);
                         //panic!("{:#?}", symbol.index);
 
                         Ok(dt)

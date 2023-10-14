@@ -21,15 +21,15 @@ fn main() {
         r#"
 package main
 
-type Bits uint8
-
-func (b Bits) print() {
-    println(b)
-}
+type Bits = uint8
 
 func main() {
-   var b Bits = 5
-   b.print()
+   var b Bits = 3
+   var c uint8
+   
+   c = b
+   
+   println(c, b)
 }
     "#,
     );

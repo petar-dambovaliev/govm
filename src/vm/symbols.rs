@@ -415,6 +415,16 @@ impl DefineType {
             return true;
         }
 
+        if self.is_spec() {
+            let (_, inner, _, _) = self.as_spec().unwrap();
+            return other == &inner.strip_type();
+        }
+
+        if other.is_spec() {
+            let (_, _, _, is_transparent) = self.as_spec().unwrap();
+            return is_transparent;
+        }
+
         false
     }
 

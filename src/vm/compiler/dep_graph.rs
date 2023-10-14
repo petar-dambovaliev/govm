@@ -3,7 +3,6 @@ use crate::parser::token::LitKind;
 use crate::vm::builtin;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::compiler::Compiler;
-use crate::vm::compiler::declaration::compile_variable;
 use crate::vm::symbols::{ContextType, DefineType};
 use ahash::{HashMap, HashMapExt};
 use dep_graph::{DepGraph, Node};
@@ -22,57 +21,59 @@ fn register_types(
         match declr {
             Declaration::Type(tspec) => {
                 for spec in &tspec.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            //type spec
-                            Expression::Ident(id) => {
-                                let name = spec.name.name.clone();
-                                let dt = DefineType::Spec {
-                                    name: name.clone(),
-                                    inner: Box::from(DefineType::Null),
-                                    methods: vec![],
-                                    is_transparent: false,
-                                };
+                    match &spec.typ {
+                        //type spec
+                        Expression::Ident(id) => {
+                            let name = spec.name.name.clone();
+                            let dt = DefineType::Spec {
+                                name: name.clone(),
+                                inner: Box::from(DefineType::Null),
+                                methods: vec![],
+                                is_transparent: spec.alias,
+                            };
 
-                                let key = (name.to_string(), dt.clone());
-                                let node = Node::new(key.clone());
-                                nodes.push(node);
-                                declrs_map.insert(key.clone(), declr.clone());
+                            let key = (name.to_string(), dt.clone());
+                            let node = Node::new(key.clone());
+                            nodes.push(node);
+                            declrs_map.insert(key.clone(), declr.clone());
 
-                                let _ = c.symbols.define(&name, dt, false);
-                            }
-                            Expression::TypeInterface(_it) => {
-                                let dt = DefineType::Interface {
-                                    name: spec.name.name.clone(),
-                                    methods: vec![],
-                                };
-                                let key = (spec.name.name.to_string(), dt.clone());
-                                let node = Node::new(key.clone());
-                                nodes.push(node);
-                                declrs_map.insert(key.clone(), declr.clone());
-
-                                let _ = c.symbols.define(&spec.name.name.clone(), dt, false);
-                            }
-                            Expression::TypeStruct(_ta) => {
-                                let name = spec.name.name.as_str();
-
-                                let dt = DefineType::Struct {
-                                    name: name.to_string(),
-                                    fields: vec![],
-                                    methods: vec![],
-                                };
-
-                                let key = (name.to_string(), dt.clone());
-                                let node = Node::new(key.clone());
-                                nodes.push(node);
-                                declrs_map.insert(key.clone(), declr.clone());
-
-                                let _ = c.symbols.define(name, dt, false);
-                            }
-                            _ => unimplemented!("{:#?}", spec),
+                            let _ = c.symbols.define(&name, dt, false);
                         }
-                    } else {
-                        unimplemented!("type aliases");
+                        Expression::TypeInterface(_it) => {
+                            if spec.alias {
+                                unimplemented!("interface alias");
+                            }
+                            let dt = DefineType::Interface {
+                                name: spec.name.name.clone(),
+                                methods: vec![],
+                            };
+                            let key = (spec.name.name.to_string(), dt.clone());
+                            let node = Node::new(key.clone());
+                            nodes.push(node);
+                            declrs_map.insert(key.clone(), declr.clone());
+
+                            let _ = c.symbols.define(&spec.name.name.clone(), dt, false);
+                        }
+                        Expression::TypeStruct(_ta) => {
+                            if spec.alias {
+                                unimplemented!("struct alias");
+                            }
+                            let name = spec.name.name.as_str();
+
+                            let dt = DefineType::Struct {
+                                name: name.to_string(),
+                                fields: vec![],
+                                methods: vec![],
+                            };
+
+                            let key = (name.to_string(), dt.clone());
+                            let node = Node::new(key.clone());
+                            nodes.push(node);
+                            declrs_map.insert(key.clone(), declr.clone());
+
+                            let _ = c.symbols.define(name, dt, false);
+                        }
+                        _ => unimplemented!("{:#?}", spec),
                     }
                 }
             }
@@ -319,82 +320,75 @@ pub fn make_dep_graph(
             }
             Declaration::Type(tspec) => {
                 for spec in &tspec.specs {
-                    if !spec.alias {
-                        match &spec.typ {
-                            // type spec
-                            Expression::Ident(_id) => {
-                                let pos = nodes
-                                    .iter()
-                                    .position(|n| {
-                                        let id = n.id();
-                                        id.0 == spec.name.name.clone() && id.1.is_spec()
-                                    })
-                                    .unwrap();
+                    match &spec.typ {
+                        // type spec
+                        Expression::Ident(_id) => {
+                            let pos = nodes
+                                .iter()
+                                .position(|n| {
+                                    let id = n.id();
+                                    id.0 == spec.name.name.clone() && id.1.is_spec()
+                                })
+                                .unwrap();
 
-                                let idents = get_const_idents_from_expr(&spec.typ, c).unwrap();
+                            let idents = get_const_idents_from_expr(&spec.typ, c).unwrap();
 
-                                for (name, dt) in idents {
-                                    if let Some(dep) =
-                                        nodes.iter().find(|n| n.id().0 == name).cloned()
-                                    {
-                                        nodes[pos].add_dep(dep.id().clone());
-                                    }
+                            for (name, dt) in idents {
+                                if let Some(dep) = nodes.iter().find(|n| n.id().0 == name).cloned()
+                                {
+                                    nodes[pos].add_dep(dep.id().clone());
                                 }
                             }
-                            Expression::TypeInterface(it) => {
-                                let pos = nodes
-                                    .iter()
-                                    .position(|n| {
-                                        let id = n.id();
-                                        id.0 == spec.name.name.clone() && id.1.is_interface()
-                                    })
-                                    .unwrap();
-
-                                let mut idents = vec![];
-
-                                for method in &it.methods.list {
-                                    idents.append(
-                                        &mut get_const_idents_from_expr(&method.typ, c).unwrap(),
-                                    );
-                                }
-
-                                for (name, dt) in idents {
-                                    if let Some(dep) =
-                                        nodes.iter().find(|n| n.id().0 == name).cloned()
-                                    {
-                                        nodes[pos].add_dep(dep.id().clone());
-                                    }
-                                }
-                            }
-                            Expression::TypeStruct(ta) => {
-                                let pos = nodes
-                                    .iter()
-                                    .position(|n| {
-                                        let id = n.id();
-                                        id.0 == spec.name.name.clone() && id.1.is_struct()
-                                    })
-                                    .unwrap();
-
-                                let mut idents = vec![];
-
-                                for field in &ta.fields {
-                                    idents.append(
-                                        &mut get_const_idents_from_expr(&field.typ, c).unwrap(),
-                                    );
-                                }
-
-                                for (name, dt) in idents {
-                                    if let Some(dep) =
-                                        nodes.iter().find(|n| n.id().0 == name).cloned()
-                                    {
-                                        nodes[pos].add_dep(dep.id().clone());
-                                    }
-                                }
-                            }
-                            _ => unimplemented!("{:#?}", spec),
                         }
-                    } else {
-                        unimplemented!("type aliases");
+                        Expression::TypeInterface(it) => {
+                            let pos = nodes
+                                .iter()
+                                .position(|n| {
+                                    let id = n.id();
+                                    id.0 == spec.name.name.clone() && id.1.is_interface()
+                                })
+                                .unwrap();
+
+                            let mut idents = vec![];
+
+                            for method in &it.methods.list {
+                                idents.append(
+                                    &mut get_const_idents_from_expr(&method.typ, c).unwrap(),
+                                );
+                            }
+
+                            for (name, dt) in idents {
+                                if let Some(dep) = nodes.iter().find(|n| n.id().0 == name).cloned()
+                                {
+                                    nodes[pos].add_dep(dep.id().clone());
+                                }
+                            }
+                        }
+                        Expression::TypeStruct(ta) => {
+                            let pos = nodes
+                                .iter()
+                                .position(|n| {
+                                    let id = n.id();
+                                    id.0 == spec.name.name.clone() && id.1.is_struct()
+                                })
+                                .unwrap();
+
+                            let mut idents = vec![];
+
+                            for field in &ta.fields {
+                                idents.append(
+                                    &mut get_const_idents_from_expr(&field.typ, c).unwrap(),
+                                );
+                            }
+
+                            for (name, dt) in idents {
+                                if let Some(dep) = nodes.iter().find(|n| n.id().0 == name).cloned()
+                                {
+                                    nodes[pos].add_dep(dep.id().clone());
+                                }
+                            }
+                        }
+                        _ => unimplemented!("{:#?}", spec),
                     }
                 }
             }
