@@ -1,5 +1,6 @@
 pub mod builtin;
 pub mod compiler;
+pub mod module;
 pub mod object;
 pub mod symbols;
 

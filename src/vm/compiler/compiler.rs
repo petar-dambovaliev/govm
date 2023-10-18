@@ -1,10 +1,10 @@
-use crate::parser::ast::InterfaceType;
 use crate::parser::ast::{ArrayType, Field};
 use crate::parser::ast::{
     AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
     ExprStmt, Expression, FieldList, File, Ident, KeyedElement, LiteralValue, Operation, Statement,
     TypeSpec,
 };
+use crate::parser::ast::{InterfaceType, Package};
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
@@ -16,7 +16,7 @@ use crate::vm::compiler::declaration::type_spec;
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
-use crate::vm::compiler::dep_graph::make_dep_graph;
+use crate::vm::compiler::dep_graph::{make_init_dep_graph, make_package_dep_graph};
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Interface, Struct, TypeValue};
@@ -57,7 +57,7 @@ impl Compiler {
     }
 
     /// Compiles the given AST into executable Bytecode
-    pub fn compile_ast(&mut self, ast: &File) -> Result<Bytecode, Error> {
+    pub fn compile(&mut self, project: Vec<Package>) -> Result<Bytecode, Error> {
         //insert builtin values
         //interface{}
         self.compile_declaration(&Declaration::Type(Decl {
@@ -202,10 +202,18 @@ impl Compiler {
 
         //self.constants.push(Rune::from_char(0 as char));
 
-        let (graph, map_declr) = make_dep_graph(&ast.decl, self);
+        let (pkgs_graph, pkgs_map) = make_package_dep_graph(project);
 
-        for declr_id in graph.into_iter() {
-            self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
+        for pkg_id in pkgs_graph.into_iter() {
+            let pkg = pkgs_map.get(&pkg_id).unwrap();
+
+            for file in &pkg.files {
+                let (graph, map_declr) = make_init_dep_graph(&file.decl, self);
+
+                for declr_id in graph.into_iter() {
+                    self.compile_declaration(map_declr.get(&declr_id).unwrap())?;
+                }
+            }
         }
 
         let entry = Parser::from("main()").expression().unwrap();

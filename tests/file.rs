@@ -1,9 +1,9 @@
 mod walkdir;
 use walkdir::Walkdir;
 
-use gno_rs::gosyn::parse_dir;
-use gno_rs::gosyn::Parser;
-use gno_rs::gosyn::Result;
+use gno_rs::parser::parse_dir;
+use gno_rs::parser::Parser;
+use gno_rs::parser::Result;
 
 use std::env;
 use std::fs;
@@ -18,31 +18,31 @@ fn parse_source<P: AsRef<Path>>(path: P) -> Result<Duration> {
         .map(|_| clock.elapsed())
 }
 
-#[test]
-fn pprof_parser() -> Result<()> {
-    let dir = match env::var("GOSYN_PPROF_TEST") {
-        Ok(path) => path,
-        _ => return Ok(()),
-    };
-
-    let mut wlk = Walkdir::new(&dir)?.with_ext([".go"], [])?;
-    let guard = pprof::ProfilerGuard::new(1000).unwrap();
-
-    let mut total = Duration::from_millis(0);
-    while let Some(path) = wlk.next()? {
-        let elapsed = parse_source(&path)?;
-        println!("  {:?} {:?}ms", &path, elapsed.as_millis());
-        total += elapsed;
-    }
-
-    println!("{:?} total elapsed {:?}ms", &dir, total.as_millis());
-
-    let report = guard.report().build().unwrap();
-    let file = fs::File::create("flamegraph.svg").unwrap();
-    report.flamegraph(file).unwrap();
-
-    Ok(())
-}
+// #[test]
+// fn pprof_parser() -> Result<()> {
+//     let dir = match env::var("GOSYN_PPROF_TEST") {
+//         Ok(path) => path,
+//         _ => return Ok(()),
+//     };
+//
+//     let mut wlk = Walkdir::new(&dir)?.with_ext([".go"], [])?;
+//     let guard = pprof::ProfilerGuard::new(1000).unwrap();
+//
+//     let mut total = Duration::from_millis(0);
+//     while let Some(path) = wlk.next()? {
+//         let elapsed = parse_source(&path)?;
+//         println!("  {:?} {:?}ms", &path, elapsed.as_millis());
+//         total += elapsed;
+//     }
+//
+//     println!("{:?} total elapsed {:?}ms", &dir, total.as_millis());
+//
+//     let report = guard.report().build().unwrap();
+//     let file = fs::File::create("flamegraph.svg").unwrap();
+//     report.flamegraph(file).unwrap();
+//
+//     Ok(())
+// }
 
 #[test]
 fn test_third_party_projects() -> Result<()> {

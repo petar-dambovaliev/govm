@@ -1,7 +1,7 @@
 pub mod parser;
 pub mod vm;
 
-use crate::parser::Parser;
+use crate::parser::{parse_dir_recursive, Parser};
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::VM;
 use bdwgc_alloc::Allocator;
@@ -10,43 +10,46 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: Allocator = Allocator;
 
+use crate::vm::module::parse_dependencies;
+use clap::Parser as ClapParser;
+use clap::Subcommand;
+use std::path::PathBuf;
+
+#[derive(ClapParser, Debug)]
+struct Cli {
+    #[clap(short, long)]
+    debug: Option<u8>,
+    #[clap(subcommand)]
+    action: SubCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum SubCommand {
+    #[clap(name = "gors", about = "A Go virtual machine")]
+    Build { source: PathBuf },
+    #[clap(name = "run", about = "Builds and runs a Go binary")]
+    Run { binary: PathBuf },
+}
+
 fn main() {
     unsafe { Allocator::initialize() }
 
-    //todo definition order matters and it shouldn't
-    let i = Instant::now();
-    //todo
-    // this seems to make the vm crazy &[]int{1,2,3}
-    let mut parser = Parser::from(
-        r#"
-package main
+    let cli = Cli::parse();
+    //println!("{:?}", cli);
 
-type Bits = uint8
+    match cli.action {
+        SubCommand::Build { source } => {
+            unimplemented!("Building project from source: {:?}", source);
+        }
+        SubCommand::Run { binary } => {
+            println!("Running binary: {:?}", binary);
+            let pkgs = parse_dependencies(&binary).unwrap();
 
-func main() {
-   var b Bits = 3
-   var c uint8
-   
-   c = b
-   
-   println(c, b)
-}
-    "#,
-    );
+            let mut goc = Compiler::new();
+            let code = goc.compile(pkgs).unwrap();
+            let mut vm = VM::new();
 
-    let f = parser.parse_file().unwrap();
-    //panic!("{:#?}", f);
-    let mut goc = Compiler::new();
-    let code = goc.compile_ast(&f).unwrap();
-
-    //panic!("{}", bytecode_to_human(&code.instructions, true));
-    let mut vm = VM::new();
-    let _ = vm.run(code.clone()).unwrap();
-
-    //println!("{:#?}", parser.parse_file().unwrap());
-    // let mut vm = VM::new(opts, parser);
-    //  let i = Instant::now();
-    // vm.run();
-    // println!("{:#?}", vm);
-    println!("{:#?}", i.elapsed());
+            vm.run(code).unwrap();
+        }
+    }
 }

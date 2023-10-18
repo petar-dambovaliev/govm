@@ -1,4 +1,4 @@
-use crate::parser::ast::{DeclStmt, Declaration, Expression, Statement};
+use crate::parser::ast::{DeclStmt, Declaration, Expression, Package, Statement};
 use crate::parser::token::LitKind;
 use crate::vm::builtin;
 use crate::vm::compiler::call::CallType;
@@ -6,6 +6,46 @@ use crate::vm::compiler::compiler::Compiler;
 use crate::vm::symbols::{ContextType, DefineType};
 use ahash::{HashMap, HashMapExt};
 use dep_graph::{DepGraph, Node};
+
+pub fn make_package_dep_graph(
+    project: Vec<Package>,
+) -> (DepGraph<String>, HashMap<String, Package>) {
+    let mut nodes: Vec<Node<String>> = project
+        .iter()
+        .map(|p| Node::new(p.path.canonicalize().unwrap().to_str().unwrap().to_string()))
+        .collect();
+
+    let mut map = HashMap::new();
+
+    for p in &project {
+        let c = p.path.canonicalize().unwrap();
+        let key = c.to_str().unwrap();
+        if !map.contains_key(key) {
+            map.insert(key.to_string(), p.clone());
+        }
+        let pn = if let Some(pn) = nodes.iter().position(|a| a.id() == key) {
+            pn
+        } else {
+            panic!();
+        };
+        for file in &p.files {
+            for import in &file.imports {
+                nodes[pn].add_dep(import.path.value.clone());
+                if nodes
+                    .iter_mut()
+                    .find(|n| n.id() == &import.path.value)
+                    .is_none()
+                {
+                    panic!();
+                }
+            }
+        }
+    }
+
+    let graph = DepGraph::new(&nodes);
+
+    (graph, map)
+}
 
 //todo this only looks for identifiers
 // it needs to check those are actually globals
@@ -213,7 +253,7 @@ fn register_others(
     }
 }
 
-pub fn make_dep_graph(
+pub fn make_init_dep_graph(
     declrs: &[Declaration],
     c: &mut Compiler,
 ) -> (

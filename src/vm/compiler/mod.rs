@@ -98,6 +98,7 @@ pub(crate) enum OpCode {
 }
 
 const JUMP_PLACEHOLDER: u16 = 1337;
+const CALL_PLACEHOLDER: u16 = 1338;
 
 impl From<u8> for OpCode {
     #[inline(always)]
