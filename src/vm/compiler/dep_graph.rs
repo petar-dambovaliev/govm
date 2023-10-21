@@ -30,13 +30,20 @@ pub fn make_package_dep_graph(
         };
         for file in &p.files {
             for import in &file.imports {
-                nodes[pn].add_dep(import.path.value.clone());
-                if nodes
-                    .iter_mut()
-                    .find(|n| n.id() == &import.path.value)
-                    .is_none()
-                {
-                    panic!();
+                let import_path = c
+                    .parent()
+                    .unwrap()
+                    .join(import.path.value.trim_matches('"'))
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+
+                nodes[pn].add_dep(import_path.clone());
+                if nodes.iter_mut().find(|n| n.id() == &import_path).is_none() {
+                    panic!(
+                        "dependency `{}` cannot be found. dependencies: {:#?}",
+                        import_path, nodes
+                    );
                 }
             }
         }

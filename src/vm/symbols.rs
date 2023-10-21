@@ -110,6 +110,10 @@ pub enum DefineType {
         is_transparent: bool,
         methods: Vec<Self>,
     },
+    Package {
+        path: String,
+        alias: String,
+    },
 }
 
 impl DefineType {

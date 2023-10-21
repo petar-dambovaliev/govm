@@ -3,12 +3,15 @@ pub mod vm;
 
 use crate::parser::{parse_dir_recursive, Parser};
 use crate::vm::compiler::compiler::Compiler;
-use crate::vm::module::parse_dependencies;
+use crate::vm::module::parse_local_dependencies;
 use crate::vm::VM;
 use bdwgc_alloc::Allocator;
 use clap::Args;
 use clap::{Parser as ClapParser, Subcommand};
+use gno_rs::gomod::{add_dependency, list_dependencies, remove_dependency};
 use std::env;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 
 #[global_allocator]
@@ -63,7 +66,7 @@ fn main() {
         }
         SubCommand::Run { binary } => {
             println!("Running binary: {:?}", binary);
-            let pkgs = parse_dependencies(&binary).unwrap();
+            let pkgs = parse_local_dependencies(&binary).unwrap();
 
             let mut goc = Compiler::new();
             let code = goc.compile(pkgs).unwrap();
@@ -73,25 +76,35 @@ fn main() {
         }
         SubCommand::Mod(mod_command) => match mod_command.command {
             ModSubCommand::Init { module_name } => {
-                let name = if let Some(mn) = module_name {
-                    mn
-                } else if let Ok(cd) = env::current_dir().map(|a| format!("{}", a.display())) {
-                    cd
+                let name = module_name.unwrap_or_else(|| {
+                    env::current_dir()
+                        .ok()
+                        .as_ref()
+                        .and_then(|cd| cd.file_name())
+                        .and_then(|name| name.to_str())
+                        .and_then(|a| Some(a.to_string()))
+                        .expect("no module name")
+                });
+
+                let go_mod_content = format!("module {}\n", name);
+
+                if let Ok(cd) = env::current_dir() {
+                    let go_mod_path = cd.join("go.mod");
+                    let mut file = File::create(go_mod_path).expect("Failed to create go.mod");
+                    file.write_all(go_mod_content.as_bytes())
+                        .expect("Failed to write to go.mod");
                 } else {
                     panic!("Failed to get the current directory.");
-                };
-                // init name
+                }
             }
             ModSubCommand::Add { dependency } => {
-                println!("Adding a new dependency: {}", dependency);
+                add_dependency(&dependency).unwrap();
             }
             ModSubCommand::List => {
-                println!("Listing dependencies:");
-                // Implement listing dependencies logic
+                list_dependencies().unwrap();
             }
             ModSubCommand::Remove { dependency } => {
-                println!("Removing dependency: {}", dependency);
-                // Implement removing dependency logic
+                remove_dependency(&dependency).unwrap();
             }
         },
     }

@@ -2,7 +2,7 @@ use crate::parser::ast::{File, Package};
 use crate::parser::{parse_dir_recursive, Error, Result};
 use std::path::{Path, PathBuf};
 
-pub fn parse_dependencies(f: &PathBuf) -> Result<Vec<Package>> {
+pub fn parse_local_dependencies(f: &PathBuf) -> Result<Vec<Package>> {
     let main_dir = if f.is_dir() {
         f.as_path()
     } else if f.is_file() {

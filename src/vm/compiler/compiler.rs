@@ -11,6 +11,7 @@ use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
     literal, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext, JUMP_PLACEHOLDER,
 };
+use std::path::PathBuf;
 
 use crate::vm::compiler::declaration::type_spec;
 use crate::vm::compiler::declaration::{
@@ -208,6 +209,25 @@ impl Compiler {
             let pkg = pkgs_map.get(&pkg_id).unwrap();
 
             for file in &pkg.files {
+                for import in &file.imports {
+                    let p: PathBuf = import.path.value.clone().into();
+
+                    let alias = import.name.clone().map(|id| id.name.clone()).unwrap_or(
+                        p.file_name()
+                            .map(|f| f.to_str().unwrap())
+                            .unwrap()
+                            .to_string(),
+                    );
+
+                    self.symbols.define(
+                        &alias,
+                        DefineType::Package {
+                            path: import.path.value.clone(),
+                            alias: alias.clone(),
+                        },
+                        false,
+                    );
+                }
                 let (graph, map_declr) = make_init_dep_graph(&file.decl, self);
 
                 for declr_id in graph.into_iter() {
