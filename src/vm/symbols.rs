@@ -298,7 +298,7 @@ impl DefineType {
             _ => panic!("not implemented for {:#?}", self),
         }
     }
-    pub fn implements(&self, interface: &Self, c: &mut Compiler) -> bool {
+    pub fn implements(&self, pkg: &str, interface: &Self, c: &mut Compiler) -> bool {
         let mut expect_methods = interface.as_interface().1;
 
         for expect_method in &mut expect_methods {
@@ -334,7 +334,7 @@ impl DefineType {
 
             let (_, _, mut got_methods) = c
                 .symbols
-                .resolve(&name)
+                .resolve(pkg, &name)
                 .unwrap()
                 .as_local()
                 .1
@@ -825,7 +825,7 @@ impl ContextType {
 pub(crate) struct Context {
     pub scope: Scope,
     max_size: usize,
-    pub symbols: Vec<Vec<(String, DefineType)>>,
+    pub symbols: Vec<Vec<(String, DefineType, String)>>,
     pub is_closure: bool,
     pub captured: Vec<String>,
 }
@@ -854,10 +854,10 @@ impl Context {
     }
 
     /// Defines a new symbol in the current context its inner-most scope.
-    fn define(&mut self, name: &str, dt: DefineType, invar: bool) -> Symbol {
+    fn define(&mut self, pkg: &str, name: &str, dt: DefineType, invar: bool) -> Symbol {
         //println!("define: {}", name);
         let current_scope = self.symbols.last_mut().unwrap();
-        current_scope.push((name.to_string(), dt));
+        current_scope.push((name.to_string(), dt, pkg.to_string()));
         self.max_size += 1;
 
         Symbol {
@@ -869,18 +869,25 @@ impl Context {
 
     /// Resolves a symbol in this context along with its absolute index (relative to the context its top scope)
     #[inline]
-    pub(crate) fn resolve(&self, name: &str) -> Option<(Symbol, DefineType)> {
+    pub(crate) fn resolve(&self, pkg: &str, name: &str) -> Option<(Symbol, DefineType)> {
         let mut abs_index = self.total_len();
 
         for scope in self.symbols.iter().rev() {
             abs_index -= scope.len();
 
-            if let Some((index, _)) = scope
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_index, n)| n.0 == name)
-            {
+            if let Some((index, _)) = scope.iter().enumerate().rev().find(|(_index, n)| {
+                let found = n.0 == name && (n.2 == pkg || n.2 == "0xbuiltin");
+
+                // println!(
+                //     "found: {} name: {} expected: {:#?} got: {:#?}",
+                //     n.0 == name,
+                //     name,
+                //     n.2,
+                //     pkg
+                // );
+
+                found
+            }) {
                 return Some((
                     Symbol {
                         index: (abs_index + index).try_into().unwrap(),
@@ -894,9 +901,9 @@ impl Context {
         None
     }
 
-    pub fn update_dt(&mut self, name: &str, dt: DefineType) -> bool {
+    pub fn update_dt(&mut self, pkg: &str, name: &str, dt: DefineType) -> bool {
         for scope in self.symbols.iter_mut().rev() {
-            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+            if let Some(index) = scope.iter().position(|n| n.0 == name && n.2 == pkg) {
                 scope[index].1 = dt.clone();
                 return true;
             }
@@ -904,9 +911,14 @@ impl Context {
         false
     }
 
-    pub fn update_struct_fields(&mut self, name: &str, fields: Vec<ContextType>) -> bool {
+    pub fn update_struct_fields(
+        &mut self,
+        pkg: &str,
+        name: &str,
+        fields: Vec<ContextType>,
+    ) -> bool {
         for scope in self.symbols.iter_mut().rev() {
-            if let Some(index) = scope.iter().position(|n| n.0 == name) {
+            if let Some(index) = scope.iter().position(|n| n.0 == name && n.2 == pkg) {
                 assert!(scope[index].1.is_struct());
                 let (name, _, methods) = scope[index].1.as_struct().unwrap();
 
@@ -924,23 +936,23 @@ impl Context {
 
 #[derive(Debug)]
 pub enum Resolved {
-    Enclosed((Symbol, DefineType)),
-    Local((Symbol, DefineType)),
+    Enclosed((Symbol, DefineType, String)),
+    Local((Symbol, DefineType, String)),
 }
 
 impl Resolved {
     pub fn get_symbol(&self) -> Symbol {
         match &self {
-            Self::Local((s, _)) | Self::Enclosed((s, _)) => s.clone(),
+            Self::Local((s, _, _)) | Self::Enclosed((s, _, _)) => s.clone(),
         }
     }
-    pub fn get_type(&self) -> DefineType {
+    pub fn get_type(&self) -> (DefineType, String) {
         match &self {
-            Self::Local((_, t)) | Self::Enclosed((_, t)) => t.clone(),
+            Self::Local((_, t, pkg)) | Self::Enclosed((_, t, pkg)) => (t.clone(), pkg.clone()),
         }
     }
 
-    pub fn as_local(&self) -> (Symbol, DefineType) {
+    pub fn as_local(&self) -> (Symbol, DefineType, String) {
         match &self {
             Self::Enclosed(_) => panic!("as_local: {:#?}", self),
             Self::Local(s) => s.clone(),
@@ -985,15 +997,15 @@ impl SymbolTable {
     }
 
     /// Define a symbol in the current context (and current scope within that context).
-    pub fn define(&mut self, name: &str, dt: DefineType, invar: bool) -> Symbol {
-        self.current_context().define(name, dt, invar)
+    pub fn define(&mut self, pkg: &str, name: &str, dt: DefineType, invar: bool) -> Symbol {
+        self.current_context().define(pkg, name, dt, invar)
     }
 
     ///Resolve a symbol in either the current context or the global context if no local was found.
     /// For closures, keep looking in outer scopes (not global) and return if the symbol is from the outer scope
-    pub fn resolve(&mut self, name: &str) -> Option<Resolved> {
+    pub fn resolve(&mut self, pkg: &str, name: &str) -> Option<Resolved> {
         for (i, ctx) in self.contexts.iter().rev().enumerate() {
-            let symbol = ctx.resolve(name);
+            let symbol = ctx.resolve(pkg, name);
             if let Some(s) = symbol {
                 //if its not in the current scope and not already inserted
                 // put it in the enclosed symbols
@@ -1024,12 +1036,13 @@ impl SymbolTable {
                                 invar: false,
                             },
                             s.1.clone(),
+                            pkg.to_string(),
                         ));
 
                         return Some(r);
                     }
                 }
-                return Some(Resolved::Local(s));
+                return Some(Resolved::Local((s.0, s.1, pkg.to_string())));
             }
 
             if !ctx.is_closure {
@@ -1038,40 +1051,62 @@ impl SymbolTable {
         }
 
         if self.contexts.len() > 1 {
-            self.contexts[0].resolve(name).map(|a| Resolved::Local(a))
+            self.contexts[0]
+                .resolve(pkg, name)
+                .map(|a| Resolved::Local((a.0, a.1, pkg.to_string())))
         } else {
             None
         }
     }
 
-    pub fn update_dt(&mut self, name: &str, dt: DefineType) -> bool {
+    pub fn ident_is_package(&mut self, name: &str) -> bool {
+        self.resolve("", name).is_some()
+    }
+
+    pub fn get_package_path(&mut self, name: &str) -> Option<String> {
+        let dt = self.resolve("", name)?;
+
+        let (t, _) = dt.get_type();
+
+        match t {
+            DefineType::Package { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    pub fn update_dt(&mut self, pkg: &str, name: &str, dt: DefineType) -> bool {
         let len = self.contexts.len();
 
         // Try getting a mutable reference from the current context
-        if self.current_context().update_dt(name, dt.clone()) {
+        if self.current_context().update_dt(pkg, name, dt.clone()) {
             return true;
         }
 
         if len > 1 {
-            self.contexts[0].update_dt(name, dt)
+            self.contexts[0].update_dt(pkg, name, dt)
         } else {
             false
         }
     }
 
-    pub fn update_struct_fields(&mut self, name: &str, fields: Vec<ContextType>) -> bool {
+    pub fn update_struct_fields(
+        &mut self,
+        pkg: &str,
+        name: &str,
+        fields: Vec<ContextType>,
+    ) -> bool {
         let len = self.contexts.len();
 
         // Try getting a mutable reference from the current context
         if self
             .current_context()
-            .update_struct_fields(name, fields.clone())
+            .update_struct_fields(pkg, name, fields.clone())
         {
             return true;
         }
 
         if len > 1 {
-            self.contexts[0].update_struct_fields(name, fields)
+            self.contexts[0].update_struct_fields(pkg, name, fields)
         } else {
             false
         }

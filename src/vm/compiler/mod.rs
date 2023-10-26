@@ -9,6 +9,25 @@ use crate::vm::Object;
 use std::fmt::Display;
 use std::fmt::Write;
 
+pub fn make_method_name(pkg_name: &str, dt: DefineType, f_name: &str) -> String {
+    let digest = md5::compute(pkg_name);
+    let p = if dt.is_struct() {
+        let (name, _, _) = dt.as_struct().unwrap();
+        name
+    } else if dt.is_spec() {
+        let (name, _, _, _) = dt.as_spec().unwrap();
+        name
+    } else {
+        format!("{:#?}", dt)
+    };
+    format!("0x{:x}{:#?}{}", digest, p, f_name)
+}
+
+pub(crate) fn make_ident_name(pkg_name: &str, ident: &str) -> String {
+    let digest = md5::compute(pkg_name);
+    format!("0x{:x}_{}", digest, ident)
+}
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[allow(dead_code)]

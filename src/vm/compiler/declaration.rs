@@ -4,16 +4,17 @@ use crate::parser::ast::{
 };
 use crate::parser::Parser;
 use crate::vm::compiler::compiler::Compiler;
-use crate::vm::compiler::{FuncContext, OpCode, JUMP_PLACEHOLDER};
+use crate::vm::compiler::{make_method_name, FuncContext, OpCode, JUMP_PLACEHOLDER};
 use crate::vm::object::structure::{Alias, Interface, Struct};
 use crate::vm::object::{Object, Type};
 use crate::vm::symbols::{ContextType, DefineType, Scope};
 use crate::vm::Error;
 
-pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
+pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
     for spec in &v.specs {
         let declared_tp = c
             .expression_to_define_type(
+                &pkg,
                 spec.typ
                     .as_ref()
                     .expect("no declared values requires a declared type"),
@@ -33,7 +34,7 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
         };
 
         for (name, value) in spec.name.iter().zip(values.iter()) {
-            let mut rt = c.compile_expression(value)?;
+            let mut rt = c.compile_expression(pkg, value)?;
             if value_is_default && declared_tp.is_nullable() {
                 c.emit_opcode(OpCode::TypedNull);
 
@@ -90,15 +91,21 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
             }
 
             let symbol = if c.symbols.current_context().scope == Scope::Global {
-                let updated = c
-                    .symbols
-                    .update_dt(name.name.as_str(), DefineType::Var(Box::new(rt.clone())));
+                let updated = c.symbols.update_dt(
+                    pkg,
+                    name.name.as_str(),
+                    DefineType::Var(Box::new(rt.clone())),
+                );
 
                 assert!(updated, "{}", name.name);
 
-                c.symbols.resolve(name.name.as_str()).unwrap().get_symbol()
+                c.symbols
+                    .resolve(pkg, name.name.as_str())
+                    .unwrap()
+                    .get_symbol()
             } else {
                 c.symbols.define(
+                    pkg,
                     name.name.as_str(),
                     DefineType::Var(Box::new(rt.clone())),
                     rt.is_invar(),
@@ -107,13 +114,13 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
 
             if should_upcast {
                 let (name, _) = declared_tp.as_interface();
-                let (s, _) = c.symbols.resolve(&name).unwrap().as_local();
+                let (s, _, _) = c.symbols.resolve(pkg, &name).unwrap().as_local();
 
                 c.emit_opcode(OpCode::Upcast);
                 c.emit_u16(s.index);
             } else if should_cast_alias {
                 let (name, _, _, _) = declared_tp.as_spec().unwrap();
-                let (s, _) = c.symbols.resolve(&name).unwrap().as_local();
+                let (s, _, _) = c.symbols.resolve(pkg, &name).unwrap().as_local();
 
                 c.emit_opcode(OpCode::CastToAlias);
                 c.emit_u16(s.index);
@@ -131,7 +138,7 @@ pub fn compile_variable(v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error
     Ok(())
 }
 
-pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
+pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     let pos_jump = c.instructions.len();
 
     c.func_contexts.push(FuncContext::new(pos_jump));
@@ -141,10 +148,10 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
 
     let (f_name, recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
         let recv = recv.list.first().unwrap();
-        let t = c.expression_to_define_type(&recv.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
 
         let ret = (
-            Compiler::make_method_name(t.strip_ref(), &f.name.name),
+            make_method_name(pkg, t.strip_ref(), &f.name.name),
             Some(recv),
             Some(Box::new(t)),
         );
@@ -154,9 +161,10 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
         (f.name.name.clone(), None, None)
     };
 
-    let symbol = match c.symbols.resolve(&f_name) {
+    let symbol = match c.symbols.resolve(pkg, &f_name) {
         Some(s) => {
             let updated = c.symbols.update_dt(
+                pkg,
                 &f_name,
                 DefineType::Func {
                     name: f.name.name.clone(),
@@ -170,6 +178,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
             s.get_symbol()
         }
         None => c.symbols.define(
+            pkg,
             &f_name,
             DefineType::Func {
                 name: f.name.name.clone(),
@@ -185,7 +194,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     c.symbols.new_context(false);
 
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(&recv.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
 
         //check if there is a field with the same name
         if let DefineType::Struct { fields, .. } = &t.strip_ref() {
@@ -202,6 +211,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
         }
 
         c.symbols.define(
+            pkg,
             &recv.name.first().unwrap().name,
             DefineType::Var(Box::new(t.clone())),
             t.is_invar(),
@@ -211,11 +221,12 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
     for p in &f.typ.params.list {
-        let t = c.expression_to_define_type(&p.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &p.typ).unwrap();
         for name in &p.name {
             decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
             c.symbols.define(
+                pkg,
                 &name.name,
                 DefineType::Var(Box::new(t.clone())),
                 t.is_invar(),
@@ -226,7 +237,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
     for el in &f.typ.result.list {
-        let t = c.expression_to_define_type(&el.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &el.typ).unwrap();
         decl_r_types.push(t);
     }
 
@@ -244,22 +255,28 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
         args: decl_arg_types,
         rt: Box::new(r_t.clone()),
     };
-    let updated = c.symbols.update_dt(&f_name, func_def.clone());
+    let updated = c.symbols.update_dt(pkg, &f_name, func_def.clone());
     assert!(updated);
 
     c.func_contexts.last_mut().unwrap().expected_ret = r_t;
 
     //add method to struct symbol
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(&recv.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
 
-        let tt = c.symbols.resolve(&t.get_type_name()).unwrap().get_type();
+        let tt = c
+            .symbols
+            .resolve(pkg, &t.get_type_name())
+            .unwrap()
+            .get_type()
+            .0;
 
         if tt.is_struct() {
             let (r_name, r_fields, mut r_methods) = tt.as_struct().unwrap();
 
             r_methods.push(func_def.clone());
             let updated = c.symbols.update_dt(
+                pkg,
                 &r_name,
                 DefineType::Struct {
                     name: r_name.to_string(),
@@ -275,6 +292,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
             methods.push(func_def.clone());
 
             let updated = c.symbols.update_dt(
+                pkg,
                 &name,
                 DefineType::Spec {
                     name: name.to_string(),
@@ -302,7 +320,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
             }
         }
 
-        terminates = c.compile_block_statement(&body.list)?;
+        terminates = c.compile_block_statement(pkg, &body.list)?;
     } else {
         //todo
         // assert if the function is void but there is a return
@@ -404,7 +422,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
 
     //add method start position for dynamic dispatch
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(&recv.typ).unwrap();
+        let t = c.expression_to_define_type(&pkg, &recv.typ).unwrap();
         let mut added = false;
 
         if let DefineType::Struct { name, .. } = &t.strip_ref() {
@@ -473,7 +491,7 @@ pub fn compile_function(f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn compile_const(c: &Decl<ConstSpec>, compiler: &mut Compiler) -> Result<(), Error> {
+pub fn compile_const(pkg: &str, c: &Decl<ConstSpec>, compiler: &mut Compiler) -> Result<(), Error> {
     let mut c_iter = c.specs.iter();
     let mut grouped_constants = vec![];
     let mut current_group = vec![];
@@ -521,9 +539,10 @@ pub fn compile_const(c: &Decl<ConstSpec>, compiler: &mut Compiler) -> Result<(),
                     .values
                     .clone(),
             ) {
-                let rt = compiler.compile_expression(&value)?;
+                let rt = compiler.compile_expression(pkg, &value)?;
 
                 let symbol = compiler.symbols.define(
+                    pkg,
                     name.name.as_str(),
                     DefineType::Const(Box::new(rt.clone())),
                     false,
@@ -544,13 +563,16 @@ pub fn compile_const(c: &Decl<ConstSpec>, compiler: &mut Compiler) -> Result<(),
     Ok(())
 }
 
-pub fn type_interface(spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
+pub fn type_interface(pkg: &str, spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
     let mut funcs = Vec::with_capacity(it.methods.list.len());
     let mut func_names = Vec::with_capacity(it.methods.list.len());
 
     for field in &it.methods.list {
         let func_name = field.name.first().unwrap();
-        let (_, _, args, rt) = c.expression_to_define_type(&field.typ).unwrap().as_func();
+        let (_, _, args, rt) = c
+            .expression_to_define_type(pkg, &field.typ)
+            .unwrap()
+            .as_func();
 
         funcs.push(DefineType::Func {
             name: func_name.name.to_string(),
@@ -561,9 +583,10 @@ pub fn type_interface(spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
         func_names.push(func_name.name.to_string());
     }
 
-    let s = match c.symbols.resolve(&spec.name.name) {
+    let s = match c.symbols.resolve(pkg, &spec.name.name) {
         Some(s) => {
             let updated = c.symbols.update_dt(
+                pkg,
                 &spec.name.name.clone(),
                 DefineType::Interface {
                     name: spec.name.name.clone(),
@@ -575,6 +598,7 @@ pub fn type_interface(spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
             s.get_symbol()
         }
         None => c.symbols.define(
+            pkg,
             &spec.name.name.clone(),
             DefineType::Interface {
                 name: spec.name.name.clone(),
@@ -601,14 +625,15 @@ pub fn type_interface(spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
     c.emit_u16(idx);
 }
 
-pub fn type_spec(spec: &TypeSpec, c: &mut Compiler) {
+pub fn type_spec(pkg: &str, spec: &TypeSpec, c: &mut Compiler) {
     let t = spec.name.clone();
-    let inner_t = c.expression_to_define_type(&spec.typ).unwrap();
+    let inner_t = c.expression_to_define_type(pkg, &spec.typ).unwrap();
 
-    let symbol = match c.symbols.resolve(&t.name) {
+    let symbol = match c.symbols.resolve(pkg, &t.name) {
         Some(s) => {
             let s = s.get_symbol();
             let updated = c.symbols.update_dt(
+                pkg,
                 &t.name,
                 DefineType::Spec {
                     name: t.name.to_string(),
@@ -622,6 +647,7 @@ pub fn type_spec(spec: &TypeSpec, c: &mut Compiler) {
             s
         }
         None => c.symbols.define(
+            pkg,
             &t.name,
             DefineType::Spec {
                 name: t.name.to_string(),
@@ -651,7 +677,7 @@ pub fn type_spec(spec: &TypeSpec, c: &mut Compiler) {
     c.emit_u16(idx);
 }
 
-pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
+pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
     let t = spec.name.clone();
     let mut field_types = vec![];
 
@@ -666,7 +692,7 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
             panic!("recursive definition");
         }
 
-        let r = c.symbols.resolve(&inner_t.name).unwrap().get_type();
+        let r = c.symbols.resolve(pkg, &inner_t.name).unwrap().get_type().0;
 
         let dt = if is_ref {
             DefineType::Ref(Box::new(r.strip_type()))
@@ -696,9 +722,10 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
 
     let name = spec.name.name.as_str();
 
-    let symbol = match c.symbols.resolve(&spec.name.name) {
+    let symbol = match c.symbols.resolve(pkg, &spec.name.name) {
         Some(s) => s.get_symbol(),
         None => c.symbols.define(
+            pkg,
             name,
             DefineType::Struct {
                 name: name.to_string(),
@@ -731,7 +758,9 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
         };
     }
 
-    let updated = c.symbols.update_struct_fields(name, field_types.clone());
+    let updated = c
+        .symbols
+        .update_struct_fields(pkg, name, field_types.clone());
 
     assert!(updated);
 
@@ -752,7 +781,7 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
 
-    let strct = c.symbols.resolve(name).unwrap().get_type();
+    let strct = c.symbols.resolve(pkg, name).unwrap().get_type().0;
 
     for field_type in &mut field_types {
         if let ContextType::Embedded(s, dt) = field_type {
@@ -797,7 +826,7 @@ pub fn type_struct(spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
 
                         let gen_m = p.parse_func_decl().unwrap();
 
-                        c.compile_declaration(&Declaration::Function(gen_m))
+                        c.compile_declaration(pkg, &Declaration::Function(gen_m))
                             .unwrap();
                     }
                 }

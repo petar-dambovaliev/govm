@@ -5,11 +5,12 @@ use crate::vm::symbols::{ContextType, DefineType, Scope};
 use crate::vm::Error;
 
 pub(crate) fn compile_struct(
+    pkg: &str,
     clit: &CompositeLit,
     name: &Ident,
     c: &mut Compiler,
 ) -> Result<DefineType, Error> {
-    let (s, dt) = match c.symbols.resolve(name.name.as_str()) {
+    let (s, dt, _) = match c.symbols.resolve(pkg, name.name.as_str()) {
         Some(s) => s.as_local(),
         None => panic!("struct `{}` does not exist", name.name),
     };
@@ -104,7 +105,7 @@ pub(crate) fn compile_struct(
                     _ => panic!("expr"),
                 };
 
-                let rt = c.compile_expression(&el_expr)?;
+                let rt = c.compile_expression(pkg, &el_expr)?;
 
                 let in_t = match inner_type {
                     DefineType::Type(a, _b) => *a,
@@ -136,7 +137,7 @@ pub(crate) fn compile_struct(
             }
             None => {
                 let def_val = c.make_type_default_val(inner_type);
-                let _ = c.compile_expression(&def_val)?;
+                let _ = c.compile_expression(pkg, &def_val)?;
             }
         }
     }

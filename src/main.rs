@@ -64,12 +64,14 @@ fn main() {
         SubCommand::Build { source } => {
             unimplemented!("Building project from source: {:?}", source);
         }
-        SubCommand::Run { binary } => {
+        SubCommand::Run { mut binary } => {
             println!("Running binary: {:?}", binary);
             let pkgs = parse_local_dependencies(&binary).unwrap();
 
             let mut goc = Compiler::new();
-            let code = goc.compile(pkgs).unwrap();
+            let main = binary.clone();
+            binary.pop();
+            let code = goc.compile(main, binary, pkgs).unwrap();
             let mut vm = VM::new();
 
             vm.run(code).unwrap();
