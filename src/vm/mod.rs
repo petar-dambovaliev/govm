@@ -7,9 +7,8 @@ pub mod symbols;
 use std::collections::{BTreeMap, VecDeque};
 //use std::default::Default;
 use std::fmt::Debug;
-
-#[cfg(feature = "debug")]
-use std::io::Write;
+use std::io::{BufWriter, Write};
+use std::io::{Cursor, Stdout};
 use std::ptr;
 
 #[cfg(feature = "debug")]
@@ -357,7 +356,7 @@ impl VM {
 
     /// Executes the given Bytecode inside the context of this VM
     pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
-        //#[cfg(feature = "debug")]
+        #[cfg(feature = "debug")]
         {
             println!("Bytecode (raw)= \n{:?}", &code.instructions);
             print!(
@@ -369,6 +368,7 @@ impl VM {
         }
 
         // reset some state
+        let mut assert_stdout = code.assert_stdout;
         self.instructions = code.instructions;
         self.ip = 0;
         self.bp = 0;
@@ -999,7 +999,8 @@ impl VM {
                     args.reverse();
 
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
-                    let result = builtin::call(builtin, &args)?;
+                    let result =
+                        builtin::call(builtin, &args, assert_stdout.as_mut().map(|a| &mut a.1))?;
                     self.push(result);
                 }
                 OpCode::ReturnValue => {
@@ -1136,7 +1137,12 @@ impl VM {
                     self.push(left);
                 }
                 OpCode::Halt => {
-                    //println!("Halt: {:#?}", self.stack);
+                    if let Some((expected, got_buf)) = &assert_stdout {
+                        let got = String::from_utf8(got_buf.buffer().to_vec()).unwrap();
+
+                        assert_eq!(&got, expected);
+                    }
+
                     return Ok(final_result);
                 }
             }

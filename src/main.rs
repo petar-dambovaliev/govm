@@ -21,6 +21,7 @@ static GLOBAL_ALLOCATOR: Allocator = Allocator;
 struct Cli {
     #[clap(short, long)]
     debug: Option<u8>,
+
     #[clap(subcommand)]
     action: SubCommand,
 }
@@ -28,9 +29,17 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum SubCommand {
     #[clap(name = "build", about = "A Go virtual machine")]
-    Build { source: PathBuf },
+    Build {
+        #[arg(short, long)]
+        output_assert: bool,
+        source: PathBuf,
+    },
     #[clap(name = "run", about = "Builds and runs a Go binary")]
-    Run { binary: PathBuf },
+    Run {
+        #[arg(short, long)]
+        output_assert: bool,
+        binary: PathBuf,
+    },
     #[clap(name = "mod", about = "Manage Go modules")]
     Mod(ModArg),
 }
@@ -61,17 +70,24 @@ fn main() {
     //println!("{:?}", cli);
 
     match cli.action {
-        SubCommand::Build { source } => {
+        SubCommand::Build {
+            output_assert,
+            source,
+        } => {
             unimplemented!("Building project from source: {:?}", source);
         }
-        SubCommand::Run { mut binary } => {
-            println!("Running binary: {:?}", binary);
+        SubCommand::Run {
+            output_assert,
+            mut binary,
+        } => {
+            //println!("Running binary: {:?}", binary);
             let pkgs = parse_local_dependencies(&binary).unwrap();
 
             let mut goc = Compiler::new();
             let main = binary.clone();
             binary.pop();
-            let code = goc.compile(main, binary, pkgs).unwrap();
+
+            let code = goc.compile(main, binary, pkgs, output_assert).unwrap();
             let mut vm = VM::new();
 
             vm.run(code).unwrap();

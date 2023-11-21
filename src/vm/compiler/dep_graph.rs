@@ -574,7 +574,7 @@ fn get_const_idents_from_expr(
         //     let dt = c.expression_to_define_type(sel.x.as_ref());
         //     panic!("{:#?} {:#?}", dt, sel);
         // }
-        t => println!("get_const_idents_from_expr: not implemented {:#?}", t),
+        _ => {} //t => println!("get_const_idents_from_expr: not implemented {:#?}", t),
     }
     Ok(idents)
 }

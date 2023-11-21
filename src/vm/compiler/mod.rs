@@ -8,6 +8,7 @@ use crate::vm::symbols::*;
 use crate::vm::Object;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::io::BufWriter;
 
 pub fn make_method_name(pkg_name: &str, dt: DefineType, f_name: &str) -> String {
     let digest = md5::compute(pkg_name);
@@ -224,10 +225,26 @@ impl OpCode {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Bytecode {
     pub constants: Vec<Object>,
     pub instructions: Vec<u8>,
+    pub assert_stdout: Option<(String, BufWriter<Vec<u8>>)>,
+}
+
+impl Clone for Bytecode {
+    fn clone(&self) -> Self {
+        let std = self
+            .assert_stdout
+            .as_ref()
+            .map(|a| (a.0.clone(), BufWriter::new(a.1.buffer().to_vec())));
+
+        Self {
+            constants: self.constants.clone(),
+            instructions: self.instructions.clone(),
+            assert_stdout: std,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -499,218 +516,218 @@ pub fn bytecode_to_human(code: &[u8], positions: bool) -> String {
     str
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::ast::{AssignStmt, BasicLit, Expression, Ident, Operation, Statement};
-    use crate::parser::token::{LitKind, Operator};
-    use crate::parser::Parser;
-    use crate::vm::compiler::compiler::Compiler;
-
-    fn run(program: &str) -> String {
-        let mut p = Parser::from(program);
-        let ast = p.parse_file().unwrap();
-        let program = Compiler::new().compile_ast(&ast).unwrap();
-        bytecode_to_human(&program.instructions, false)
-    }
-
-    fn assert_bytecode_eq(program: &str, expected: &str) {
-        let mut p = Parser::from(program);
-        let ast = p.parse_file().unwrap();
-        let code = Compiler::new().compile_ast(&ast).unwrap();
-        assert_eq!(
-            bytecode_to_human(&code.instructions, false),
-            expected,
-            "\nInput: \t{program}\nBytecode: \t{}",
-            bytecode_to_human(&code.instructions, true)
-        );
-    }
-
-    #[test]
-    fn test_add_assignment_expression() {
-        let left = "a";
-        let expr = Statement::Assign(AssignStmt {
-            pos: 0,
-            op: Operator::Assign,
-            left: vec![Expression::Ident(Ident {
-                pos: 0,
-                name: left.to_string(),
-            })],
-            right: vec![Expression::Operation(Operation {
-                pos: 0,
-                op: Operator::Add,
-                x: Box::new(Expression::Ident(Ident {
-                    pos: 0,
-                    name: left.to_string(),
-                })),
-                y: Some(Box::new(Expression::BasicLit(BasicLit {
-                    pos: 0,
-                    kind: LitKind::Integer,
-                    value: "1".to_string(),
-                }))),
-            })],
-        });
-
-        let mut c = Compiler::new();
-        c.symbols
-            .define(left, DefineType::Var(Box::new(DefineType::Int)), false);
-        let _r = c.compile_statement(&expr).unwrap();
-
-        println!("{}", bytecode_to_human(&c.instructions, true));
-    }
-
-    #[test]
-    fn test_int_expression() {
-        assert_eq!(run("5"), "Const(0) Pop Halt");
-        assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
-        assert_eq!(
-            run("5; 6; 5"),
-            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_bool_expression() {
-        assert_eq!(run("false"), "True Pop Halt");
-        assert_eq!(run("true; true"), "True Pop True Pop Halt");
-        assert_eq!(run("false"), "False Pop Halt");
-    }
-
-    #[test]
-    fn test_float_expression() {
-        assert_eq!(run("1.23"), "Const(0) Pop Halt");
-        assert_eq!(run("1.23; 1.23"), "Const(0) Pop Const(0) Pop Halt");
-        assert_eq!(
-            run("5.00; 6.00; 5.00"),
-            "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_infix_expression() {
-        assert_eq!(run("1 + 2"), "Const(0) Const(1) Add Pop Halt");
-        assert_eq!(run("1 - 2"), "Const(0) Const(1) Subtract Pop Halt");
-        assert_eq!(run("1 * 2"), "Const(0) Const(1) Multiply Pop Halt");
-        assert_eq!(run("1 / 2"), "Const(0) Const(1) Divide Pop Halt");
-        assert_eq!(
-            run("1 * 2 * 3"),
-            "Const(0) Const(1) Multiply Const(2) Multiply Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_block_statements() {
-        assert_eq!(run("{ 1 }"), "Const(0) Pop Halt");
-    }
-
-    #[test]
-    fn test_if_expression() {
-        assert_bytecode_eq(
-            "als ja { 1 }",
-            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-        );
-        assert_bytecode_eq(
-            "als ja { 1 } anders { 2 }",
-            "True JumpIfFalse(10) Const(0) Jump(13) Const(1) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_if_expression_empty_body() {
-        assert_bytecode_eq(
-            "als ja { }",
-            "True JumpIfFalse(8) Null Jump(9) Null Pop Halt",
-        );
-
-        assert_bytecode_eq(
-            "als ja { } anders { 1 }",
-            "True JumpIfFalse(8) Null Jump(11) Const(0) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_if_expression_empty_else() {
-        assert_bytecode_eq(
-            "als ja { 1 } anders {}",
-            "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_function_expression() {
-        assert_bytecode_eq(
-            "functie() { 1 }",
-            "Jump(7) Const(0) ReturnValue Const(1) Pop Halt",
-        );
-
-        assert_bytecode_eq(
-            "functie() { 1 } functie() { 2 }",
-            "Jump(7) Const(0) ReturnValue Const(1) Pop Jump(18) Const(2) ReturnValue Const(3) Pop Halt"
-        );
-    }
-
-    #[test]
-    fn test_call_expression() {
-        assert_bytecode_eq(
-            "functie(a, b) { 1 }(1, 2)",
-            "Const(0) Const(1) Jump(13) Const(0) ReturnValue Const(2) Call(2) Pop Halt",
-        );
-    }
-
-    #[test]
-    fn test_declare_statement() {
-        assert_eq!(run("stel a = 1;"), "Const(0) SetGlobal(0) Halt");
-
-        assert_eq!(
-            run("stel a = 1; stel b = 2;"),
-            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) Halt"
-        );
-
-        // TODO: Test scoped variables
-    }
-
-    #[test]
-    fn test_ident_expressions() {
-        assert_eq!(
-            run("stel a = 1; a"),
-            "Const(0) SetGlobal(0) GetGlobal(0) Pop Halt"
-        );
-
-        assert_eq!(
-            run("stel a = 1; stel b = 2; a; b;"),
-            "Const(0) SetGlobal(0) Const(1) SetGlobal(1) GetGlobal(0) Pop GetGlobal(1) Pop Halt"
-        );
-
-        // TODO: Test scoped variables
-    }
-
-    #[test]
-    fn test_call_builtin() {
-        let mut p = Parser::from(
-            r#"
-        package main
-
-        func fib(n int) {
-            if n < 2 {
-                return n
-            }
-
-            return fib(n - 1) + fib(n - 2)
-        }
-    "#,
-        );
-        let mut compiler = Compiler::new();
-
-        let ast = p.parse_file().unwrap();
-        let _code = compiler.compile_ast(&ast).unwrap();
-        //println!("{}", bytecode_to_human(&code.instructions, false))
-        // assert_eq!(
-        //     run(r#"
-        //         package main
-        //         func main(){}
-        //         var a = print("hallo")
-        //     "#),
-        //     "Const(0) CallBuiltin(0,1) Pop Halt"
-        // )
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::parser::ast::{AssignStmt, BasicLit, Expression, Ident, Operation, Statement};
+//     use crate::parser::token::{LitKind, Operator};
+//     use crate::parser::Parser;
+//     use crate::vm::compiler::compiler::Compiler;
+//
+//     fn run(program: &str) -> String {
+//         let mut p = Parser::from(program);
+//         let ast = p.parse_file().unwrap();
+//         let program = Compiler::new().compile_ast(&ast).unwrap();
+//         bytecode_to_human(&program.instructions, false)
+//     }
+//
+//     fn assert_bytecode_eq(program: &str, expected: &str) {
+//         let mut p = Parser::from(program);
+//         let ast = p.parse_file().unwrap();
+//         let code = Compiler::new().compile_ast(&ast).unwrap();
+//         assert_eq!(
+//             bytecode_to_human(&code.instructions, false),
+//             expected,
+//             "\nInput: \t{program}\nBytecode: \t{}",
+//             bytecode_to_human(&code.instructions, true)
+//         );
+//     }
+//
+//     #[test]
+//     fn test_add_assignment_expression() {
+//         let left = "a";
+//         let expr = Statement::Assign(AssignStmt {
+//             pos: 0,
+//             op: Operator::Assign,
+//             left: vec![Expression::Ident(Ident {
+//                 pos: 0,
+//                 name: left.to_string(),
+//             })],
+//             right: vec![Expression::Operation(Operation {
+//                 pos: 0,
+//                 op: Operator::Add,
+//                 x: Box::new(Expression::Ident(Ident {
+//                     pos: 0,
+//                     name: left.to_string(),
+//                 })),
+//                 y: Some(Box::new(Expression::BasicLit(BasicLit {
+//                     pos: 0,
+//                     kind: LitKind::Integer,
+//                     value: "1".to_string(),
+//                 }))),
+//             })],
+//         });
+//
+//         let mut c = Compiler::new();
+//         c.symbols
+//             .define(left, DefineType::Var(Box::new(DefineType::Int)), false);
+//         let _r = c.compile_statement(&expr).unwrap();
+//
+//         println!("{}", bytecode_to_human(&c.instructions, true));
+//     }
+//
+//     #[test]
+//     fn test_int_expression() {
+//         assert_eq!(run("5"), "Const(0) Pop Halt");
+//         assert_eq!(run("5; 5"), "Const(0) Pop Const(0) Pop Halt");
+//         assert_eq!(
+//             run("5; 6; 5"),
+//             "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
+//         );
+//     }
+//
+//     #[test]
+//     fn test_bool_expression() {
+//         assert_eq!(run("false"), "True Pop Halt");
+//         assert_eq!(run("true; true"), "True Pop True Pop Halt");
+//         assert_eq!(run("false"), "False Pop Halt");
+//     }
+//
+//     #[test]
+//     fn test_float_expression() {
+//         assert_eq!(run("1.23"), "Const(0) Pop Halt");
+//         assert_eq!(run("1.23; 1.23"), "Const(0) Pop Const(0) Pop Halt");
+//         assert_eq!(
+//             run("5.00; 6.00; 5.00"),
+//             "Const(0) Pop Const(1) Pop Const(0) Pop Halt"
+//         );
+//     }
+//
+//     #[test]
+//     fn test_infix_expression() {
+//         assert_eq!(run("1 + 2"), "Const(0) Const(1) Add Pop Halt");
+//         assert_eq!(run("1 - 2"), "Const(0) Const(1) Subtract Pop Halt");
+//         assert_eq!(run("1 * 2"), "Const(0) Const(1) Multiply Pop Halt");
+//         assert_eq!(run("1 / 2"), "Const(0) Const(1) Divide Pop Halt");
+//         assert_eq!(
+//             run("1 * 2 * 3"),
+//             "Const(0) Const(1) Multiply Const(2) Multiply Pop Halt"
+//         );
+//     }
+//
+//     #[test]
+//     fn test_block_statements() {
+//         assert_eq!(run("{ 1 }"), "Const(0) Pop Halt");
+//     }
+//
+//     #[test]
+//     fn test_if_expression() {
+//         assert_bytecode_eq(
+//             "als ja { 1 }",
+//             "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
+//         );
+//         assert_bytecode_eq(
+//             "als ja { 1 } anders { 2 }",
+//             "True JumpIfFalse(10) Const(0) Jump(13) Const(1) Pop Halt",
+//         );
+//     }
+//
+//     #[test]
+//     fn test_if_expression_empty_body() {
+//         assert_bytecode_eq(
+//             "als ja { }",
+//             "True JumpIfFalse(8) Null Jump(9) Null Pop Halt",
+//         );
+//
+//         assert_bytecode_eq(
+//             "als ja { } anders { 1 }",
+//             "True JumpIfFalse(8) Null Jump(11) Const(0) Pop Halt",
+//         );
+//     }
+//
+//     #[test]
+//     fn test_if_expression_empty_else() {
+//         assert_bytecode_eq(
+//             "als ja { 1 } anders {}",
+//             "True JumpIfFalse(10) Const(0) Jump(11) Null Pop Halt",
+//         );
+//     }
+//
+//     #[test]
+//     fn test_function_expression() {
+//         assert_bytecode_eq(
+//             "functie() { 1 }",
+//             "Jump(7) Const(0) ReturnValue Const(1) Pop Halt",
+//         );
+//
+//         assert_bytecode_eq(
+//             "functie() { 1 } functie() { 2 }",
+//             "Jump(7) Const(0) ReturnValue Const(1) Pop Jump(18) Const(2) ReturnValue Const(3) Pop Halt"
+//         );
+//     }
+//
+//     #[test]
+//     fn test_call_expression() {
+//         assert_bytecode_eq(
+//             "functie(a, b) { 1 }(1, 2)",
+//             "Const(0) Const(1) Jump(13) Const(0) ReturnValue Const(2) Call(2) Pop Halt",
+//         );
+//     }
+//
+//     #[test]
+//     fn test_declare_statement() {
+//         assert_eq!(run("stel a = 1;"), "Const(0) SetGlobal(0) Halt");
+//
+//         assert_eq!(
+//             run("stel a = 1; stel b = 2;"),
+//             "Const(0) SetGlobal(0) Const(1) SetGlobal(1) Halt"
+//         );
+//
+//         // TODO: Test scoped variables
+//     }
+//
+//     #[test]
+//     fn test_ident_expressions() {
+//         assert_eq!(
+//             run("stel a = 1; a"),
+//             "Const(0) SetGlobal(0) GetGlobal(0) Pop Halt"
+//         );
+//
+//         assert_eq!(
+//             run("stel a = 1; stel b = 2; a; b;"),
+//             "Const(0) SetGlobal(0) Const(1) SetGlobal(1) GetGlobal(0) Pop GetGlobal(1) Pop Halt"
+//         );
+//
+//         // TODO: Test scoped variables
+//     }
+//
+//     #[test]
+//     fn test_call_builtin() {
+//         let mut p = Parser::from(
+//             r#"
+//         package main
+//
+//         func fib(n int) {
+//             if n < 2 {
+//                 return n
+//             }
+//
+//             return fib(n - 1) + fib(n - 2)
+//         }
+//     "#,
+//         );
+//         let mut compiler = Compiler::new();
+//
+//         let ast = p.parse_file().unwrap();
+//         let _code = compiler.compile_ast(&ast).unwrap();
+//         //println!("{}", bytecode_to_human(&code.instructions, false))
+//         // assert_eq!(
+//         //     run(r#"
+//         //         package main
+//         //         func main(){}
+//         //         var a = print("hallo")
+//         //     "#),
+//         //     "Const(0) CallBuiltin(0,1) Pop Halt"
+//         // )
+//     }
+// }

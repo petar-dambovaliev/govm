@@ -5,8 +5,10 @@ use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
+use crate::vm::VM;
 use bdwgc_alloc::Allocator;
 use std::collections::BTreeMap;
+use std::io::{BufWriter, Write};
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
@@ -97,9 +99,13 @@ pub fn signature_from_t(t: DefineType) -> Option<DefineType> {
 }
 
 #[inline]
-pub fn call(builtin: Builtin, args: &[Object]) -> Result<Object, Error> {
+pub fn call(
+    builtin: Builtin,
+    args: &[Object],
+    stdout: Option<&mut BufWriter<Vec<u8>>>,
+) -> Result<Object, Error> {
     match builtin {
-        Builtin::Print => call_print(args),
+        Builtin::Print => call_print(args, stdout),
         //Builtin::Type => call_type(args, gc),
         //Builtin::String => call_string(args, gc),
         // Builtin::Bool => call_bool(args),
@@ -108,7 +114,7 @@ pub fn call(builtin: Builtin, args: &[Object]) -> Result<Object, Error> {
         Builtin::Byte => call_byte(args),
         Builtin::Length => call_length(args),
         Builtin::Rune => call_rune(args),
-        Builtin::Println => call_println(args),
+        Builtin::Println => call_println(args, stdout),
         Builtin::Int64 => call_int64(args),
         Builtin::Make => call_make(args),
         Builtin::Cap => call_cap(args),
@@ -340,14 +346,24 @@ fn call_int64(args: &[Object]) -> Result<Object, Error> {
     Ok(Int64::from_i64(i))
 }
 
-fn call_println(args: &[Object]) -> Result<Object, Error> {
+fn call_println(
+    args: &[Object],
+    mut stdout: Option<&mut BufWriter<Vec<u8>>>,
+) -> Result<Object, Error> {
     if !args.is_empty() {
         let args = args.iter();
 
         //let mut output = Vec::with_capacity(args.len());
         for arg in args {
-            print!("{} ", arg);
+            let s = format!("{:#?}", arg);
+            if let Some(stdout) = &mut stdout {
+                stdout.write_all(s.as_bytes()).unwrap();
+            }
+            print!("{} ", s);
         }
+    }
+    if let Some(stdout) = &mut stdout {
+        stdout.write_all(&[b'\n']).unwrap();
     }
     println!();
     Ok(Object::null())
@@ -356,13 +372,20 @@ fn call_println(args: &[Object]) -> Result<Object, Error> {
 /// Prints all the given arguments using a very simple format scheme
 /// Example:
 ///     print("hello {}!", "world") => prints "hello world" to stdout
-fn call_print(args: &[Object]) -> Result<Object, Error> {
+fn call_print(
+    args: &[Object],
+    mut stdout: Option<&mut BufWriter<Vec<u8>>>,
+) -> Result<Object, Error> {
     if !args.is_empty() {
         let args = args.iter();
 
         let mut output = Vec::with_capacity(args.len());
         for arg in args {
-            output.push(format!("{:#?}", arg));
+            let s = format!("{:#?}", arg);
+            if let Some(stdout) = &mut stdout {
+                stdout.write_all(s.as_bytes()).unwrap();
+            }
+            output.push(s);
         }
 
         print!("{:#?}", output);

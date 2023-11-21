@@ -12,6 +12,7 @@ use crate::vm::compiler::{
     literal, make_method_name, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
     JUMP_PLACEHOLDER,
 };
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use crate::vm::compiler::declaration::type_spec;
@@ -66,6 +67,7 @@ impl Compiler {
         main: PathBuf,
         project_path: PathBuf,
         project: Vec<Package>,
+        output_assert: bool,
     ) -> Result<Bytecode, Error> {
         let pkg = project_path
             .canonicalize()
@@ -228,10 +230,42 @@ impl Compiler {
         //self.constants.push(Rune::from_char(0 as char));
         let (pkgs_graph, pkgs_map) = make_package_dep_graph(project);
 
+        let mut adb = None;
+
         for pkg_id in pkgs_graph.into_iter() {
             let pkg = pkgs_map.get(&pkg_id).unwrap();
 
             for file in &pkg.files {
+                if file.pkg_name.name == "main" {
+                    let mut is_output = false;
+                    for comment in file.comments.clone() {
+                        if output_assert
+                            && !is_output
+                            && comment
+                                .text
+                                .to_lowercase()
+                                .trim_start_matches("//")
+                                .trim_start()
+                                == "output:"
+                        {
+                            is_output = true;
+                        } else if is_output {
+                            adb = match adb.as_mut() {
+                                None => {
+                                    Some(format!("{}\n", comment.text.trim_start_matches("//")))
+                                }
+                                Some(ss) => {
+                                    ss.push_str(&format!(
+                                        "{}\n",
+                                        comment.text.trim_start_matches("//")
+                                    ));
+                                    Some(ss.clone())
+                                }
+                            }
+                        }
+                    }
+                }
+
                 for import in &file.imports {
                     let import_path = import.path.value.trim_matches('"');
                     let p: PathBuf = import_path.clone().into();
@@ -288,6 +322,7 @@ impl Compiler {
         Ok(Bytecode {
             constants: self.constants.clone(),
             instructions: std::mem::take(&mut self.instructions),
+            assert_stdout: adb.map(|a| (a, BufWriter::new(vec![]))),
         })
     }
 
