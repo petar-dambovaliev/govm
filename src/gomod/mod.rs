@@ -1,3 +1,5 @@
+mod semserver;
+
 use std::collections::HashMap;
 use std::fs;
 

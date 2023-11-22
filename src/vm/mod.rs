@@ -1140,6 +1140,7 @@ impl VM {
                     if let Some((expected, got_buf)) = &assert_stdout {
                         let got = String::from_utf8(got_buf.buffer().to_vec()).unwrap();
 
+                        println!("asserting VM output");
                         assert_eq!(&got, expected);
                     }
 

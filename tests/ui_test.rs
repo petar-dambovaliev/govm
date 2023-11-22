@@ -14,6 +14,7 @@ fn compiler_ui_tests() {
             let status = Command::new(compiler_command)
                 .arg("run")
                 .arg("run")
+                .arg("--output-assert")
                 .arg(project_path.to_str().unwrap())
                 .status()
                 .expect("Failed to execute compiler");
