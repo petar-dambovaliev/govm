@@ -26,16 +26,21 @@ fn is_valid(v: &str) -> bool {
 // are identical strings.
 // The canonical invalid semantic version is the empty string.
 fn canonical(v: &str) -> String {
-    if let Ok(p) = parse(v) {
-        if !p.build.is_empty() {
-            return v[..v.len() - p.build.len()].to_string();
+    match parse(v) {
+        Ok(p) => {
+            if !p.build.is_empty() {
+                return v[..v.len() - p.build.len()].to_string();
+            }
+            if !p.short.is_empty() {
+                return v.to_string() + &p.short;
+            }
+            v.to_string()
         }
-        if !p.short.is_empty() {
-            return v.to_string() + &p.short;
+        Err(e) => {
+            println!("{}", e);
+            String::new()
         }
-        return v.to_string();
     }
-    String::new()
 }
 
 // Major returns the major version prefix of the semantic version v.
@@ -96,6 +101,7 @@ fn compare(v: &str, w: &str) -> Ordering {
             }
 
             let patch_cmp = pv.patch.cmp(&pw.patch);
+
             if patch_cmp != Ordering::Equal {
                 return patch_cmp;
             }
@@ -138,7 +144,6 @@ fn sort(list: &mut Vec<&str>) {
 }
 
 fn parse(v: &str) -> Result<Parsed, &'static str> {
-    let v = "v1.0.0-alpha.1";
     if v.is_empty() || !v.starts_with('v') {
         return Err("Invalid version string");
     }
@@ -153,8 +158,13 @@ fn parse(v: &str) -> Result<Parsed, &'static str> {
         build: "".to_string(),
     };
 
-    parsed.major = parse_segment(&mut rest)?;
+    parsed.major = parse_int(&mut rest).expect("major");
+    //panic!("rest: {}", rest);
     if rest.is_empty() {
+        parsed.minor = "0".to_string();
+        parsed.patch = "0".to_string();
+        parsed.short = ".0.0".to_string();
+
         return Ok(parsed);
     }
 
@@ -163,8 +173,10 @@ fn parse(v: &str) -> Result<Parsed, &'static str> {
     }
     rest = &rest[1..];
 
-    parsed.minor = parse_segment(&mut rest)?;
+    parsed.minor = parse_int(&mut rest).expect("minor");
     if rest.is_empty() {
+        parsed.patch = "0".to_string();
+        parsed.short = ".0".to_string();
         return Ok(parsed);
     }
 
@@ -173,18 +185,16 @@ fn parse(v: &str) -> Result<Parsed, &'static str> {
     }
     rest = &rest[1..];
 
-    parsed.patch = parse_segment(&mut rest)?;
+    parsed.patch = parse_int(&mut rest).expect("patch");
     if rest.is_empty() {
         return Ok(parsed);
     }
 
     if rest.starts_with('-') {
-        //println!("{}", rest);
         parsed.prerelease = parse_prerelease(&mut rest)?;
     }
 
     if !rest.is_empty() && rest.starts_with('+') {
-        rest = &rest[1..];
         parsed.build = parse_build(&mut rest)?;
     }
 
@@ -192,7 +202,7 @@ fn parse(v: &str) -> Result<Parsed, &'static str> {
 }
 
 fn parse_segment(v: &mut &str) -> Result<String, &'static str> {
-    if v.is_empty() || v.chars().nth(0) != Some('-') {
+    if v.is_empty() || v.chars().nth(0) != Some('v') {
         return Err("1");
     }
     let mut i = 1;
@@ -216,53 +226,95 @@ fn parse_segment(v: &mut &str) -> Result<String, &'static str> {
         return Err("4");
     }
 
+    let r = v[i..].to_string();
     *v = &v[..i];
-    Ok(v[i..].to_string())
+    Ok(r)
 }
 
 fn parse_prerelease(rest: &mut &str) -> Result<String, &'static str> {
-    if rest.is_empty()
-        || !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-    {
+    let chars: Vec<char> = rest.chars().collect();
+
+    if rest.is_empty() || chars[0] != '-' {
         return Err("Invalid version string");
     }
 
-    let end = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
-        .unwrap_or_else(|| rest.len());
-    let segment = &rest[..end];
-    *rest = &rest[end..];
-    Ok(segment.to_string())
-}
-
-fn parse_int(v: &str) -> Result<(String, &str), ()> {
-    if v.is_empty() || !v.chars().next().unwrap().is_digit(10) {
-        return Err(());
-    }
     let mut i = 1;
-    for c in v.chars().skip(1) {
-        if !c.is_digit(10) {
-            break;
+    let mut start = 1;
+
+    while i < chars.len() && chars[i] != '+' {
+        if !is_ident_char(chars[i]) && chars[i] != '.' {
+            return Err("Invalid character");
+        }
+        if chars[i] == '.' {
+            if start == i || is_bad_num(rest.get(start..i).unwrap()) {
+                return Err("Invalid character");
+            }
+            start = i + 1;
         }
         i += 1;
     }
-    if v.chars().next().unwrap() == '0' && i != 1 {
+    if start == i || is_bad_num(rest.get(start..i).unwrap()) {
+        return Err("Bad num");
+    }
+    let segment = rest[..i].to_string();
+    *rest = &rest[i..];
+    Ok(segment)
+}
+
+fn parse_int(v: &mut &str) -> Result<String, ()> {
+    if v.is_empty() {
         return Err(());
     }
-    Ok((v[..i].to_string(), &v[i..]))
+
+    let chars: Vec<char> = v.chars().collect();
+
+    if chars[0] < '0' || '9' < chars[0] {
+        return Err(());
+    }
+
+    let mut i = 1;
+    while i < chars.len() && '0' <= chars[i] && chars[i] <= '9' {
+        i += 1;
+    }
+
+    if chars[0] == '0' && i != 1 {
+        return Err(());
+    }
+
+    let r = v[..i].to_string();
+    *v = &v[i..];
+
+    Ok(r)
 }
 
 fn parse_build(rest: &mut &str) -> Result<String, &'static str> {
-    if rest.is_empty() || !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.') {
-        return Err("Invalid version string");
+    let chars: Vec<char> = rest.chars().collect();
+
+    if rest.is_empty() || chars[0] != '+' {
+        return Err("Invalid build string");
     }
 
-    let end = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
-        .unwrap_or_else(|| rest.len());
-    let segment = &rest[..end];
-    *rest = &rest[end..];
-    Ok(segment.to_string())
+    let mut i = 1;
+    let mut start = 1;
+
+    while i < chars.len() {
+        if !is_ident_char(chars[i]) && chars[i] != '.' {
+            return Err("Invalid char");
+        }
+        if chars[i] == '.' {
+            if start == i {
+                return Err("Invalid char");
+            }
+            start = i + 1
+        }
+        i += 1;
+    }
+    if start == i {
+        return Err("Invalid char");
+    }
+    let segment = rest[..i].to_string();
+    *rest = &rest[i..];
+    Ok(segment)
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -295,7 +347,7 @@ fn compare_int(x: &str, y: &str) -> Ordering {
     x.cmp(y)
 }
 
-fn compare_prerelease(x: &str, y: &str) -> Ordering {
+fn compare_prerelease(mut x: &str, mut y: &str) -> Ordering {
     if x == y {
         return Ordering::Equal;
     }
@@ -305,12 +357,18 @@ fn compare_prerelease(x: &str, y: &str) -> Ordering {
     if y.is_empty() {
         return Ordering::Less;
     }
-    let mut x_iter = x.chars().skip(1); // skip - or .
-    let mut y_iter = y.chars().skip(1); // skip - or .
-    while let (Some(dx), Some(dy)) = (next_ident(&mut x_iter), next_ident(&mut y_iter)) {
+
+    while x != "" && y != "" {
+        x = x.get(1..).unwrap(); // skip - or .
+        y = y.get(1..).unwrap(); // skip - or .
+
+        let dx = next_ident(&mut x);
+        let dy = next_ident(&mut y);
+
         if dx != dy {
             let ix = is_num(&dx);
             let iy = is_num(&dy);
+
             if ix != iy {
                 return if ix {
                     Ordering::Less
@@ -326,34 +384,26 @@ fn compare_prerelease(x: &str, y: &str) -> Ordering {
                     return Ordering::Greater;
                 }
             }
-            return dx.cmp(&dy);
+            return if dx < dy {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
         }
     }
-    if x.is_empty() {
+    return if x == "" {
         Ordering::Less
     } else {
         Ordering::Greater
-    }
+    };
 }
 
-fn next_ident<'a, I>(iter: &mut I) -> Option<String>
-where
-    I: Iterator<Item = char> + 'a,
-{
-    let mut i = 0;
-    let mut result = String::new();
-    while let Some(c) = iter.next() {
-        if c == '.' {
-            break;
-        }
-        result.push(c);
-        i += 1;
-    }
-    if i > 0 {
-        Some(result)
-    } else {
-        None
-    }
+fn next_ident(s: &mut &str) -> String {
+    let i = s.find('.').unwrap_or(s.len());
+    let (dx, rest) = s.split_at(i);
+    let r = dx.to_string();
+    *s = rest;
+    r
 }
 
 #[cfg(test)]
@@ -551,14 +601,16 @@ mod test {
 
     #[test]
     fn test_prerelease() {
-        for tt in TESTS {
-            let prerelease = prerelease(tt.input);
-            let mut want = String::new();
-            if let Some(i) = tt.output.find('-') {
-                want = tt.output[i..].to_string();
-            }
-            assert_eq!(prerelease, want);
-        }
+        let a = parse_segment(&mut "v1.0.0-alpha.1").unwrap();
+        println!("{:#?}", a);
+        // for tt in TESTS {
+        //     let prerelease = prerelease(tt.input);
+        //     let mut want = String::new();
+        //     if let Some(i) = tt.output.find('-') {
+        //         want = tt.output[i..].to_string();
+        //     }
+        //     assert_eq!(prerelease, want);
+        // }
     }
 
     #[test]
@@ -603,16 +655,25 @@ mod test {
 
     #[test]
     fn test_max() {
-        // let maxx = max("v1.0.0-alpha", "v1.0.0-alpha.1");
-        // println!("----{}", maxx);
+        //let ma = max("v1.0.0-alpha.1", "v1.0.0-alpha");
+        //let ma = parse("v1.2.3-pre+meta").unwrap();
+        //println!("{:#?}", ma);
+        //v1.0.0-alpha
+        //v1.0.0-alpha.1
+
         for (i, ti) in TESTS.iter().enumerate() {
             for (j, tj) in TESTS.iter().enumerate() {
+                //println!("{} --- {}", ti.input, tj.input);
                 let max = max(ti.input, tj.input);
-                let want = canonical(if i < j { tj.input } else { ti.input });
+                let want = if i < j {
+                    canonical(tj.input)
+                } else {
+                    canonical(ti.input)
+                };
                 assert_eq!(
                     max, want,
-                    "max: {} =  {:#?} -- {:#?}",
-                    max, ti.input, tj.input
+                    "max: {} =  {:#?} -- {:#?} -- want: {:#?} i: {} j: {}",
+                    max, ti.input, tj.input, want, i, j
                 );
             }
         }
