@@ -54,11 +54,12 @@ fn major(v: &str) -> String {
 // MajorMinor returns the major.minor version prefix of the semantic version v.
 fn major_minor(v: &str) -> String {
     if let Ok(pv) = parse(v) {
+        let chars: Vec<char> = v.chars().collect();
         let i = 1 + pv.major.len();
-        if let Some(j) = v[i + 1..].find('.') {
-            if v[i..i + 1 + j] == pv.minor {
-                return v[..i + 1 + j].to_string();
-            }
+        let j = i + 1 + pv.minor.len();
+
+        if j <= chars.len() && chars[i] == '.' && v[i + 1..j] == pv.minor {
+            return v[..j].to_string();
         }
         return v[..i].to_string() + "." + &pv.minor;
     }
@@ -584,34 +585,38 @@ mod test {
     fn test_major_minor() {
         for tt in TESTS {
             let major_minor = major_minor(tt.input);
-            let mut want = String::from(tt.input);
-            if let Some(i) = want.find('+') {
-                want.truncate(i);
+            let mut want = String::new();
+
+            if !tt.output.is_empty() {
+                want = tt.input.to_string();
+
+                if let Some(i) = want.find('+') {
+                    want.truncate(i);
+                }
+                if let Some(i) = want.find('-') {
+                    want.truncate(i);
+                }
+                match want.matches('.').count() {
+                    0 => want.push_str(".0"),
+                    2 => want.truncate(want.rfind('.').unwrap()),
+                    _ => {}
+                }
             }
-            if let Some(i) = want.find('-') {
-                want.truncate(i);
-            }
-            match want.matches('.').count() {
-                0 => want.push_str(".0"),
-                2 => want.truncate(want.rfind('.').unwrap()),
-                _ => {}
-            }
+
             assert_eq!(major_minor, want);
         }
     }
 
     #[test]
     fn test_prerelease() {
-        let a = parse_segment(&mut "v1.0.0-alpha.1").unwrap();
-        println!("{:#?}", a);
-        // for tt in TESTS {
-        //     let prerelease = prerelease(tt.input);
-        //     let mut want = String::new();
-        //     if let Some(i) = tt.output.find('-') {
-        //         want = tt.output[i..].to_string();
-        //     }
-        //     assert_eq!(prerelease, want);
-        // }
+        for tt in TESTS {
+            let prerelease = prerelease(tt.input);
+            let mut want = String::new();
+            if let Some(i) = tt.output.find('-') {
+                want = tt.output[i..].to_string();
+            }
+            assert_eq!(prerelease, want);
+        }
     }
 
     #[test]
@@ -619,8 +624,11 @@ mod test {
         for tt in TESTS {
             let build = build(tt.input);
             let mut want = String::new();
-            if let Some(i) = tt.input.find('+') {
-                want.push_str(&tt.input[i..]);
+
+            if !tt.output.is_empty() {
+                if let Some(i) = tt.input.find('+') {
+                    want.push_str(&tt.input[i..]);
+                }
             }
             assert_eq!(build, want, "{}", tt.input);
         }
