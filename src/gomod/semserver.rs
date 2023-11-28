@@ -6,8 +6,8 @@ use std::cmp::Ordering;
 
 // Parsed represents the parsed form of a semantic version string.
 #[derive(Debug)]
-struct Parsed {
-    major: String,
+pub(crate) struct Parsed {
+    pub(crate) major: String,
     minor: String,
     patch: String,
     short: String,
@@ -16,7 +16,7 @@ struct Parsed {
 }
 
 // IsValid reports whether v is a valid semantic version string.
-fn is_valid(v: &str) -> bool {
+pub fn is_valid(v: &str) -> bool {
     parse(v).is_ok()
 }
 
@@ -25,7 +25,7 @@ fn is_valid(v: &str) -> bool {
 // Two semantic versions compare equal only if their canonical formattings
 // are identical strings.
 // The canonical invalid semantic version is the empty string.
-fn canonical(v: &str) -> String {
+pub(crate) fn canonical(v: &str) -> String {
     match parse(v) {
         Ok(p) => {
             if !p.build.is_empty() {
@@ -44,7 +44,7 @@ fn canonical(v: &str) -> String {
 }
 
 // Major returns the major version prefix of the semantic version v.
-fn major(v: &str) -> String {
+pub(crate) fn major(v: &str) -> String {
     if let Ok(pv) = parse(v) {
         return v[..1 + pv.major.len()].to_string();
     }
@@ -75,7 +75,7 @@ fn prerelease(v: &str) -> String {
 }
 
 // Build returns the build suffix of the semantic version v.
-fn build(v: &str) -> String {
+pub(crate) fn build(v: &str) -> String {
     if let Ok(pv) = parse(v) {
         return pv.build.to_string();
     }
@@ -145,7 +145,7 @@ fn sort(list: &mut Vec<&str>) {
     list.sort_by(|a, b| compare(a, b));
 }
 
-fn parse(v: &str) -> Result<Parsed, &'static str> {
+pub(crate) fn parse(v: &str) -> Result<Parsed, &'static str> {
     if v.is_empty() || !v.starts_with('v') {
         return Err("Invalid version string");
     }

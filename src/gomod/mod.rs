@@ -1,3 +1,4 @@
+mod module;
 mod semserver;
 
 use std::collections::HashMap;
