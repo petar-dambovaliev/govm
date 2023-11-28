@@ -108,8 +108,9 @@ fn compare(v: &str, w: &str) -> Ordering {
 
             return compare_prerelease(&pv.prerelease, &pw.prerelease);
         }
-        (Err(_), _) => Ordering::Less,
-        (_, Err(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => Ordering::Equal,
+        (Ok(_), Err(_)) => Ordering::Greater,
+        (Err(_), Ok(_)) => Ordering::Less,
     }
 }
 
@@ -621,7 +622,7 @@ mod test {
             if let Some(i) = tt.input.find('+') {
                 want.push_str(&tt.input[i..]);
             }
-            assert_eq!(build, want);
+            assert_eq!(build, want, "{}", tt.input);
         }
     }
 
@@ -637,7 +638,7 @@ mod test {
                 } else {
                     Ordering::Greater
                 };
-                assert_eq!(cmp, want);
+                assert_eq!(cmp, want, "{:#?}  {:#?}", ti.input, tj.input);
             }
         }
     }
@@ -655,15 +656,8 @@ mod test {
 
     #[test]
     fn test_max() {
-        //let ma = max("v1.0.0-alpha.1", "v1.0.0-alpha");
-        //let ma = parse("v1.2.3-pre+meta").unwrap();
-        //println!("{:#?}", ma);
-        //v1.0.0-alpha
-        //v1.0.0-alpha.1
-
         for (i, ti) in TESTS.iter().enumerate() {
             for (j, tj) in TESTS.iter().enumerate() {
-                //println!("{} --- {}", ti.input, tj.input);
                 let max = max(ti.input, tj.input);
                 let want = if i < j {
                     canonical(tj.input)
