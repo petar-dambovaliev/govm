@@ -17,6 +17,9 @@ regex = "1.10.2"
 md5 = "0.7.0"
 rand = "0.8.5"
 glob = "0.3.0"
+lazy-regex = "3.1.0"
+lazy_static = "1.4.0"
+chrono = "0.4.31"
 
 [debug]
 panic = "unwind"

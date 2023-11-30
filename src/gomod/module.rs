@@ -1,6 +1,10 @@
 use crate::gomod::semserver;
+use chrono::Utc;
+use chrono::{DateTime, TimeZone};
 use glob::Pattern;
+use lazy_regex::regex;
 use std::error::Error;
+use std::fmt;
 
 // The Version struct is defined by a module path and version pair.
 // These are stored in their plain (unescaped) form.
@@ -741,4 +745,462 @@ fn match_prefix_patterns(globs: &str, target: &str) -> bool {
         }
     }
     false
+}
+
+lazy_static::lazy_static! {
+    static ref PSEUDO_VERSION_RE: &'static regex::Regex = regex!(r#"^v[0-9]+\.(0\.0-|\d+\.\d+-([^+]*\.)?0\.)\d{14}-[A-Za-z0-9]+(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"#);
+}
+
+const PSEUDO_VERSION_TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
+fn pseudo_version(major: &str, older: &str, t: DateTime<Utc>, rev: &str) -> String {
+    let major = if major.is_empty() { "v0" } else { major };
+    let segment = format!("{}-{}", t.format(PSEUDO_VERSION_TIMESTAMP_FORMAT), rev);
+    let build = semserver::build(older);
+    let mut older = semserver::canonical(older);
+
+    if older.is_empty() {
+        return format!("{}.0.0-{}", major, segment); // form (1)
+    }
+
+    if !semserver::prerelease(&older).is_empty() {
+        return format!("{}-0.{}", older, segment); // form (4), (5)
+    }
+
+    // Form (2), (3).
+    // Extract patch from vMAJOR.MINOR.PATCH
+    let i = older.rfind('.').unwrap_or_default();
+    let (v, patch) = (
+        older.as_str().get(..i).unwrap_or_default(),
+        older.as_str().get(i..).unwrap_or_default(),
+    );
+
+    //v + incDecimal(patch) + "-0." + segment + build
+    // Reassemble.
+    return format!("{}{}-0.{}{}", v, inc_decimal(patch), segment, build);
+}
+
+fn inc_decimal(decimal: &str) -> String {
+    let mut digits: Vec<u8> = decimal.bytes().collect();
+    let mut i = digits.len() - 1;
+
+    while i > 0 && digits[i] == b'9' {
+        digits[i] = b'0';
+        i -= 1;
+    }
+
+    if i > 0 {
+        digits[i] += 1;
+    } else {
+        digits[0] = b'1';
+        digits.push(b'0');
+    }
+
+    String::from_utf8(digits).unwrap()
+}
+
+// ZeroPseudoVersion returns a pseudo-version with a zero timestamp and
+// revision, which may be used as a placeholder.
+pub fn zero_pseudo_version(major: &str) -> String {
+    pseudo_version(major, "", Utc.timestamp(0, 0), "000000000000")
+}
+
+fn dec_decimal(decimal: &str) -> Option<String> {
+    let mut digits: Vec<u8> = decimal.bytes().collect();
+    let mut i = digits.len();
+
+    while i > 0 && digits[i - 1] == b'0' {
+        i -= 1;
+        digits[i] = b'9';
+    }
+
+    if i == 0 {
+        // decimal is all zeros
+        None
+    } else {
+        i -= 1;
+        if i == 0 && digits[i] == b'1' && digits.len() > 1 {
+            digits = digits[1..].to_vec();
+        } else {
+            digits[i] -= 1;
+        }
+        Some(String::from_utf8(digits).unwrap())
+    }
+}
+
+// IsPseudoVersion reports whether v is a pseudo-version.
+pub fn is_pseudo_version(v: &str) -> bool {
+    v.matches('-').count() >= 2 && semserver::parse(v).is_ok() && PSEUDO_VERSION_RE.is_match(v)
+}
+
+// IsZeroPseudoVersion returns whether v is a pseudo-version with a zero base,
+// timestamp, and revision, as returned by [ZeroPseudoVersion].
+fn is_zero_pseudo_version(v: &str) -> bool {
+    v == zero_pseudo_version(
+        &semserver::parse(v)
+            .map(|ver| ver.major.to_string())
+            .unwrap_or_default(),
+    )
+}
+
+fn pseudo_version_time(v: &str) -> Result<DateTime<Utc>, InvalidVersionError> {
+    let (_, timestamp, _, _) = parse_pseudo_version(v)?;
+    Utc.datetime_from_str(&timestamp, PSEUDO_VERSION_TIMESTAMP_FORMAT)
+        .map_err(|err| InvalidVersionError {
+            version: v.to_string(),
+            pseudo: true,
+            err: Box::new(err),
+        })
+}
+
+#[derive(Debug)]
+struct SyntaxErr {
+    message: String,
+}
+
+impl fmt::Display for SyntaxErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl Error for SyntaxErr {}
+
+fn parse_pseudo_version(v: &str) -> Result<(String, String, String, String), InvalidVersionError> {
+    if !is_pseudo_version(v) {
+        let my_error: Box<dyn Error> = Box::new(SyntaxErr {
+            message: "syntax error".to_string(),
+        });
+
+        return Err(InvalidVersionError {
+            version: v.to_string(),
+            err: my_error,
+            pseudo: true,
+        });
+    }
+
+    let build = semserver::build(v);
+    let mut parts = v.rsplitn(3, '-');
+    let rev = parts.next().unwrap();
+    let timestamp_and_base = parts.next().unwrap();
+    let mut timestamp_and_base_parts = timestamp_and_base.splitn(2, '.');
+    let timestamp = timestamp_and_base_parts.next().unwrap();
+    let base = timestamp_and_base_parts.next().unwrap();
+
+    Ok((
+        base.to_string(),
+        timestamp.to_string(),
+        rev.to_string(),
+        build.to_string(),
+    ))
+}
+
+fn pseudo_version_rev(v: &str) -> Result<String, &'static str> {
+    let (_, _, rev, _) = parse_pseudo_version(v).unwrap();
+    Ok(rev)
+}
+
+fn pseudo_version_base(v: &str) -> Result<String, InvalidVersionError> {
+    let (base, _, _, build) = parse_pseudo_version(v).unwrap();
+    // if let Some(err) = err {
+    //     return Err(InvalidVersionError {
+    //         version: v.to_string(),
+    //         pseudo: true,
+    //         err,
+    //     });
+    // }
+
+    let pre = semserver::parse(&base).unwrap().prerelease;
+
+    match pre.as_str() {
+        "" => {
+            if !build.is_empty() {
+                return Err(InvalidVersionError {
+                    version: v.to_string(),
+                    pseudo: true,
+                    err: Box::new(fmt::Error),
+                });
+            }
+            Ok(String::new())
+        }
+        "-0" => {
+            let base = base.trim_end_matches(pre);
+            let i = base.rfind('.');
+            if let Some(i) = i {
+                let patch = dec_decimal(&base[i + 1..]);
+                if let Some(p) = patch {
+                    return Ok(format!("{}{}{}", &base[..i + 1], p, build));
+                }
+                return Err(InvalidVersionError {
+                    version: v.to_string(),
+                    pseudo: true,
+                    err: Box::new(fmt::Error),
+                });
+            } else {
+                panic!(
+                    "base from parsePseudoVersion missing patch number: {}",
+                    base
+                );
+            }
+        }
+        _ => {
+            if !base.ends_with(".0") {
+                panic!(
+                    "base from parsePseudoVersion missing \".0\" before date: {}",
+                    base
+                );
+            }
+            Ok(base.trim_end_matches(".0").to_string() + &build)
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    static PSEUDO_TESTS: &[(&str, &str, &str)] = &[
+        ("", "", "v0.0.0-20060102150405-hash"),
+        ("v0", "", "v0.0.0-20060102150405-hash"),
+        ("v1", "", "v1.0.0-20060102150405-hash"),
+        ("v2", "", "v2.0.0-20060102150405-hash"),
+        ("unused", "v0.0.0", "v0.0.1-0.20060102150405-hash"),
+        ("unused", "v1.2.3", "v1.2.4-0.20060102150405-hash"),
+        (
+            "unused",
+            "v1.2.99999999999999999",
+            "v1.2.100000000000000000-0.20060102150405-hash",
+        ),
+        ("unused", "v1.2.3-pre", "v1.2.3-pre.0.20060102150405-hash"),
+        ("unused", "v1.3.0-pre", "v1.3.0-pre.0.20060102150405-hash"),
+        ("unused", "v0.0.0--", "v0.0.0--.0.20060102150405-hash"),
+        (
+            "unused",
+            "v1.0.0+metadata",
+            "v1.0.1-0.20060102150405-hash+metadata",
+        ),
+        (
+            "unused",
+            "v2.0.0+incompatible",
+            "v2.0.1-0.20060102150405-hash+incompatible",
+        ),
+        (
+            "unused",
+            "v2.3.0-pre+incompatible",
+            "v2.3.0-pre.0.20060102150405-hash+incompatible",
+        ),
+    ];
+
+    use chrono::{DateTime, Utc};
+
+    fn pseudo_time() -> DateTime<Utc> {
+        let unix_epoch = Utc.timestamp(0, 0);
+        unix_epoch + chrono::Duration::seconds(1136210645)
+    }
+
+    #[test]
+    fn test_pseudo_version() {
+        for tt in PSEUDO_TESTS {
+            let v = pseudo_version(tt.0, tt.1, pseudo_time(), "hash");
+            if v != tt.2 {
+                eprintln!(
+                    "pseudo_version({}, {}, ...) = {}, want {}",
+                    tt.0, tt.1, v, tt.2
+                );
+                panic!("Test failed");
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_pseudo_version() {
+        for tt in PSEUDO_TESTS {
+            if !is_pseudo_version(tt.2) {
+                eprintln!("is_pseudo_version({}) = false, want true", tt.2);
+                panic!("Test failed");
+            }
+            if is_pseudo_version(tt.1) {
+                eprintln!("is_pseudo_version({}) = true, want false", tt.1);
+                panic!("Test failed");
+            }
+        }
+    }
+
+    #[test]
+    fn test_pseudo_version_time() {
+        for tt in PSEUDO_TESTS {
+            match pseudo_version_time(tt.2) {
+                Ok(tm) => {
+                    if tm != pseudo_time() {
+                        eprintln!(
+                            "pseudo_version_time({}) = {}, want {}",
+                            tt.2,
+                            tm.format("%Y-%m-%dT%H:%M:%SZ"),
+                            pseudo_time().format("%Y-%m-%dT%H:%M:%SZ")
+                        );
+                        panic!("Test failed");
+                    }
+                }
+                Err(_) => {
+                    eprintln!(
+                        "pseudo_version_time({}) = Error, want {}",
+                        tt.2,
+                        pseudo_time().format("%Y-%m-%dT%H:%M:%SZ")
+                    );
+                    panic!("Test failed");
+                }
+            }
+
+            match pseudo_version_time(tt.1) {
+                Ok(tm) => {
+                    if tm != Utc.timestamp(0, 0) {
+                        eprintln!(
+                            "pseudo_version_time({}) = {}, want {}",
+                            tt.1,
+                            tm.format("%Y-%m-%dT%H:%M:%SZ"),
+                            Utc.timestamp(0, 0).format("%Y-%m-%dT%H:%M:%SZ")
+                        );
+                        panic!("Test failed");
+                    }
+                }
+                Err(_) => {
+                    if let Ok(tm) = pseudo_version_time(tt.1) {
+                        eprintln!(
+                            "pseudo_version_time({}) = {}, want Error",
+                            tt.1,
+                            tm.format("%Y-%m-%dT%H:%M:%SZ")
+                        );
+                        panic!("Test failed");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_pseudo_version_time() {
+        const V: &str = "---";
+        if let Ok(_) = pseudo_version_time(V) {
+            eprintln!("pseudo_version_time({}) = Ok, want Error", V);
+            panic!("Test failed");
+        }
+    }
+
+    #[test]
+    fn test_pseudo_version_rev() {
+        for tt in PSEUDO_TESTS {
+            match pseudo_version_rev(tt.2) {
+                Ok(rev) => {
+                    if rev != "hash" {
+                        eprintln!("pseudo_version_rev({}) = {}, want hash", tt.2, rev);
+                        panic!("Test failed");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pseudo_version_rev({}) = Error, want hash", tt.2);
+                    panic!("Test failed");
+                }
+            }
+
+            match pseudo_version_rev(tt.1) {
+                Ok(rev) => {
+                    if rev != "" {
+                        eprintln!("pseudo_version_rev({}) = {}, want empty", tt.1, rev);
+                        panic!("Test failed");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pseudo_version_rev({}) = Error, want empty", tt.1);
+                    panic!("Test failed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pseudo_version_base() {
+        for tt in PSEUDO_TESTS {
+            match pseudo_version_base(tt.2) {
+                Ok(base) => {
+                    if base != tt.1 {
+                        eprintln!("pseudo_version_base({}) = {}, want {}", tt.2, base, tt.1);
+                        panic!("Test failed");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pseudo_version_base({}) = Error: {}", tt.2, err);
+                    panic!("Test failed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_pseudo_version_base() {
+        for &input in &[
+            "v0.0.0",
+            "v0.0.0-",                                 // malformed: empty prerelease
+            "v0.0.0-0.20060102150405-hash",            // Z+1 == 0
+            "v0.1.0-0.20060102150405-hash",            // Z+1 == 0
+            "v1.0.0-0.20060102150405-hash",            // Z+1 == 0
+            "v0.0.0-20060102150405-hash+incompatible", // "+incompatible without base version
+            "v0.0.0-20060102150405-hash+metadata",     // other metadata without base version
+        ] {
+            match pseudo_version_base(input) {
+                Ok(base) => {
+                    if !base.is_empty() {
+                        eprintln!("pseudo_version_base({}) = {}, want empty", input, base);
+                        panic!("Test failed");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pseudo_version_base({}) = Error, want empty", input);
+                    panic!("Test failed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_inc_decimal() {
+        let cases = vec![
+            ("0", "1"),
+            ("1", "2"),
+            ("99", "100"),
+            ("100", "101"),
+            ("101", "102"),
+        ];
+
+        for (input, expected) in cases {
+            let result = inc_decimal(input);
+            if result != expected {
+                eprintln!("inc_decimal({}) = {}, want {}", input, result, expected);
+                panic!("Test failed");
+            }
+        }
+    }
+
+    #[test]
+    fn test_dec_decimal() {
+        let cases = vec![
+            ("", ""),
+            ("0", ""),
+            ("00", ""),
+            ("1", "0"),
+            ("2", "1"),
+            ("99", "98"),
+            ("100", "99"),
+            ("101", "100"),
+        ];
+
+        for (input, expected) in cases {
+            let result = dec_decimal(input);
+            if result.map(|a| a.as_str()) != Some(expected) {
+                eprintln!(
+                    "dec_decimal({:#?}) = {:#?}, want {:#?}",
+                    input, result, expected
+                );
+                panic!("Test failed");
+            }
+        }
+    }
 }

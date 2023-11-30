@@ -8,11 +8,11 @@ use std::cmp::Ordering;
 #[derive(Debug)]
 pub(crate) struct Parsed {
     pub(crate) major: String,
-    minor: String,
-    patch: String,
-    short: String,
-    prerelease: String,
-    build: String,
+    pub(crate) minor: String,
+    pub(crate) patch: String,
+    pub(crate) short: String,
+    pub(crate) prerelease: String,
+    pub(crate) build: String,
 }
 
 // IsValid reports whether v is a valid semantic version string.
@@ -67,7 +67,7 @@ fn major_minor(v: &str) -> String {
 }
 
 // Prerelease returns the prerelease suffix of the semantic version v.
-fn prerelease(v: &str) -> String {
+pub(crate) fn prerelease(v: &str) -> String {
     if let Ok(pv) = parse(v) {
         return pv.prerelease.to_string();
     }
