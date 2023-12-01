@@ -3,8 +3,10 @@ use chrono::Utc;
 use chrono::{DateTime, TimeZone};
 use glob::Pattern;
 use lazy_regex::regex;
+use rust_decimal::prelude::*;
 use std::error::Error;
 use std::fmt;
+use std::ops::Add;
 
 // The Version struct is defined by a module path and version pair.
 // These are stored in their plain (unescaped) form.
@@ -780,22 +782,8 @@ fn pseudo_version(major: &str, older: &str, t: DateTime<Utc>, rev: &str) -> Stri
 }
 
 fn inc_decimal(decimal: &str) -> String {
-    let mut digits: Vec<u8> = decimal.bytes().collect();
-    let mut i = digits.len() - 1;
-
-    while i > 0 && digits[i] == b'9' {
-        digits[i] = b'0';
-        i -= 1;
-    }
-
-    if i > 0 {
-        digits[i] += 1;
-    } else {
-        digits[0] = b'1';
-        digits.push(b'0');
-    }
-
-    String::from_utf8(digits).unwrap()
+    let d = Decimal::from_str(decimal).unwrap();
+    d.add(Decimal::from_str("1").unwrap()).to_string()
 }
 
 // ZeroPseudoVersion returns a pseudo-version with a zero timestamp and
@@ -804,7 +792,7 @@ pub fn zero_pseudo_version(major: &str) -> String {
     pseudo_version(major, "", Utc.timestamp(0, 0), "000000000000")
 }
 
-fn dec_decimal(decimal: &str) -> Option<String> {
+fn dec_decimal(decimal: &str) -> String {
     let mut digits: Vec<u8> = decimal.bytes().collect();
     let mut i = digits.len();
 
@@ -815,7 +803,7 @@ fn dec_decimal(decimal: &str) -> Option<String> {
 
     if i == 0 {
         // decimal is all zeros
-        None
+        "".to_string()
     } else {
         i -= 1;
         if i == 0 && digits[i] == b'1' && digits.len() > 1 {
@@ -823,12 +811,13 @@ fn dec_decimal(decimal: &str) -> Option<String> {
         } else {
             digits[i] -= 1;
         }
-        Some(String::from_utf8(digits).unwrap())
+        String::from_utf8(digits).unwrap()
     }
 }
 
 // IsPseudoVersion reports whether v is a pseudo-version.
 pub fn is_pseudo_version(v: &str) -> bool {
+    //return strings.Count(v, "-") >= 2 && semver.IsValid(v) && pseudoVersionRE.MatchString(v)
     v.matches('-').count() >= 2 && semserver::parse(v).is_ok() && PSEUDO_VERSION_RE.is_match(v)
 }
 
@@ -865,7 +854,9 @@ impl fmt::Display for SyntaxErr {
 
 impl Error for SyntaxErr {}
 
-fn parse_pseudo_version(v: &str) -> Result<(String, String, String, String), InvalidVersionError> {
+fn parse_pseudo_version(
+    mut v: &str,
+) -> Result<(String, String, String, String), InvalidVersionError> {
     if !is_pseudo_version(v) {
         let my_error: Box<dyn Error> = Box::new(SyntaxErr {
             message: "syntax error".to_string(),
@@ -879,12 +870,29 @@ fn parse_pseudo_version(v: &str) -> Result<(String, String, String, String), Inv
     }
 
     let build = semserver::build(v);
-    let mut parts = v.rsplitn(3, '-');
-    let rev = parts.next().unwrap();
-    let timestamp_and_base = parts.next().unwrap();
-    let mut timestamp_and_base_parts = timestamp_and_base.splitn(2, '.');
-    let timestamp = timestamp_and_base_parts.next().unwrap();
-    let base = timestamp_and_base_parts.next().unwrap();
+    v = v.strip_suffix(&build).unwrap();
+    let j = v
+        .char_indices()
+        .rev()
+        .find_map(|(i, c)| if c == '-' { Some(i) } else { None })
+        .unwrap_or_default();
+
+    let (vv, rev) = (&v[..j], &v[j + 1..]);
+
+    let i = vv
+        .char_indices()
+        .rev()
+        .find_map(|(i, c)| if c == '-' { Some(i) } else { None })
+        .unwrap_or_default();
+
+    let j = vv
+        .char_indices()
+        .rev()
+        .find_map(|(i, c)| if c == '.' { Some(i) } else { None })
+        .unwrap_or_default();
+
+    let ind = usize::max(j, i);
+    let (base, timestamp) = (vv.get(..ind).unwrap(), v.get(ind + 1..).unwrap());
 
     Ok((
         base.to_string(),
@@ -900,16 +908,8 @@ fn pseudo_version_rev(v: &str) -> Result<String, &'static str> {
 }
 
 fn pseudo_version_base(v: &str) -> Result<String, InvalidVersionError> {
-    let (base, _, _, build) = parse_pseudo_version(v).unwrap();
-    // if let Some(err) = err {
-    //     return Err(InvalidVersionError {
-    //         version: v.to_string(),
-    //         pseudo: true,
-    //         err,
-    //     });
-    // }
-
-    let pre = semserver::parse(&base).unwrap().prerelease;
+    let (base, _, _, build) = parse_pseudo_version(v)?;
+    let pre = semserver::prerelease(&base);
 
     match pre.as_str() {
         "" => {
@@ -923,12 +923,13 @@ fn pseudo_version_base(v: &str) -> Result<String, InvalidVersionError> {
             Ok(String::new())
         }
         "-0" => {
-            let base = base.trim_end_matches(pre);
+            let base = base.strip_suffix(&pre).unwrap_or(&pre);
+
             let i = base.rfind('.');
             if let Some(i) = i {
                 let patch = dec_decimal(&base[i + 1..]);
-                if let Some(p) = patch {
-                    return Ok(format!("{}{}{}", &base[..i + 1], p, build));
+                if !patch.is_empty() {
+                    return Ok(format!("{}{}{}", &base[..i + 1], patch, build));
                 }
                 return Err(InvalidVersionError {
                     version: v.to_string(),
@@ -1145,17 +1146,8 @@ mod test {
             "v0.0.0-20060102150405-hash+incompatible", // "+incompatible without base version
             "v0.0.0-20060102150405-hash+metadata",     // other metadata without base version
         ] {
-            match pseudo_version_base(input) {
-                Ok(base) => {
-                    if !base.is_empty() {
-                        eprintln!("pseudo_version_base({}) = {}, want empty", input, base);
-                        panic!("Test failed");
-                    }
-                }
-                Err(err) => {
-                    eprintln!("pseudo_version_base({}) = Error, want empty", input);
-                    panic!("Test failed");
-                }
+            if let Ok(s) = pseudo_version_base(input) {
+                assert!(s.is_empty());
             }
         }
     }
@@ -1173,7 +1165,7 @@ mod test {
         for (input, expected) in cases {
             let result = inc_decimal(input);
             if result != expected {
-                eprintln!("inc_decimal({}) = {}, want {}", input, result, expected);
+                eprintln!("inc_decimal({}) = {}, want = {}", input, result, expected);
                 panic!("Test failed");
             }
         }
@@ -1194,10 +1186,12 @@ mod test {
 
         for (input, expected) in cases {
             let result = dec_decimal(input);
-            if result.map(|a| a.as_str()) != Some(expected) {
+            if &result != expected {
                 eprintln!(
-                    "dec_decimal({:#?}) = {:#?}, want {:#?}",
-                    input, result, expected
+                    "dec_decimal({:#?}) = {:#?}, want = {:#?}",
+                    input,
+                    result,
+                    expected.to_string()
                 );
                 panic!("Test failed");
             }
