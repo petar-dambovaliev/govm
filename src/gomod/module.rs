@@ -758,24 +758,27 @@ fn pseudo_version(major: &str, older: &str, t: DateTime<Utc>, rev: &str) -> Stri
     let major = if major.is_empty() { "v0" } else { major };
     let segment = format!("{}-{}", t.format(PSEUDO_VERSION_TIMESTAMP_FORMAT), rev);
     let build = semserver::build(older);
-    let mut older = semserver::canonical(older);
+    let older = semserver::canonical(older);
 
     if older.is_empty() {
         return format!("{}.0.0-{}", major, segment); // form (1)
     }
 
     if !semserver::prerelease(&older).is_empty() {
-        return format!("{}-0.{}", older, segment); // form (4), (5)
+        return format!("{}.0.{}{}", older, segment, build); // form (4), (5)
     }
 
     // Form (2), (3).
     // Extract patch from vMAJOR.MINOR.PATCH
-    let i = older.rfind('.').unwrap_or_default();
+    let i = older.rfind('.').map_or(0, |index| index + 1);
     let (v, patch) = (
         older.as_str().get(..i).unwrap_or_default(),
         older.as_str().get(i..).unwrap_or_default(),
     );
 
+    //v1.2.3-pre.0.20060102150405-hash
+    //v1.2.3-pre-0.20060102150405-hash
+    //panic!("{}", format!("{}-{}", v, inc_decimal(patch)));
     //v + incDecimal(patch) + "-0." + segment + build
     // Reassemble.
     return format!("{}{}-0.{}{}", v, inc_decimal(patch), segment, build);
@@ -833,6 +836,7 @@ fn is_zero_pseudo_version(v: &str) -> bool {
 
 fn pseudo_version_time(v: &str) -> Result<DateTime<Utc>, InvalidVersionError> {
     let (_, timestamp, _, _) = parse_pseudo_version(v)?;
+
     Utc.datetime_from_str(&timestamp, PSEUDO_VERSION_TIMESTAMP_FORMAT)
         .map_err(|err| InvalidVersionError {
             version: v.to_string(),
@@ -892,7 +896,7 @@ fn parse_pseudo_version(
         .unwrap_or_default();
 
     let ind = usize::max(j, i);
-    let (base, timestamp) = (vv.get(..ind).unwrap(), v.get(ind + 1..).unwrap());
+    let (base, timestamp) = (vv.get(..ind).unwrap(), vv.get(ind + 1..).unwrap());
 
     Ok((
         base.to_string(),
@@ -902,9 +906,8 @@ fn parse_pseudo_version(
     ))
 }
 
-fn pseudo_version_rev(v: &str) -> Result<String, &'static str> {
-    let (_, _, rev, _) = parse_pseudo_version(v).unwrap();
-    Ok(rev)
+fn pseudo_version_rev(v: &str) -> Result<String, InvalidVersionError> {
+    parse_pseudo_version(v).map(|(_, _, rev, _)| rev)
 }
 
 fn pseudo_version_base(v: &str) -> Result<String, InvalidVersionError> {
@@ -994,8 +997,7 @@ mod test {
     use chrono::{DateTime, Utc};
 
     fn pseudo_time() -> DateTime<Utc> {
-        let unix_epoch = Utc.timestamp(0, 0);
-        unix_epoch + chrono::Duration::seconds(1136210645)
+        Utc.ymd(2006, 1, 2).and_hms(15, 4, 5)
     }
 
     #[test]
@@ -1004,8 +1006,8 @@ mod test {
             let v = pseudo_version(tt.0, tt.1, pseudo_time(), "hash");
             if v != tt.2 {
                 eprintln!(
-                    "pseudo_version({}, {}, ...) = {}, want {}",
-                    tt.0, tt.1, v, tt.2
+                    "pseudo_version({}, {}, ...), want {} got {}",
+                    tt.0, tt.1, tt.2, v
                 );
                 panic!("Test failed");
             }
@@ -1031,48 +1033,18 @@ mod test {
         for tt in PSEUDO_TESTS {
             match pseudo_version_time(tt.2) {
                 Ok(tm) => {
-                    if tm != pseudo_time() {
-                        eprintln!(
-                            "pseudo_version_time({}) = {}, want {}",
-                            tt.2,
-                            tm.format("%Y-%m-%dT%H:%M:%SZ"),
-                            pseudo_time().format("%Y-%m-%dT%H:%M:%SZ")
-                        );
-                        panic!("Test failed");
-                    }
+                    let want = pseudo_time();
+                    let got = tm;
+
+                    assert_eq!(want, got, "arg: {} wanted: {} got: {}", tt.2, want, got,);
                 }
-                Err(_) => {
-                    eprintln!(
-                        "pseudo_version_time({}) = Error, want {}",
-                        tt.2,
-                        pseudo_time().format("%Y-%m-%dT%H:%M:%SZ")
-                    );
-                    panic!("Test failed");
+                Err(err) => {
+                    panic!("err: {}", err);
                 }
             }
 
-            match pseudo_version_time(tt.1) {
-                Ok(tm) => {
-                    if tm != Utc.timestamp(0, 0) {
-                        eprintln!(
-                            "pseudo_version_time({}) = {}, want {}",
-                            tt.1,
-                            tm.format("%Y-%m-%dT%H:%M:%SZ"),
-                            Utc.timestamp(0, 0).format("%Y-%m-%dT%H:%M:%SZ")
-                        );
-                        panic!("Test failed");
-                    }
-                }
-                Err(_) => {
-                    if let Ok(tm) = pseudo_version_time(tt.1) {
-                        eprintln!(
-                            "pseudo_version_time({}) = {}, want Error",
-                            tt.1,
-                            tm.format("%Y-%m-%dT%H:%M:%SZ")
-                        );
-                        panic!("Test failed");
-                    }
-                }
+            if let Ok(tm) = pseudo_version_time(tt.1) {
+                assert_eq!(tm, Utc.timestamp(0, 0), "arg: {}", tt.1,);
             }
         }
     }
@@ -1102,15 +1074,9 @@ mod test {
                 }
             }
 
-            match pseudo_version_rev(tt.1) {
-                Ok(rev) => {
-                    if rev != "" {
-                        eprintln!("pseudo_version_rev({}) = {}, want empty", tt.1, rev);
-                        panic!("Test failed");
-                    }
-                }
-                Err(err) => {
-                    eprintln!("pseudo_version_rev({}) = Error, want empty", tt.1);
+            if let Ok(rev) = pseudo_version_rev(tt.1) {
+                if rev != "" {
+                    eprintln!("pseudo_version_rev({}) = {}, want empty", tt.1, rev);
                     panic!("Test failed");
                 }
             }

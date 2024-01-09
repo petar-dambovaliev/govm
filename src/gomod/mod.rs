@@ -167,7 +167,7 @@ fn download_dependency(url: &str, version: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Module {
     name: String,
     version: String,
