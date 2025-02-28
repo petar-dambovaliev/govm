@@ -321,8 +321,11 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
             Slice::from_vec(v, tv.clone())
         }
         Type::Map => {
-            let _k = unsafe { TypeValue::read(&tv.inner_k.unwrap()) };
-            let _v = unsafe { TypeValue::read(&tv.inner_v.unwrap()) };
+            let k = tv.inner_k.unwrap();
+            let v = tv.inner_v.unwrap();
+
+            let _k = unsafe { TypeValue::read(&k) };
+            let _v = unsafe { TypeValue::read(&v) };
 
             let m: BTreeMap<Object, Object> = BTreeMap::new();
             Map::from_map(m)

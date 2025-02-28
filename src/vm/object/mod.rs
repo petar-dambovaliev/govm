@@ -26,13 +26,18 @@ use std::ops::Shl;
 use std::string::String as RString;
 use string::String;
 
-/// The mask to apply to get just the pointer address from a pointer object
-const PTR_MASK: usize = (1 << NUM_BITS) - 1;
+// Constants for our bit manipulation
+// Constants for our bit manipulation
+const LOWER_TAG_BITS: usize = 3;  // Using bottom 3 bits (0-2)
+const UPPER_TAG_BITS: usize = 5;  // Using 5 bits in the higher part
+const TOTAL_TAG_BITS: usize = LOWER_TAG_BITS + UPPER_TAG_BITS;  // 8 bits total
 
-/// The amount of bits to shift-left the actual value in value objects (last 5 bits store the type tag)
-const VALUE_SHIFT_BITS: usize = 5;
+// Masks for tag bits
+const LOWER_MASK: usize = (1 << LOWER_TAG_BITS) - 1;
+const UPPER_MASK: usize = ((1 << UPPER_TAG_BITS) - 1) << (64 - UPPER_TAG_BITS);
 
-const NUM_BITS: usize = 64 - VALUE_SHIFT_BITS;
+// Mask for pointer bits (everything except tag bits)
+const PTR_MASK: usize = !LOWER_MASK & !UPPER_MASK;
 
 #[allow(unused)]
 /// The max integer value we can store in a value object
@@ -43,12 +48,12 @@ const MAX_INT: isize = isize::MAX;
 const MIN_INT: isize = isize::MIN;
 
 // ARM uses 49 bits and x86-64 uses 48 bits (some newer cpus have opt-in using 57 bits)
-// we have at least 7 bits to work with
-// this is 5 bits and it supports up to 32 variants
+// we have at least 7 upper bits and 3 lower to work with
+// here we are using 8 bits (5 upper and 3 lower)
 #[derive(Debug, PartialEq, Copy, Clone, PartialOrd, Ord, Eq, Hash)]
 #[repr(u8)]
 pub enum Type {
-    Null = 0b00000,
+    Null = 0,
     Bool,
     Function,
     Int,
@@ -174,20 +179,34 @@ impl Object {
             _ => unimplemented!("{:#?}", self.tag()),
         }
     }
-    /// Creates a new object from the value (or address) given with the given type mask applied
+
+    /// Creates a new object with the given type tag
     #[inline(always)]
     fn with_type(raw: *mut u8, t: Type) -> Self {
-        let shift = (t as usize).shl(NUM_BITS);
-        let s = Self((shift | raw as usize) as _);
-        assert_eq!(s.tag(), t);
-        s
+        let type_value = t as usize;
+
+        // Split the type tag across lower and upper bits
+        let lower_bits = type_value & ((1 << LOWER_TAG_BITS) - 1);
+        let upper_bits = (type_value >> LOWER_TAG_BITS) << (64 - UPPER_TAG_BITS);
+
+        // Combine with pointer value
+        let ptr = ((raw as usize) & PTR_MASK) | lower_bits | upper_bits;
+
+        Self(ptr as _)
     }
 
     /// Returns the type of this object pointer
     #[inline(always)]
     pub fn tag(self) -> Type {
-        // Safety: self.0 with TAG_MASK applied will always yield a correct Type
-        unsafe { std::mem::transmute((self.0 as usize >> NUM_BITS) as u8) }
+        // Extract both parts of the tag
+        let lower_part = (self.0 as usize) & LOWER_MASK;
+        let upper_part = ((self.0 as usize) & UPPER_MASK) >> (64 - UPPER_TAG_BITS);
+
+        // Combine them to get the full type value
+        let type_value = (upper_part << LOWER_TAG_BITS) | lower_part;
+
+        // Convert to Type enum
+        unsafe { std::mem::transmute(type_value as u8) }
     }
 
     pub fn is_ref(&self) -> bool {
@@ -213,10 +232,13 @@ impl Object {
     /// Create a new boolean value
     #[inline(always)]
     pub fn bool(value: bool) -> Self {
-        match value {
-            true => Self::with_type((1 << VALUE_SHIFT_BITS) as _, Type::Bool),
-            false => Self::with_type(0 as _, Type::Bool),
-        }
+        // Tag goes in lower bits
+        let tag = Type::Bool as usize & LOWER_MASK;
+
+        // Boolean value (1 or 0) shifted past tag bits
+        let val = if value { 1 << LOWER_TAG_BITS } else { 0 };
+
+        Self((val | tag) as _)
     }
 
     /// Create a new integer value
@@ -282,8 +304,20 @@ impl Object {
 
     /// Create a new function value
     pub fn function(ip: u32, num_locals: u16) -> Self {
-        let value = ((ip as isize) << 16) | num_locals as isize;
-        Self::with_type((value << VALUE_SHIFT_BITS) as _, Type::Function)
+        // We need to encode:
+        // - Type tag (Function)
+        // - The ip (32 bits)
+        // - The num_locals (16 bits)
+
+        // Encode the tag in the lower bits
+        let tag = Type::Function as usize & LOWER_MASK;
+
+        // Encode the values in the upper bits, leaving space for the tag
+        let value = ((ip as usize) << 16) | (num_locals as usize);
+        let shifted_value = value << LOWER_TAG_BITS;
+
+        // Combine them
+        Self((shifted_value | tag) as _)
     }
 
     #[inline]
@@ -304,11 +338,12 @@ impl Object {
         ptr
     }
 
-    /// Returns the boolean value of this object pointer
-    /// Note that is up to the caller to ensure this pointer is of the correct type
+    /// Returns the boolean value
     #[inline(always)]
     pub fn as_bool(self) -> bool {
-        (self.0 as u8 >> VALUE_SHIFT_BITS) != 0
+        // Get everything except the tag bits
+        let value = (self.0 as usize) >> LOWER_TAG_BITS;
+        value != 0
     }
 
     /// Returns the integer value of this object pointer
@@ -392,18 +427,15 @@ impl Object {
     }
 
     /// Returns the function value of this object
-    /// Note that is up to the caller to ensure this pointer is of the correct type
     #[inline(always)]
     pub fn as_function(self) -> [u32; 2] {
-        let value = self.0 as isize >> VALUE_SHIFT_BITS;
+        // Extract the value part (excluding tag bits)
+        let value = (self.0 as usize) >> LOWER_TAG_BITS;
 
-        // lower 16-bits store the number of locals
+        // Extract components (same as original)
         let num_locals = (value & 0xFFFF) as u32;
-
-        // next 32 bits stores the IP
         let ip = (value >> 16) as u32;
 
-        // that leaves 64-32-16-3=13 bits unused
         [ip, num_locals]
     }
 
@@ -569,11 +601,10 @@ impl Object {
         &mut self.get_mut::<Array>().value
     }
 
-    /// Returns the pointer stored in this object
-    /// This can return a non-valid address if called on a non-heap allocated object value.
+    // For object pointer extraction
     #[inline]
     pub(crate) fn as_ptr(self) -> *mut u8 {
-        (self.0 as usize & PTR_MASK) as _
+        ((self.0 as usize) & PTR_MASK) as _
     }
 
     /// Get a reference to the value this object points to

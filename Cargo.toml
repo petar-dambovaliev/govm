@@ -1,7 +1,7 @@
 [package]
 name = "gno-rs"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 strum = {version = "0.24.1", features = ["derive"]}
