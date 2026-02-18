@@ -32,6 +32,8 @@ pub enum Builtin {
     Clear,
     GcCollect,
     Sprintf,
+    Panic,
+    Recover,
 }
 
 impl Builtin {
@@ -42,7 +44,8 @@ impl Builtin {
             | Self::Copy
             | Self::Delete
             | Self::Clear
-            | Self::GcCollect => true,
+            | Self::GcCollect
+            | Self::Panic => true,
             _ => false,
         }
     }
@@ -69,6 +72,8 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "clear" => Some(Builtin::Clear),
         "gccollect" => Some(Builtin::GcCollect),
         "sprintf" => Some(Builtin::Sprintf),
+        "panic" => Some(Builtin::Panic),
+        "recover" => Some(Builtin::Recover),
         _ => None,
     }
 }
@@ -124,6 +129,15 @@ pub fn call(
         Builtin::Clear => call_clear(args),
         Builtin::GcCollect => call_collect(args),
         Builtin::Sprintf => call_sprintf(args),
+        Builtin::Panic => {
+            let value = if args.is_empty() {
+                Object::null()
+            } else {
+                args[0]
+            };
+            Err(Error::GoPanic(value))
+        }
+        Builtin::Recover => Ok(Object::null()),
         _ => unimplemented!("{:#?}", builtin),
     }
 }
@@ -159,6 +173,10 @@ fn call_clear(args: &[Object]) -> Result<Object, Error> {
         Type::Map => {
             let m = unsafe { Map::read_mut(collection) };
             m.clear();
+        }
+        Type::Slice => {
+            let s = collection.as_slice_mut();
+            s.clear();
         }
         t => unimplemented!("builtin::clear: {:#?}", t),
     }
@@ -343,7 +361,23 @@ fn call_int64(args: &[Object]) -> Result<Object, Error> {
         Type::Int => num.as_isize() as i64,
         Type::I64 => return Ok(num),
         Type::UI => num.as_uint().value as i64,
-        _ => unimplemented!(),
+        Type::I8 => num.as_int8().value as i64,
+        Type::I16 => num.as_int16().value as i64,
+        Type::I32 => num.as_int32().value as i64,
+        Type::UI8 => num.as_uint8().value as i64,
+        Type::UI16 => num.as_uint16().value as i64,
+        Type::UI32 => num.as_uint32().value as i64,
+        Type::UI64 => num.as_uint64().value as i64,
+        Type::Float32 => num.as_float32() as i64,
+        Type::Float64 => num.as_float64() as i64,
+        Type::Byte => num.as_byte().value as i64,
+        Type::Rune => num.as_rune().value as i64,
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to int64",
+                num.tag()
+            )))
+        }
     };
 
     Ok(Int64::from_i64(i))

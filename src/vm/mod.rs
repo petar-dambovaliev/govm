@@ -36,6 +36,11 @@ impl Frame {
     }
 }
 
+struct DeferredCall {
+    func: Object,
+    args: Vec<Object>,
+}
+
 pub struct VM {
     stack: Vec<Object>,
     globals: Vec<Object>,
@@ -44,6 +49,9 @@ pub struct VM {
     ip: usize,
     bp: u16,
     closure_ctx: Vec<Object>,
+    deferred: Vec<Vec<DeferredCall>>,
+    assert_stdout: Option<(String, BufWriter<Vec<u8>>)>,
+    panic_value: Option<Object>,
 }
 
 impl VM {
@@ -85,6 +93,9 @@ impl VM {
             ip: 0,
             bp: 0,
             closure_ctx: Vec::with_capacity(10),
+            deferred: vec![Vec::new()],
+            assert_stdout: None,
+            panic_value: None,
         }
     }
 
@@ -350,6 +361,7 @@ impl VM {
         // push new frame and copy over IP and BP
         // this somehow yields an enormous performance improvent
         self.frames.push(Frame::new(ip as usize, base_pointer));
+        self.deferred.push(Vec::new());
         self.ip = ip as usize;
         self.bp = base_pointer;
     }
@@ -367,16 +379,70 @@ impl VM {
             println!("{:16}= {:?}", "Frames", self.frames);
         }
 
-        // reset some state
-        let mut assert_stdout = code.assert_stdout;
+        self.assert_stdout = code.assert_stdout;
         self.instructions = code.instructions;
         self.ip = 0;
         self.bp = 0;
         self.frames[0].ip = 0;
         self.frames[0].base_pointer = 0;
 
-        // Keep your friends close
         let constants = code.constants;
+        self.execute_loop(&constants)
+    }
+
+    fn execute_deferred(&mut self, constants: &[Object]) -> Result<(), Error> {
+        let calls = self.deferred.pop().unwrap_or_default();
+        for call in calls.into_iter().rev() {
+            let num_args = call.args.len();
+            for arg in &call.args {
+                self.push(arg.clone());
+            }
+            let base_pointer = self.stack.len() as u16 - num_args as u16;
+
+            let (ip, num_locals) = match call.func.tag() {
+                Type::Function => {
+                    let [ip, num_locals] = call.func.as_function();
+                    (ip, num_locals)
+                }
+                Type::Closure => {
+                    self.closure_ctx.push(call.func);
+                    let closure = call.func.as_closure();
+                    (closure.ip, closure.num_locals as u32)
+                }
+                _ => {
+                    return Err(Error::TypeError(format!(
+                        "deferred call is not a function: {:?}",
+                        call.func.tag()
+                    )));
+                }
+            };
+
+            for _ in 0..num_locals - num_args as u32 {
+                self.push(Object::null());
+            }
+
+            self.pushframe(ip, base_pointer);
+            match self.execute_loop_inner(constants, false) {
+                Ok(_) => {}
+                Err(Error::GoPanic(v)) => {
+                    self.panic_value = Some(v);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_loop(&mut self, constants: &[Object]) -> Result<Object, Error> {
+        self.execute_loop_inner(constants, true)
+    }
+
+    fn execute_loop_inner(
+        &mut self,
+        constants: &[Object],
+        check_panic: bool,
+    ) -> Result<Object, Error> {
+        let initial_depth = self.frames.len();
         let mut final_result = Object::null();
 
         macro_rules! impl_binary_op_method {
@@ -394,7 +460,6 @@ impl VM {
                 let left = self.get_local(local_idx);
                 let constant_idx = self.read_u16();
                 let right = constants[constant_idx as usize];
-                //println!("local: {:#?} const: {:#?}", local_idx, constant_idx);
                 let result = left.$op(right)?;
                 self.push(result);
             }};
@@ -445,11 +510,25 @@ impl VM {
             //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
             //println!("{:#?}", self.stack);
 
-            // println!(
-            //     "instr=>{:#?} const6=>{}",
-            //     self.peek_next(),
-            //     constants[7].as_isize()
-            // );
+            if check_panic && self.panic_value.is_some() {
+                self.execute_deferred(constants)?;
+                if self.panic_value.is_none() {
+                    self.popframe();
+                    self.push(Object::null());
+                    self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(Object::null());
+                    }
+                    continue;
+                }
+                self.deferred.pop();
+                self.popframe();
+                self.closure_ctx.pop();
+                if self.frames.len() < initial_depth {
+                    return Err(Error::GoPanic(self.panic_value.take().unwrap()));
+                }
+                continue;
+            }
             match self.next() {
                 OpCode::CastToAlias => {
                     let alias_id = self.read_u16();
@@ -477,25 +556,51 @@ impl VM {
 
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f64 = match n.tag() {
-                        Type::Int => {
-                            let i = n.as_int();
-                            i.value as f64
+                        Type::Int => n.as_int().value as f64,
+                        Type::I8 => n.as_int8().value as f64,
+                        Type::I16 => n.as_int16().value as f64,
+                        Type::I32 => n.as_int32().value as f64,
+                        Type::I64 => n.as_int64().value as f64,
+                        Type::UI => n.as_uint().value as f64,
+                        Type::UI8 => n.as_uint8().value as f64,
+                        Type::UI16 => n.as_uint16().value as f64,
+                        Type::UI32 => n.as_uint32().value as f64,
+                        Type::UI64 => n.as_uint64().value as f64,
+                        Type::Float32 => n.as_float32() as f64,
+                        Type::Float64 => return Ok(final_result),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "cannot cast {:?} to float64",
+                                n.tag()
+                            )))
                         }
-                        _ => unimplemented!(),
                     };
 
-                    *n = Float64::from_f64(f.clone());
+                    *n = Float64::from_f64(f);
                 }
                 OpCode::CastToFloat32 => {
                     let i = self.read_u8();
                     let len = self.stack.len();
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f32 = match n.tag() {
-                        Type::Int => {
-                            let i = n.as_int();
-                            i.value as f32
+                        Type::Int => n.as_int().value as f32,
+                        Type::I8 => n.as_int8().value as f32,
+                        Type::I16 => n.as_int16().value as f32,
+                        Type::I32 => n.as_int32().value as f32,
+                        Type::I64 => n.as_int64().value as f32,
+                        Type::UI => n.as_uint().value as f32,
+                        Type::UI8 => n.as_uint8().value as f32,
+                        Type::UI16 => n.as_uint16().value as f32,
+                        Type::UI32 => n.as_uint32().value as f32,
+                        Type::UI64 => n.as_uint64().value as f32,
+                        Type::Float64 => n.as_float64() as f32,
+                        Type::Float32 => return Ok(final_result),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "cannot cast {:?} to float32",
+                                n.tag()
+                            )))
                         }
-                        _ => unimplemented!(),
                     };
 
                     *n = Float32::from_f32(f);
@@ -526,7 +631,13 @@ impl VM {
                                 let arr = unsafe { Array::read(&args[0]) };
                                 self.push(Variadic::from_vec(arr.clone()));
                             }
-                            _ => unimplemented!(),
+                            Type::Variadic => {
+                                self.push(args[0]);
+                            }
+                            _ => {
+                                let vec: Vec<Object> = Vec::from(args);
+                                self.push(Variadic::from_vec(vec));
+                            }
                         }
                     } else {
                         let vec: Vec<Object> = Vec::from(args);
@@ -609,7 +720,8 @@ impl VM {
                     let b = val.as_bool();
 
                     if !b {
-                        panic!("OpCode::PanicIfFalse: got false");
+                        self.panic_value =
+                            Some(Object::string("assertion failed"));
                     }
                 }
                 OpCode::TypeCmp => {
@@ -649,12 +761,13 @@ impl VM {
                     };
                 }
                 OpCode::TypeOf => {
-                    unimplemented!()
-                    // let value = self.pop();
-                    //
-                    // if value.is_ref() {}
-                    //
-                    // self.push(TypeValue::object(value.tag()))
+                    let value = self.pop();
+                    let tag = if value.tag() == Type::Ref {
+                        value.as_ref().value.tag()
+                    } else {
+                        value.tag()
+                    };
+                    self.push(TypeValue::object(tag, None));
                 }
                 OpCode::Downcast => {
                     let value = self.pop();
@@ -982,15 +1095,21 @@ impl VM {
 
                     self.pushframe(ip, base_pointer);
                 }
+                OpCode::Defer => {
+                    let num_args = self.read_u8();
+                    let func = self.pop();
+                    let mut args = Vec::with_capacity(num_args as usize);
+                    for _ in 0..num_args {
+                        args.push(self.pop());
+                    }
+                    args.reverse();
+                    self.deferred
+                        .last_mut()
+                        .unwrap()
+                        .push(DeferredCall { func, args });
+                }
                 OpCode::CallBuiltin => {
-                    //panic!("{:#?}", self.stack);
-                    //todo
-                    //this doesn't need to move memory
-                    // change builtin call to accept a reversed iterator
-                    // also take all arguments from the stack in 1 op
-
                     let builtin = self.read_u8();
-                    //println!("builtin: {:#?}", self.stack);
                     let num_args = self.read_u8() as usize;
                     let mut args = Vec::with_capacity(num_args);
                     for _ in 0..num_args {
@@ -999,38 +1118,51 @@ impl VM {
                     args.reverse();
 
                     let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
-                    let result =
-                        builtin::call(builtin, &args, assert_stdout.as_mut().map(|a| &mut a.1))?;
-                    self.push(result);
+
+                    if matches!(builtin, builtin::Builtin::Recover) {
+                        let val = self.panic_value.take().unwrap_or(Object::null());
+                        self.push(val);
+                    } else {
+                        match builtin::call(
+                            builtin,
+                            &args,
+                            self.assert_stdout.as_mut().map(|a| &mut a.1),
+                        ) {
+                            Ok(result) => self.push(result),
+                            Err(Error::GoPanic(v)) => {
+                                self.panic_value = Some(v);
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
                 }
                 OpCode::ReturnValue => {
                     let num_r = self.read_u16();
-
                     let mut res = Vec::with_capacity(num_r as usize);
-
                     for _ in 0..num_r {
                         res.push(self.pop());
                     }
-                    //println!("{:#?}", res);
-                    //println!("before popframe: {:#?}", self.stack);
 
+                    self.execute_deferred(constants)?;
                     self.popframe();
-
-                    //println!("after popframe: {:#?}", self.stack);
-
-                    //println!("res: {:#?}", num_r);
 
                     for re in res.iter().rev() {
                         self.push(re.clone());
                     }
 
                     self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(final_result);
+                    }
                 }
                 OpCode::Return => {
-                    //println!("return");
+                    self.execute_deferred(constants)?;
                     self.popframe();
                     self.push(Object::null());
                     self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(Object::null());
+                    }
                 }
                 OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
                 OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
@@ -1137,7 +1269,7 @@ impl VM {
                     self.push(left);
                 }
                 OpCode::Halt => {
-                    if let Some((expected, got_buf)) = &assert_stdout {
+                    if let Some((expected, got_buf)) = &self.assert_stdout {
                         let got = String::from_utf8(got_buf.buffer().to_vec()).unwrap();
 
                         println!("asserting VM output");
@@ -1336,6 +1468,7 @@ pub enum Error {
     IndexError(String),
     ArgumentError(String),
     InternalError(String),
+    GoPanic(Object),
 }
 
 // #[derive(Default, Debug)]

@@ -733,9 +733,6 @@ impl Compiler {
                             type_interface(pkg, spec, it, self);
                         }
                         Expression::TypeStruct(ta) => {
-                            if spec.alias {
-                                unimplemented!("type aliases");
-                            }
                             type_struct(pkg, spec, ta, self);
                         }
                         Expression::Ident(_id) => {
@@ -1993,6 +1990,32 @@ impl Compiler {
 
                 return Ok(Some(terminates));
             }
+            Statement::Defer(defer_stmt) => {
+                let call = &defer_stmt.call;
+                if let Expression::Ident(name) = call.func.as_ref() {
+                    if let Some(builtin) = builtin::resolve(&name.name) {
+                        for a in &call.args {
+                            self.compile_expression(pkg, a)?;
+                        }
+                        self.emit_opcode(OpCode::CallBuiltin);
+                        self.emit_u8(builtin as u8);
+                        self.emit_u8(call.args.len().try_into().unwrap());
+                        if builtin.is_void() {
+                            self.emit_opcode(OpCode::Pop);
+                        }
+                        return Ok(None);
+                    }
+                }
+
+                for a in &call.args {
+                    self.compile_expression(pkg, a)?;
+                }
+
+                self.compile_expression(pkg, &call.func)?;
+
+                self.emit_opcode(OpCode::Defer);
+                self.emit_u8(call.args.len().try_into().unwrap());
+            }
             _ => {
                 return Err(Error::ReferenceError(format!(
                     "stmt not supported: {:#?}",
@@ -2181,6 +2204,25 @@ impl Compiler {
                     val: lit_val,
                 });
                 expr
+            }
+            DefineType::Map(_, _) => Expression::Ident(Ident {
+                pos: 0,
+                name: "nil".to_string(),
+            }),
+            DefineType::Ref(_) => Expression::Ident(Ident {
+                pos: 0,
+                name: "nil".to_string(),
+            }),
+            DefineType::Func { .. } => Expression::Ident(Ident {
+                pos: 0,
+                name: "nil".to_string(),
+            }),
+            DefineType::Interface { .. } => Expression::Ident(Ident {
+                pos: 0,
+                name: "nil".to_string(),
+            }),
+            DefineType::Var(inner) | DefineType::Const(inner) | DefineType::Invar(inner) => {
+                self.make_type_default_val(*inner)
             }
             _ => unimplemented!("make_type_default_val: {:#?}", t),
         }
@@ -2765,29 +2807,15 @@ impl Compiler {
             Expression::CompositeLit(clit) => {
                 //map
                 if let Expression::TypeMap(mp) = clit.typ.as_ref() {
-                    let inner_key_t = match mp.key.as_ref() {
-                        Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!(),
-                    };
-
-                    let inner_val_t = match mp.val.as_ref() {
-                        Expression::Ident(ident) => ident.clone(),
-                        _ => unimplemented!(),
-                    };
-
-                    let (_, map_key_t, _) = self
-                        .symbols
-                        .resolve(pkg, inner_key_t.name.as_str())
+                    let map_key_t = self
+                        .expression_to_define_type(pkg, mp.key.as_ref())
                         .unwrap()
-                        .as_local();
-                    let (map_key_t, _) = map_key_t.as_type();
+                        .strip_type();
 
-                    let (_, map_val_t, _) = self
-                        .symbols
-                        .resolve(pkg, inner_val_t.name.as_str())
+                    let map_val_t = self
+                        .expression_to_define_type(pkg, mp.val.as_ref())
                         .unwrap()
-                        .as_local();
-                    let (map_val_t, _) = map_val_t.as_type();
+                        .strip_type();
 
                     for v in &clit.val.values {
                         if let Some(key) = &v.key {
@@ -3062,7 +3090,9 @@ impl Compiler {
                         DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
                         DefineType::Struct { fields, .. } => fields[i].get_type(),
                         DefineType::Ref(r) => DefineType::Ref(Box::new(check_t(i, *r))),
-                        k => unimplemented!("i: {:#?} k: {:#?}", i, k),
+                        DefineType::String => DefineType::String,
+                        DefineType::Const(inner) => check_t(i, *inner),
+                        k => unimplemented!("index type: {:#?}", k),
                     }
                 }
                 //println!("{:#?} {:#?}", t, ind);

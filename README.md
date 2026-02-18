@@ -31,24 +31,27 @@ Go Source (.go) → Parser → AST → Compiler → Bytecode → Stack-based VM 
 ### AST
 - All major Go constructs represented: functions, methods, structs, interfaces, closures, for/if/switch/select/range, type assertions, type switches, composite literals, pointers, channels (syntax only), go/defer (syntax only)
 
-### Compiler (118 opcodes)
+### Compiler (119 opcodes)
 - Arithmetic, comparison, logical operators
 - Variable access: local, global, captured (closures)
-- Control flow: jumps, calls, returns
+- Control flow: jumps, calls, returns, defer
 - Collections: arrays, slices, maps (make, index, slice)
 - Structs, interfaces, dynamic dispatch
-- Type operations: upcast, downcast, type comparison, casts
+- Type operations: upcast, downcast, type comparison, casts, TypeOf, type aliases
 - Optimized opcode variants (e.g. `AddLocalConst` combining local read + constant add)
 - Dependency graph for package initialization order
 - Closure compilation with captured variable tracking
+- Go constants with `iota` support (implicit value propagation)
 
 ### VM Runtime
 - Stack-based execution with call frames
-- 85+ opcodes handled in the main loop
+- 90+ opcodes handled in the main loop
 - Pointer operations (ref, deref, writes)
 - Iterators and range loops
 - Variadic function calls
 - Multiple return values
+- `defer` with LIFO execution and per-frame deferred call stacks
+- `panic()` / `recover()` with Go-style stack unwinding
 - Boehm GC allocator integrated (via `bdwgc-alloc`)
 
 ### Object System (tagged pointers)
@@ -58,7 +61,7 @@ Go Source (.go) → Parser → AST → Compiler → Bytecode → Stack-based VM 
 - Functions/closures, references, iterators
 
 ### Builtins
-- `print`, `println`, `len`, `make`, `cap`, `append`, `copy`, `delete`, `clear`, `byte`, `rune`, `int64`, `sprintf`, `gccollect`
+- `print`, `println`, `len`, `make`, `cap`, `append`, `copy`, `delete`, `clear`, `byte`, `rune`, `int64`, `sprintf`, `gccollect`, `panic`, `recover`
 
 ### Package System
 - `package` declarations, local imports, foreign imports
@@ -74,13 +77,13 @@ Go Source (.go) → Parser → AST → Compiler → Bytecode → Stack-based VM 
 
 ### Phase 1: Solidify sequential execution
 
-- [ ] Implement `defer` (add a deferred-call stack to the VM and compile `Statement::Defer`)
-- [ ] Implement `panic()` / `recover()` builtins with stack unwinding
-- [ ] Implement Go constants with `iota` support
-- [ ] Complete type alias support (currently `unimplemented!` in `dep_graph.rs`)
-- [ ] Implement `TypeOf` opcode in VM execution loop (currently `unimplemented!`)
-- [ ] Fix all remaining `unimplemented!()` panics in the compiler and VM for sequential features
-- [ ] Add UI tests for closures, structs, interfaces, type switches, slices, maps, pointers, switch/case
+- [x] Implement `defer` (per-frame deferred call stack, LIFO execution, `OpCode::Defer`)
+- [x] Implement `panic()` / `recover()` builtins with Go-style stack unwinding
+- [x] Fix Go constants with implicit `iota` value propagation
+- [x] Complete type alias support
+- [x] Implement `TypeOf` opcode in VM execution loop
+- [x] Fix high-priority `unimplemented!()` panics (numeric casts, string indexing, map literal types, builtin conversions, default values)
+- [x] Add UI tests for closures, structs, interfaces, slices, maps, pointers, switch/case, defer, panic/recover, and more
 
 ### Phase 2: Concurrency
 

@@ -1,22 +1,30 @@
 package main
 
 const (
+	Red   = iota
+	Green
+	Blue
+)
+
+const (
 	A = 10
 	B = 20
 	C = A + B
 )
 
-const X = 42
-
 func main() {
+	println(Red)
+	println(Green)
+	println(Blue)
 	println(A)
 	println(B)
 	println(C)
-	println(X)
 }
 
 // Output:
+//0
+//1
+//2
 //10
 //20
 //30
-//42

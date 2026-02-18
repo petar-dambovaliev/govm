@@ -114,6 +114,7 @@ pub(crate) enum OpCode {
     CastToFloat32,
     CastToFloat64,
     CastToAlias,
+    Defer,
     Halt,
 }
 
@@ -174,9 +175,11 @@ impl OpCode {
             OpCode::CallBuiltin => &[1, 1],
 
             // OpCodes with 1 operand op 1 byte:
-            OpCode::Call | OpCode::CastToFloat32 | OpCode::CastToFloat64 | OpCode::CastToAlias => {
-                &[1]
-            }
+            OpCode::Call
+            | OpCode::CastToFloat32
+            | OpCode::CastToFloat64
+            | OpCode::CastToAlias
+            | OpCode::Defer => &[1],
 
             OpCode::SetLocal
             | OpCode::GetGlobal
@@ -463,6 +466,7 @@ impl Display for OpCode {
             Self::CastToFloat32 => "CastToFloat32",
             Self::CastToFloat64 => "CastToFloat64",
             Self::CastToAlias => "CastToAlias",
+            Self::Defer => "Defer",
             Self::Halt => "Halt",
         };
         f.write_str(s)

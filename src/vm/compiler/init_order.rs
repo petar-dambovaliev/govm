@@ -87,19 +87,32 @@ impl InitGraph {
                     }
                 }
                 Declaration::Const(c) => {
-                    for spec in &c.specs {
-                        let single_spec_decl = Declaration::Const(Decl {
-                            docs: c.docs.clone(),
-                            pos0: c.pos0,
-                            pos1: c.pos1,
-                            specs: vec![spec.clone()],
-                        });
-                        for name in &spec.name {
-                            self.add_node(
-                                name.name.clone(),
-                                DeclKind::Const,
-                                single_spec_decl.clone(),
-                            );
+                    let has_implicit = c.specs.iter().any(|s| s.values.is_empty());
+                    if has_implicit {
+                        for spec in &c.specs {
+                            for name in &spec.name {
+                                self.add_node(
+                                    name.name.clone(),
+                                    DeclKind::Const,
+                                    decl.clone(),
+                                );
+                            }
+                        }
+                    } else {
+                        for spec in &c.specs {
+                            let single_spec_decl = Declaration::Const(Decl {
+                                docs: c.docs.clone(),
+                                pos0: c.pos0,
+                                pos1: c.pos1,
+                                specs: vec![spec.clone()],
+                            });
+                            for name in &spec.name {
+                                self.add_node(
+                                    name.name.clone(),
+                                    DeclKind::Const,
+                                    single_spec_decl.clone(),
+                                );
+                            }
                         }
                     }
                 }
