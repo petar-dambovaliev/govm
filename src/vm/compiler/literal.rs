@@ -126,7 +126,7 @@ pub(crate) fn compile_struct(
                             t => unimplemented!("cannot coerce: {:#?}", t),
                         }
                     } else {
-                        let r = rt.strip_const().strip_var().strip_type();
+                        let r = rt.unwrap_to_base_type();
                         if in_t.is_struct() && r.is_struct() {
                             assert!(DefineType::eq_structs(&in_t, &r));
                         } else {

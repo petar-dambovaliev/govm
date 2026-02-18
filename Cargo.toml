@@ -23,12 +23,11 @@ rust_decimal = "1.33.1"
 tokio = {version = "1", features = ["full"]}
 async-channel = "2"
 
-[debug]
+[profile.dev]
 panic = "unwind"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
-tokio = {version = "1", features = ["full"]}
 
 [[bench]]
 name = "fibonacci"

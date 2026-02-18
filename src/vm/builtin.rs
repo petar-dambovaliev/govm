@@ -1,13 +1,12 @@
 use super::{Error, Object};
 use crate::vm::object::channel::Channel;
 use crate::vm::object::collections::{Map, Slice};
-use crate::vm::object::float::{Float32, Float64};
+use crate::vm::object::float::Float64;
 use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
-use crate::vm::VM;
 use bdwgc_alloc::Allocator;
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -210,7 +209,7 @@ fn call_float(args: &[Object]) -> Result<Object, Error> {
     let f = match num.tag() {
         Type::Float64 => return Ok(num),
         Type::Float32 => num.as_float32() as f64,
-        Type::Int => num.as_int().value as f64,
+        Type::Int => num.as_isize() as f64,
         Type::I8 => num.as_int8().value as f64,
         Type::I16 => num.as_int16().value as f64,
         Type::I32 => num.as_int32().value as f64,
@@ -294,7 +293,7 @@ fn call_bool(args: &[Object]) -> Result<Object, Error> {
     let obj = args[0];
     let b = match obj.tag() {
         Type::Bool => return Ok(obj),
-        Type::Int => obj.as_int().value != 0,
+        Type::Int => obj.as_isize() != 0,
         Type::I8 => obj.as_int8().value != 0,
         Type::I16 => obj.as_int16().value != 0,
         Type::I32 => obj.as_int32().value != 0,
@@ -344,7 +343,9 @@ fn call_sprintf(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_collect(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 0);
+    if args.len() != 0 {
+        return Err(Error::ArgumentError("collect expects 0 arguments".to_string()));
+    }
 
     println!("collecting");
     Allocator::force_collect();
@@ -354,7 +355,9 @@ fn call_collect(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_clear(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 1);
+    if args.len() != 1 {
+        return Err(Error::ArgumentError("clear expects 1 argument".to_string()));
+    }
 
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
@@ -375,7 +378,9 @@ fn call_clear(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_delete(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 2);
+    if args.len() != 2 {
+        return Err(Error::ArgumentError("delete expects 2 arguments".to_string()));
+    }
 
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
@@ -387,7 +392,9 @@ fn call_delete(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_copy(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(2, args.len());
+    if args.len() != 2 {
+        return Err(Error::ArgumentError("copy expects 2 arguments".to_string()));
+    }
     let mut dst = args[0];
     let src = args[1];
 
@@ -410,7 +417,12 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
         return Ok(Object::null());
     }
 
-    assert_eq!(dst.tag(), src.tag());
+    if dst.tag() != src.tag() {
+        return Err(Error::TypeError(format!(
+            "copy: mismatched types {:?} and {:?}",
+            dst.tag(), src.tag()
+        )));
+    }
 
     match dst.tag() {
         Type::String => {
@@ -447,7 +459,9 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_append(args: &[Object]) -> Result<Object, Error> {
-    assert!(args.len() > 1);
+    if args.len() <= 1 {
+        return Err(Error::ArgumentError("append expects at least 2 arguments".to_string()));
+    }
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
 
@@ -464,7 +478,9 @@ fn call_append(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_cap(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(1, args.len());
+    if args.len() != 1 {
+        return Err(Error::ArgumentError("cap expects 1 argument".to_string()));
+    }
     let obj = args[0];
 
     let i = match obj.tag() {
@@ -528,21 +544,22 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
             let l = len.unwrap().as_isize();
 
             if l < 0 {
-                panic!("len can't be negative");
+                return Err(Error::ArgumentError("make: length cannot be negative".to_string()));
             }
 
-            let mut v = Vec::with_capacity(
-                cap.map(|a| {
+            let capacity = match cap {
+                Some(a) => {
                     let i = a.as_isize();
-
                     if i < l {
-                        panic!("len can't be greater than the cap");
+                        return Err(Error::ArgumentError(
+                            "make: length cannot be greater than capacity".to_string(),
+                        ));
                     }
-
-                    i
-                })
-                .unwrap_or(l) as usize,
-            );
+                    i as usize
+                }
+                None => l as usize,
+            };
+            let mut v = Vec::with_capacity(capacity);
 
             let def_value = match inner.value {
                 Type::String => Object::string(""),
@@ -697,8 +714,7 @@ fn call_byte(args: &[Object]) -> Result<Object, Error> {
             Ok(Byte::from_u8(byte))
         }
         Type::Int => {
-            let i = args[0].as_int().value;
-            Ok(Byte::from_u8(i as u8))
+            Ok(Byte::from_u8(args[0].as_isize() as u8))
         }
         Type::I8 => {
             let i = args[0].as_int8().value;
@@ -758,8 +774,7 @@ fn call_rune(args: &[Object]) -> Result<Object, Error> {
             Ok(Rune::from_char(r))
         }
         Type::Int => {
-            let i = args[0].as_int().value;
-            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+            Ok(Rune::from_char(char::from_u32(args[0].as_isize() as u32).unwrap()))
         }
         Type::I8 => {
             let i = args[0].as_int8().value;

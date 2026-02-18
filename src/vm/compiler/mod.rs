@@ -126,6 +126,7 @@ pub(crate) enum OpCode {
 }
 
 const JUMP_PLACEHOLDER: u16 = 1337;
+#[allow(dead_code)]
 const CALL_PLACEHOLDER: u16 = 1338;
 
 impl From<u8> for OpCode {
@@ -438,7 +439,7 @@ pub(crate) struct FuncContext {
     #[allow(unused)]
     ret_instructions: Vec<usize>,
     ret_types: Vec<(DefineType, bool)>,
-    pub expected_ret: DefineType,
+    pub expected_ret: Option<DefineType>,
 }
 
 impl FuncContext {
@@ -447,7 +448,7 @@ impl FuncContext {
             start,
             ret_instructions: Vec::new(),
             ret_types: Vec::new(),
-            expected_ret: DefineType::Null,
+            expected_ret: None,
         }
     }
 }

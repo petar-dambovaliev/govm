@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::vm::object::{allocate, Object, Type};
 use std::alloc::Layout;
 

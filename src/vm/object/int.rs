@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::vm::object::{allocate, Object, Type};
 use num::Complex;
 use std::alloc::Layout;
@@ -36,7 +39,7 @@ impl Complex64 {
 
     #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f32>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Complex64);
         let obj = unsafe { ptr.get_mut::<Self>() };
 
         init!(obj.value => value );
@@ -69,7 +72,7 @@ impl Complex128 {
 
     #[allow(unused)]
     pub(crate) fn from_isize(value: Complex<f64>) -> Object {
-        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Int);
+        let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Complex128);
         let obj = unsafe { ptr.get_mut::<Self>() };
 
         init!(obj.value => value );

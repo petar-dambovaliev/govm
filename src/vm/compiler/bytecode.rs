@@ -1,7 +1,7 @@
 use crate::vm::object::collections::{Array, Map, Slice};
 use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::function::Closure;
-use crate::vm::object::int::{Byte, Int, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64, Uint8};
+use crate::vm::object::int::{Byte, Int16, Int32, Int64, Int8, Uint, Uint16, Uint32, Uint64, Uint8};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
 use crate::vm::object::{FromString, Object, Type};
@@ -102,7 +102,7 @@ fn serialize_object(buf: &mut Vec<u8>, obj: &Object) {
             buf.push(if obj.as_bool() { 1 } else { 0 });
         }
         Type::Int => {
-            let v = obj.as_int().value as i64;
+            let v = obj.as_isize() as i64;
             buf.extend_from_slice(&v.to_le_bytes());
         }
         Type::I8 => {
@@ -287,6 +287,7 @@ fn serialize_object(buf: &mut Vec<u8>, obj: &Object) {
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             panic!("cannot serialize {:?} objects", tag);
         }
+        Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
     }
 }
 
@@ -302,7 +303,7 @@ fn deserialize_object(cursor: &mut Cursor<&[u8]>) -> Result<Object, String> {
         }
         Type::Int => {
             let v = read_i64(cursor)?;
-            Ok(Int::from_isize(v as isize))
+            Ok(Object::int(v as isize))
         }
         Type::I8 => {
             let v = read_u8(cursor)? as i8;
@@ -516,6 +517,7 @@ fn deserialize_object(cursor: &mut Cursor<&[u8]>) -> Result<Object, String> {
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             Err(format!("cannot deserialize {:?} objects", tag))
         }
+        Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
     }
 }
 
