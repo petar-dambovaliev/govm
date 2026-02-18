@@ -563,6 +563,9 @@ impl DefineType {
             Self::Qualified(_, inner)
             | Self::Ref(inner) => inner.unwrap_to_base_type(),
             Self::Type(inner, _) => inner.unwrap_to_base_type(),
+            Self::Tuple(v) => {
+                DefineType::Tuple(v.iter().map(|el| el.unwrap_to_base_type()).collect())
+            }
             other => other.clone(),
         }
     }

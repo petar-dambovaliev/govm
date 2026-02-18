@@ -401,11 +401,8 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                 let mut res_tuple = vec![];
 
                 for el in tuple {
-                    let ell = match el {
-                        DefineType::Type(a, _) => a,
-                        _ => Box::new(el),
-                    };
-                    res_tuple.push(*ell);
+                    let unwrapped = el.unwrap_to_base_type();
+                    res_tuple.push(unwrapped);
                 }
 
                 ret_type = DefineType::Tuple(res_tuple);

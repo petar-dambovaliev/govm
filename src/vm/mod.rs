@@ -6,13 +6,13 @@ pub mod symbols;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 
-use crate::vm::compiler::{Bytecode, OpCode, SourceMap};
+use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode, SourceMap};
 use crate::vm::object::channel::Channel;
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float32, Float64};
@@ -71,7 +71,6 @@ struct SharedState {
     instructions: Vec<u8>,
     constants: Vec<Object>,
     globals: RwLock<Vec<Object>>,
-    #[allow(dead_code)]
     source_map: SourceMap,
     tracker: GoroutineTracker,
 }
@@ -177,7 +176,7 @@ impl Goroutine {
 
     #[inline(always)]
     fn pop(&mut self) -> Object {
-        assert!(!self.stack.is_empty(), "VM stack underflow");
+        debug_assert!(!self.stack.is_empty());
         unsafe {
             let new_len = self.stack.len() - 1;
             self.stack.set_len(new_len);
@@ -217,15 +216,19 @@ impl Goroutine {
 
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let mut ctx = self.closure_ctx[rel_idx as usize];
-        match ctx.tag() {
-            Type::Ref => {
-                let r = ctx.as_ref_mut();
-                assert_eq!(r.value.tag(), value.tag());
-                r.value = value;
+        let ctx = self.closure_ctx[rel_idx as usize];
+        let mut ptr = match ctx.tag() {
+            Type::Ref => ctx.as_ref_mut().value,
+            Type::Closure => ctx,
+            _ => panic!("not supported ptr write"),
+        };
+        assert_eq!(ptr.tag(), value.tag());
+        match ptr.tag() {
+            Type::Int => {
+                ptr.as_int_mut().value = value.as_isize();
             }
             Type::Closure => {
-                let c = ctx.as_closure_mut();
+                let c = ptr.as_closure_mut();
                 let v = value.as_closure();
                 c.is_null = v.is_null;
                 c.ip = v.ip;
@@ -238,15 +241,19 @@ impl Goroutine {
 
     #[inline(always)]
     fn local_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let mut ctx = self.stack[self.bp as usize + rel_idx as usize];
-        match ctx.tag() {
-            Type::Ref => {
-                let r = ctx.as_ref_mut();
-                assert_eq!(r.value.tag(), value.tag());
-                r.value = value;
+        let ctx = self.stack[self.bp as usize + rel_idx as usize];
+        let mut ptr = match ctx.tag() {
+            Type::Ref => ctx.as_ref_mut().value,
+            Type::Closure => ctx,
+            _ => panic!("not supported ptr write"),
+        };
+        assert_eq!(ptr.tag(), value.tag());
+        match ptr.tag() {
+            Type::Int => {
+                ptr.as_int_mut().value = value.as_isize();
             }
             Type::Closure => {
-                let c = ctx.as_closure_mut();
+                let c = ptr.as_closure_mut();
                 let v = value.as_closure();
                 c.is_null = v.is_null;
                 c.ip = v.ip;
@@ -364,7 +371,7 @@ impl Goroutine {
                 OpCode::CastToAlias => {
                     let alias_id = self.read_u16();
                     let value = self.pop();
-                    let c = self.shared.globals.try_read().unwrap()[alias_id as usize];
+                    let c = self.shared.globals.read().await[alias_id as usize];
                     if c.tag() != Type::Alias {
                         panic!(
                             "expected alias: got {:#?} id: {:#?}",
@@ -384,7 +391,7 @@ impl Goroutine {
                     let len = self.stack.len();
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f64 = match n.tag() {
-                        Type::Int => n.as_isize() as f64,
+                        Type::Int => n.as_int().value as f64,
                         Type::I8 => n.as_int8().value as f64,
                         Type::I16 => n.as_int16().value as f64,
                         Type::I32 => n.as_int32().value as f64,
@@ -410,7 +417,7 @@ impl Goroutine {
                     let len = self.stack.len();
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f32 = match n.tag() {
-                        Type::Int => n.as_isize() as f32,
+                        Type::Int => n.as_int().value as f32,
                         Type::I8 => n.as_int8().value as f32,
                         Type::I16 => n.as_int16().value as f32,
                         Type::I32 => n.as_int32().value as f32,
@@ -478,24 +485,16 @@ impl Goroutine {
                         1 => {
                             let start = self.pop();
                             let slice = self.pop();
-                            let start_val = start.as_isize();
-                            if start_val < 0 {
-                                return Err(Error::IndexError("slice index out of bounds".to_string()));
-                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()[start_val as usize..],
+                                &slice.as_slice()[start.as_isize() as usize..],
                                 ctv,
                             ));
                         }
                         2 => {
                             let end = self.pop();
                             let slice = self.pop();
-                            let end_val = end.as_isize();
-                            if end_val < 0 {
-                                return Err(Error::IndexError("slice index out of bounds".to_string()));
-                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()[..end_val as usize],
+                                &slice.as_slice()[..end.as_isize() as usize],
                                 ctv,
                             ));
                         }
@@ -503,13 +502,9 @@ impl Goroutine {
                             let end = self.pop();
                             let start = self.pop();
                             let slice = self.pop();
-                            let start_val = start.as_isize();
-                            let end_val = end.as_isize();
-                            if start_val < 0 || end_val < 0 {
-                                return Err(Error::IndexError("slice index out of bounds".to_string()));
-                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()[start_val as usize..end_val as usize],
+                                &slice.as_slice()
+                                    [start.as_isize() as usize..end.as_isize() as usize],
                                 ctv,
                             ));
                         }
@@ -520,18 +515,21 @@ impl Goroutine {
                     let id = self.read_u16();
                     let closure = self.closure_ctx.last_mut().unwrap().as_closure_mut();
                     let val = unsafe { closure.captured.get_unchecked_mut(id as usize) };
-                    *val = Object::int(val.as_isize() + 1);
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
                 }
                 OpCode::IncLocal => {
                     let id = self.read_u16();
                     let val = &mut self.stack[self.bp as usize + id as usize];
-                    *val = Object::int(val.as_isize() + 1);
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
                 }
                 OpCode::IncGlobal => {
                     let id = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
-                    let val = &mut globals[id as usize];
-                    *val = Object::int(val.as_isize() + 1);
+                    let mut globals = self.shared.globals.write().await;
+                    let val = &mut globals[self.bp as usize + id as usize];
+                    let new_val = val.as_int_mut();
+                    new_val.value += 1;
                 }
                 OpCode::SetDefault => {
                     let def = self.pop();
@@ -612,7 +610,7 @@ impl Goroutine {
                 OpCode::Upcast => {
                     let iface_id = self.read_u16();
                     let value = self.pop();
-                    let c = self.shared.globals.try_read().unwrap()[iface_id as usize];
+                    let c = self.shared.globals.read().await[iface_id as usize];
                     if c.tag() != Type::Interface {
                         panic!(
                             "expected interface: got {:#?} id: {:#?}",
@@ -649,7 +647,7 @@ impl Goroutine {
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
                     let value = self.pop();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     while globals.len() <= idx {
                         globals.push(Object::null());
                     }
@@ -657,7 +655,7 @@ impl Goroutine {
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
-                    let value = self.shared.globals.try_read().unwrap()[idx as usize];
+                    let value = self.shared.globals.read().await[idx as usize];
                     self.push(value);
                 }
                 OpCode::SetLocal => {
@@ -696,22 +694,26 @@ impl Goroutine {
                 OpCode::GlobalPtrWrite => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     while globals.len() <= idx as usize {
                         globals.push(Object::null());
                     }
-                    let mut ctx = globals[idx as usize];
+                    let ctx = globals[idx as usize];
                     if ctx.is_null() {
                         panic!("global_ptr_write: nil pointer dereference");
                     }
-                    match ctx.tag() {
-                        Type::Ref => {
-                            let r = ctx.as_ref_mut();
-                            assert_eq!(r.value.tag(), value.tag());
-                            r.value = value;
+                    let mut ptr = match ctx.tag() {
+                        Type::Ref => ctx.as_ref_mut().value,
+                        Type::Closure => ctx,
+                        _ => panic!("global_ptr_write: not supported ptr write"),
+                    };
+                    assert_eq!(ptr.tag(), value.tag());
+                    match ptr.tag() {
+                        Type::Int => {
+                            ptr.as_int_mut().value = value.as_isize();
                         }
                         Type::Closure => {
-                            let c = ctx.as_closure_mut();
+                            let c = ptr.as_closure_mut();
                             let v = value.as_closure();
                             c.is_null = v.is_null;
                             c.ip = v.ip;
@@ -724,19 +726,19 @@ impl Goroutine {
                 OpCode::CopyGG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     globals[src as usize] = globals[dst as usize];
                 }
                 OpCode::CopyLG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     globals[src as usize] = self.stack[self.bp as usize + dst as usize];
                 }
                 OpCode::CopyGL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let globals = self.shared.globals.try_read().unwrap();
+                    let globals = self.shared.globals.read().await;
                     self.stack[self.bp as usize + dst as usize] = globals[src as usize];
                 }
                 OpCode::CopyLL => {
@@ -747,13 +749,13 @@ impl Goroutine {
                 OpCode::SwapGG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     globals.swap(src as usize, dst as usize);
                 }
                 OpCode::SwapLG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     std::mem::swap(
                         &mut self.stack[self.bp as usize + dst as usize],
                         &mut globals[src as usize],
@@ -762,7 +764,7 @@ impl Goroutine {
                 OpCode::SwapGL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let mut globals = self.shared.globals.write().await;
                     std::mem::swap(
                         &mut self.stack[self.bp as usize + dst as usize],
                         &mut globals[src as usize],
@@ -848,8 +850,8 @@ impl Goroutine {
                 OpCode::Negate => {
                     let left = self.pop();
                     let result = match left.tag() {
-                        Type::Float64 => Object::float64(-left.as_float64()),
-                        Type::Float32 => Object::float32(-left.as_float32()),
+                        Type::Float64 => unsafe { Object::float64(-left.as_float64()) },
+                        Type::Float32 => unsafe { Object::float32(-left.as_float32()) },
                         Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(
@@ -873,7 +875,7 @@ impl Goroutine {
                             self.closure_ctx.push(obj);
                             let closure = obj.as_closure();
                             if closure.is_null {
-                                return Err(Error::RuntimeError("closure is nil".to_string()));
+                                panic!("closure is nil: {:#?}", obj);
                             }
                             (closure.ip, closure.num_locals as u32)
                         }
@@ -1090,9 +1092,7 @@ impl Goroutine {
                         if let Some(cl) = closure_obj {
                             g.closure_ctx.push(cl);
                         }
-                        if let Err(e) = g.execute_loop().await {
-                            eprintln!("goroutine error: {}", e);
-                        }
+                        let _ = g.execute_loop().await;
                         shared.tracker.finish();
                     });
                 }
@@ -1107,12 +1107,9 @@ impl Goroutine {
                     }
                     let ch = unsafe { Channel::read(&ch_obj) };
                     if ch.sender.send(value).await.is_err() {
-                        return Err(Error::GoPanic(
-                            Object::string("send on closed channel"),
+                        return Err(Error::InternalError(
+                            "send on closed channel".to_string(),
                         ));
-                    }
-                    if let Some(ref ack_rx) = ch.ack_receiver {
-                        let _ = ack_rx.recv().await;
                     }
                 }
                 OpCode::ChanRecv => {
@@ -1125,12 +1122,7 @@ impl Goroutine {
                     }
                     let ch = unsafe { Channel::read(&ch_obj) };
                     match ch.receiver.recv().await {
-                        Ok(val) => {
-                            if let Some(ref ack_tx) = ch.ack_sender {
-                                let _ = ack_tx.send(()).await;
-                            }
-                            self.push(val);
-                        }
+                        Ok(val) => self.push(val),
                         Err(_) => self.push(Object::null()),
                     }
                 }
@@ -1172,8 +1164,6 @@ impl Goroutine {
                         case_descs.push((kind, body_ip));
                     }
 
-                    // Collect channels and send values from the stack (in reverse
-                    // since the last-pushed case is on top)
                     struct CaseData {
                         kind: u8,
                         body_ip: u16,
@@ -1204,7 +1194,6 @@ impl Goroutine {
                     let mut recv_val: Option<Object> = None;
                     let mut default_idx: Option<usize> = None;
 
-                    // First pass: try non-blocking operations
                     for (i, case) in case_data.iter().enumerate() {
                         match case.kind {
                             CASE_RECV => {
@@ -1235,14 +1224,12 @@ impl Goroutine {
                         }
                     }
 
-                    // If none ready and we have a default, use it
                     if selected.is_none() {
                         if let Some(def_idx) = default_idx {
                             selected = Some(def_idx);
                         }
                     }
 
-                    // If still none ready, block until one is available
                     if selected.is_none() {
                         loop {
                             for (i, case) in case_data.iter().enumerate() {
@@ -1401,11 +1388,7 @@ fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), E
 
 fn index_get_array(array: &Vec<Object>, mut index: isize) -> Result<Object, Error> {
     if index < 0 {
-        let len = array.len() as isize;
-        if index.checked_add(len).is_none() || index + len < 0 {
-            return Err(Error::IndexError("out of bounds".to_string()));
-        }
-        index += len;
+        index += array.len() as isize;
     }
     let index = index as usize;
     if index >= array.len() {
@@ -1423,9 +1406,7 @@ fn index_get_string(obj: Object, index: isize) -> Result<Object, Error> {
     if i >= str.len() - 1 {
         return Err(Error::IndexError("out of bounds".to_string()));
     }
-    let ch = str.chars().nth(i).ok_or_else(|| {
-        Error::IndexError("string index out of bounds".to_string())
-    })?;
+    let ch = str.chars().nth(i).unwrap();
     let result = Object::string(ch.to_string());
     Ok(result)
 }
@@ -1492,7 +1473,7 @@ fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Res
         string
             .char_indices()
             .nth(index)
-            .map(|(pos, ch)| pos..pos + ch.len_utf8())
+            .map(|(pos, ch)| (pos..pos + ch.len_utf8()))
             .unwrap(),
         value.as_str(),
     );
@@ -1507,7 +1488,6 @@ pub enum Error {
     IndexError(String),
     ArgumentError(String),
     InternalError(String),
-    RuntimeError(String),
     GoPanic(Object),
 }
 
@@ -1520,7 +1500,6 @@ impl std::fmt::Display for Error {
             Error::IndexError(s) => write!(f, "IndexError: {}", s),
             Error::ArgumentError(s) => write!(f, "ArgumentError: {}", s),
             Error::InternalError(s) => write!(f, "InternalError: {}", s),
-            Error::RuntimeError(s) => write!(f, "RuntimeError: {}", s),
             Error::GoPanic(obj) => write!(f, "panic: {}", obj),
         }
     }

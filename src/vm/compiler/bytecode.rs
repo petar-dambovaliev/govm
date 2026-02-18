@@ -287,7 +287,6 @@ fn serialize_object(buf: &mut Vec<u8>, obj: &Object) {
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             panic!("cannot serialize {:?} objects", tag);
         }
-        Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
     }
 }
 
@@ -517,7 +516,6 @@ fn deserialize_object(cursor: &mut Cursor<&[u8]>) -> Result<Object, String> {
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             Err(format!("cannot deserialize {:?} objects", tag))
         }
-        Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
     }
 }
 

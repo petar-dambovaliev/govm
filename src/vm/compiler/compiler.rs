@@ -254,24 +254,42 @@ impl Compiler {
         let mut project = project;
         if let Some(ref resolver) = resolver {
             let mut remote_dirs: Vec<PathBuf> = Vec::new();
-            for pkg in &project {
-                for file in &pkg.files {
-                    for import in &file.imports {
-                        let import_path = import.path.value.trim_matches('"');
-                        if !import_path.starts_with(resolver.module_path()) {
-                            if let Ok(resolved) = resolver.resolve_import(import_path) {
-                                if resolved.exists() && !remote_dirs.contains(&resolved) {
-                                    remote_dirs.push(resolved);
+            let mut seen_imports: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut pkg_idx = 0;
+
+            // Iteratively resolve dependencies: scan packages for imports,
+            // resolve them, parse new packages, then scan those too.
+            loop {
+                let mut new_dirs: Vec<PathBuf> = Vec::new();
+                while pkg_idx < project.len() {
+                    let pkg = &project[pkg_idx];
+                    pkg_idx += 1;
+                    for file in &pkg.files {
+                        for import in &file.imports {
+                            let import_path = import.path.value.trim_matches('"');
+                            if seen_imports.contains(import_path) {
+                                continue;
+                            }
+                            seen_imports.insert(import_path.to_string());
+                            if !import_path.starts_with(resolver.module_path()) {
+                                if let Ok(resolved) = resolver.resolve_import(import_path) {
+                                    if resolved.exists() && !remote_dirs.contains(&resolved) {
+                                        remote_dirs.push(resolved.clone());
+                                        new_dirs.push(resolved);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            for dir in &remote_dirs {
-                if let Ok(pkgs) = parse_dir_recursive(dir) {
-                    for (_, pkg) in pkgs {
-                        project.push(pkg);
+                if new_dirs.is_empty() {
+                    break;
+                }
+                for dir in &new_dirs {
+                    if let Ok(pkgs) = parse_dir_recursive(dir) {
+                        for (_, pkg) in pkgs {
+                            project.push(pkg);
+                        }
                     }
                 }
             }
