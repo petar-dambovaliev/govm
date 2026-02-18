@@ -394,8 +394,8 @@ impl DefineType {
 
     pub fn is_float(&self) -> bool {
         match self {
-            Self::Float32 => true,
-            Self::Float64 => true,
+            Self::Float32 | Self::Float64 => true,
+            Self::Var(inner) | Self::Const(inner) | Self::Invar(inner) => inner.is_float(),
             _ => false,
         }
     }
@@ -445,6 +445,9 @@ impl DefineType {
             Self::Uint16 => (u16::MIN as usize, u16::MAX as usize),
             Self::Uint32 => (u32::MIN as usize, u32::MAX as usize),
             Self::Uint64 => (u64::MIN as usize, u64::MAX as usize),
+            Self::Var(inner) | Self::Const(inner) | Self::Invar(inner) => {
+                inner.integer_max_usize()
+            }
             _ => panic!("not integer: {:#?}", self),
         }
     }
@@ -462,6 +465,9 @@ impl DefineType {
             Self::Uint16 => (u16::MIN as isize, u16::MAX as isize),
             Self::Uint32 => (u32::MIN as isize, u32::MAX as isize),
             Self::Uint64 => (u64::MIN as isize, u64::MAX as isize),
+            Self::Var(inner) | Self::Const(inner) | Self::Invar(inner) => {
+                inner.integer_max_isize()
+            }
             _ => panic!("not integer: {:#?}", self),
         }
     }
@@ -479,6 +485,7 @@ impl DefineType {
             | Self::Uint16
             | Self::Uint32
             | Self::Uint64 => true,
+            Self::Var(inner) | Self::Const(inner) | Self::Invar(inner) => inner.is_integer(),
             _ => false,
         }
     }
@@ -511,6 +518,7 @@ impl DefineType {
             | Self::Uint64
             | Self::Float32
             | Self::Float64 => true,
+            Self::Var(inner) | Self::Const(inner) | Self::Invar(inner) => inner.is_numeric(),
             _ => false,
         }
     }

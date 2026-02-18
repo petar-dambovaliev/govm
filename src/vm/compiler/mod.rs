@@ -1,7 +1,7 @@
 mod call;
 pub mod compiler;
 pub mod declaration;
-pub mod dep_graph;
+pub mod init_order;
 pub mod literal;
 
 use crate::vm::symbols::*;

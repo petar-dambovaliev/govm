@@ -56,12 +56,31 @@ pub fn remove_dependency(module_to_remove: &str) -> Result<(), Box<dyn Error>> {
 
 pub fn list_dependencies() -> Result<(), Box<dyn Error>> {
     let go_mod_contents = fs::read_to_string("go.mod")?;
-    let re = Regex::new(r#"^\s*module\s+"([^"]+)""#)?;
 
+    let mut in_require_block = false;
     for line in go_mod_contents.lines() {
-        if let Some(captures) = re.captures(line) {
-            let module_name = captures.get(1).unwrap().as_str();
-            println!("{}", module_name);
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("require (") || trimmed == "require (" {
+            in_require_block = true;
+            continue;
+        }
+        if in_require_block {
+            if trimmed == ")" {
+                in_require_block = false;
+                continue;
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                println!("{}", trimmed);
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("require ") && !trimmed.contains('(') {
+            let dep = trimmed.strip_prefix("require ").unwrap().trim();
+            if !dep.is_empty() {
+                println!("{}", dep);
+            }
         }
     }
 

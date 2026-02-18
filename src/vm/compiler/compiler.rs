@@ -19,7 +19,8 @@ use crate::vm::compiler::declaration::type_spec;
 use crate::vm::compiler::declaration::{
     compile_const, compile_function, compile_variable, type_interface, type_struct,
 };
-use crate::vm::compiler::dep_graph::{make_init_dep_graph, make_package_dep_graph};
+use crate::vm::compiler::init_order::{compute_init_order, compute_package_order};
+use crate::vm::module::ModuleResolver;
 use crate::vm::object::function::Closure;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Struct, TypeValue};
@@ -228,13 +229,24 @@ impl Compiler {
         self.emit_u16(idx);
 
         //self.constants.push(Rune::from_char(0 as char));
-        let (pkgs_graph, pkgs_map) = make_package_dep_graph(project);
+        let resolver = ModuleResolver::from_project_root(&project_path);
+
+        let (pkg_order, pkgs_map) = compute_package_order(project, resolver.as_ref())
+            .map_err(|e| Error::InternalError(e))?;
 
         let mut adb = None;
 
-        for pkg_id in pkgs_graph.into_iter() {
-            let pkg = pkgs_map.get(&pkg_id).unwrap();
+        for pkg_id in &pkg_order {
+            let pkg = pkgs_map.get(pkg_id).unwrap();
+            let cur_pkg = pkg
+                .path
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
 
+            // Process imports and comments from all files
             for file in &pkg.files {
                 if file.pkg_name.name == "main" {
                     let mut is_output = false;
@@ -268,8 +280,17 @@ impl Compiler {
 
                 for import in &file.imports {
                     let import_path = import.path.value.trim_matches('"');
-                    let p: PathBuf = import_path.clone().into();
-                    let p = project_path.join(p);
+
+                    let p: PathBuf = if let Some(ref resolver) = resolver {
+                        resolver.resolve_import(import_path).map_err(|e| {
+                            Error::InternalError(format!(
+                                "failed to resolve import '{}': {}",
+                                import_path, e
+                            ))
+                        })?
+                    } else {
+                        project_path.join(import_path)
+                    };
 
                     let alias = import.name.clone().map(|id| id.name.clone()).unwrap_or(
                         p.file_name()
@@ -293,27 +314,37 @@ impl Compiler {
                         false,
                     );
                 }
+            }
 
-                let cur_pkg = pkg
-                    .path
-                    .canonicalize()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string();
-                let (graph, map_declr) = make_init_dep_graph(&cur_pkg, &file.decl, self);
+            // Collect ALL declarations across all files in this package
+            let mut all_decls = Vec::new();
+            for file in &pkg.files {
+                all_decls.extend(file.decl.iter().cloned());
+            }
 
-                for declr_id in graph.into_iter() {
-                    self.compile_declaration(&cur_pkg, map_declr.get(&declr_id).unwrap())?;
-                }
+            // Pre-register all symbols so forward references work
+            self.pre_register_declarations(&cur_pkg, &all_decls);
+
+            // Compute initialization order for the entire package
+            let ordered = compute_init_order(&all_decls)
+                .map_err(|e| Error::InternalError(e))?;
+
+            // Compile in the computed order
+            for decl in &ordered {
+                self.compile_declaration(&cur_pkg, decl)?;
             }
         }
 
         let entry = Parser::from("main()").expression().unwrap();
-        self.compile_expression(
-            &main.canonicalize().unwrap().to_str().unwrap().to_string(),
-            &entry,
-        )?;
+        let main_pkg = main
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        self.compile_expression(&main_pkg, &entry)?;
 
         self.emit_opcode(OpCode::Halt);
         self.instructions.shrink_to_fit();
@@ -521,6 +552,162 @@ impl Compiler {
                 })
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
+        }
+    }
+
+    /// Pre-register all package-level declarations in the symbol table.
+    /// Types are registered first (with skeletal definitions), then consts,
+    /// vars, and functions. This allows forward references during compilation.
+    pub(crate) fn pre_register_declarations(
+        &mut self,
+        pkg: &str,
+        decls: &[Declaration],
+    ) {
+        // Pass 1: register types first so function signatures can reference them
+        for decl in decls {
+            if let Declaration::Type(tspec) = decl {
+                for spec in &tspec.specs {
+                    match &spec.typ {
+                        Expression::Ident(_) => {
+                            let dt = DefineType::Spec {
+                                name: spec.name.name.clone(),
+                                inner: Box::from(DefineType::Null),
+                                methods: vec![],
+                                is_transparent: spec.alias,
+                            };
+                            let _ = self.symbols.define(pkg, &spec.name.name, dt, false);
+                        }
+                        Expression::TypeInterface(_) => {
+                            let dt = DefineType::Interface {
+                                name: spec.name.name.clone(),
+                                methods: vec![],
+                            };
+                            let _ = self.symbols.define(pkg, &spec.name.name, dt, false);
+                        }
+                        Expression::TypeStruct(_) => {
+                            let dt = DefineType::Struct {
+                                name: spec.name.name.clone(),
+                                fields: vec![],
+                                methods: vec![],
+                            };
+                            let _ = self.symbols.define(pkg, &spec.name.name, dt, false);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Pass 2: register consts, vars, and functions
+        for decl in decls {
+            match decl {
+                Declaration::Const(v) => {
+                    for spec in &v.specs {
+                        for name in &spec.name {
+                            let dt = DefineType::Const(Box::new(DefineType::Null));
+                            let _ = self.symbols.define(pkg, &name.name, dt, false);
+                        }
+                    }
+                }
+                Declaration::Variable(v) => {
+                    for spec in &v.specs {
+                        for name in &spec.name {
+                            let dt = DefineType::Var(Box::new(DefineType::Null));
+                            let _ = self.symbols.define(pkg, &name.name, dt, false);
+                        }
+                    }
+                }
+                Declaration::Function(f) => {
+                    let (f_name, _recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
+                        let recv_field = recv.list.first().unwrap();
+                        let t = self.expression_to_define_type(pkg, &recv_field.typ).unwrap();
+                        (
+                            make_method_name(pkg, t.strip_ref(), &f.name.name),
+                            Some(recv_field),
+                            Some(Box::new(t)),
+                        )
+                    } else {
+                        (f.name.name.clone(), None, None)
+                    };
+
+                    let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
+                    for p in &f.typ.params.list {
+                        let t = self
+                            .expression_to_define_type(pkg, &p.typ)
+                            .expect(&format!("{:#?}-{:#?}", pkg, p.typ));
+                        for name in &p.name {
+                            decl_arg_types
+                                .push(ContextType::Named(name.name.clone(), t.clone()));
+                        }
+                    }
+
+                    let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
+                    for el in &f.typ.result.list {
+                        let t = self.expression_to_define_type(pkg, &el.typ).unwrap();
+                        decl_r_types.push(t);
+                    }
+
+                    let r_t = if decl_r_types.is_empty() {
+                        DefineType::Null
+                    } else if decl_r_types.len() == 1 {
+                        decl_r_types[0].clone()
+                    } else {
+                        DefineType::Tuple(decl_r_types.clone())
+                    };
+
+                    let func_def = DefineType::Func {
+                        name: f.name.name.clone(),
+                        recv: recv_t.clone(),
+                        args: decl_arg_types,
+                        rt: Box::new(r_t),
+                    };
+
+                    let _ = self.symbols.define(pkg, &f_name, func_def.clone(), false);
+
+                    if let Some(recv) = recv_t {
+                        let tt = self
+                            .symbols
+                            .resolve(pkg, &recv.get_type_name())
+                            .unwrap()
+                            .get_type()
+                            .0;
+
+                        if tt.is_struct() {
+                            let (r_name, r_fields, mut r_methods) =
+                                tt.as_struct().unwrap();
+                            r_methods.push(func_def.clone());
+                            let updated = self.symbols.update_dt(
+                                pkg,
+                                &r_name,
+                                DefineType::Struct {
+                                    name: r_name.to_string(),
+                                    fields: r_fields.clone(),
+                                    methods: r_methods.clone(),
+                                },
+                            );
+                            assert!(updated);
+                        } else if tt.is_spec() {
+                            let (name, inner, mut methods, is_transparent) =
+                                tt.as_spec().unwrap();
+                            methods.push(func_def.clone());
+                            let updated = self.symbols.update_dt(
+                                pkg,
+                                &name,
+                                DefineType::Spec {
+                                    name: name.to_string(),
+                                    inner: Box::new(inner.clone()),
+                                    methods: methods.clone(),
+                                    is_transparent,
+                                },
+                            );
+                            assert!(updated);
+                        } else {
+                            unimplemented!("{:#?}", tt);
+                        }
+                    }
+                }
+                Declaration::Type(_) => {} // already handled in pass 1
+            }
         }
     }
 
@@ -1035,10 +1222,10 @@ impl Compiler {
                                 }
                                 //panic!("name: {:#?} type: {:#?}", name, expect_t);
                                 assert!(expect_t.is_ref());
-                                let inner = expect_t.as_ref().strip_type();
+                                let inner = expect_t.as_ref().strip_type().strip_const();
                                 assert_eq!(inner, got_t);
                             } else {
-                                let stripped = expect_t.strip_type();
+                                let stripped = expect_t.strip_type().strip_const();
 
                                 if right.is_int_lit() {
                                     let is_value_coercable = if let Ok(i) = right.as_int_lit() {
@@ -2054,7 +2241,7 @@ impl Compiler {
                     if let Some(builtin) = builtin::resolve(&name.name) {
                         let mut first = None;
                         for a in &call.args {
-                            let t = self.compile_expression(BUILTIN, a)?;
+                            let t = self.compile_expression(pkg, a)?;
                             if first.is_none() {
                                 first = Some(t);
                             }
@@ -2299,7 +2486,12 @@ impl Compiler {
                                     (false, true) => {
                                         emit_opcode(0, &rt_right, self);
                                     }
-                                    _ => assert_eq!(rt_left, rt_right, "{:#?}", op),
+                                    _ => assert_eq!(
+                                        rt_left.strip_type().strip_const(),
+                                        rt_right.strip_type().strip_const(),
+                                        "{:#?}",
+                                        op
+                                    ),
                                 }
 
                                 self.compile_operator(&op.op);
@@ -2602,7 +2794,10 @@ impl Compiler {
                             match key {
                                 Element::Expr(el_expr) => {
                                     let expr_t = self.compile_expression(pkg, el_expr)?;
-                                    assert_eq!(map_key_t, expr_t);
+                                    assert_eq!(
+                                        map_key_t.strip_const(),
+                                        expr_t.strip_const()
+                                    );
                                 }
                                 _ => {
                                     panic!("TypeMap val");
@@ -2613,7 +2808,10 @@ impl Compiler {
                         match &v.val {
                             Element::Expr(el_expr) => {
                                 let expr_t = self.compile_expression(pkg, el_expr)?;
-                                assert_eq!(map_val_t, expr_t);
+                                assert_eq!(
+                                    map_val_t.strip_const(),
+                                    expr_t.strip_const()
+                                );
                             }
                             _ => {
                                 panic!("TypeMap key");
@@ -2633,7 +2831,7 @@ impl Compiler {
                     let slice_t = self
                         .expression_to_define_type(&pkg, ta.typ.as_ref())
                         .unwrap();
-                    let mut el_t = None;
+                    let mut el_t: Option<DefineType> = None;
                     let key_required = clit
                         .val
                         .values
@@ -2649,9 +2847,12 @@ impl Compiler {
                         match &v.val {
                             Element::Expr(el_expr) => {
                                 let expr_t = self.compile_expression(pkg, el_expr)?;
-                                assert_eq!(slice_t.strip_type(), expr_t);
+                                assert_eq!(
+                                    slice_t.strip_type().strip_const(),
+                                    expr_t.strip_const()
+                                );
                                 if let Some(expected_t) = &el_t {
-                                    assert_eq!(expected_t, &expr_t);
+                                    assert_eq!(expected_t.strip_const(), expr_t.strip_const());
                                 } else {
                                     el_t = Some(expr_t);
                                 }
@@ -2700,7 +2901,7 @@ impl Compiler {
                         }
                     };
 
-                    let mut el_t = None;
+                    let mut el_t: Option<DefineType> = None;
                     let key_required = clit
                         .val
                         .values
@@ -2716,9 +2917,15 @@ impl Compiler {
                         match &v.val {
                             Element::Expr(el_expr) => {
                                 let expr_t = self.compile_expression(pkg, el_expr)?;
-                                assert_eq!(slice_t.strip_type(), expr_t);
+                                assert_eq!(
+                                    slice_t.strip_type().strip_const(),
+                                    expr_t.strip_const()
+                                );
                                 if let Some(expected_t) = &el_t {
-                                    assert_eq!(expected_t, &expr_t);
+                                    assert_eq!(
+                                        expected_t.strip_const(),
+                                        expr_t.strip_const()
+                                    );
                                 } else {
                                     el_t = Some(expr_t);
                                 }
@@ -2922,9 +3129,11 @@ impl Compiler {
                 };
             }
             Expression::Selector(sel) => {
-                if let Some(p) = self.symbols.get_package_path(&sel.sel.name) {
-                    let r = self.compile_expression(&p, sel.x.as_ref());
-                    return r;
+                if let Expression::Ident(ref id) = *sel.x {
+                    if let Some(p) = self.symbols.get_package_path(&id.name) {
+                        let member = Expression::Ident(sel.sel.clone());
+                        return self.compile_expression(&p, &member);
+                    }
                 }
 
                 let dt = self
@@ -3097,7 +3306,10 @@ impl Compiler {
                                 let tuple = ret_type.as_tuple();
                                 assert_eq!(expected_t, tuple[0]);
                             } else {
-                                assert_eq!(expected_t.strip_type(), ret_type.strip_type());
+                                assert_eq!(
+                                    expected_t.strip_type().strip_const(),
+                                    ret_type.strip_type().strip_const()
+                                );
                             }
                         }
                     }
