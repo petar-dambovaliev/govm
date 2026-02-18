@@ -521,7 +521,7 @@ impl Object {
     #[inline]
     pub fn as_slice_mut(&self) -> &mut Vec<Object> {
         assert_eq!(self.tag(), Type::Slice);
-        unsafe { &mut self.get_mut::<Array>().value }
+        unsafe { &mut self.get_mut::<Slice>().value }
     }
 
     #[inline]
@@ -873,6 +873,7 @@ macro_rules! impl_arith {
                 Type::I16 => Object::int16(self.as_int16().value $op rhs.as_int16().value),
                 Type::I32 => Object::int32(self.as_int32().value $op rhs.as_int32().value),
                 Type::I64 => Object::int64(self.as_int64().value $op rhs.as_int64().value),
+                Type::Byte => Object::byte(self.as_byte().value $op rhs.as_byte().value),
                 Type::UI8 => Object::uint8(self.as_uint8().value $op rhs.as_uint8().value),
                 Type::UI => Object::uint(self.as_uint().value $op rhs.as_uint().value),
                 Type::UI16 => Object::uint16(self.as_uint16().value $op rhs.as_uint16().value),
@@ -954,6 +955,7 @@ impl Object {
             Type::I16 => Object::int16(self.as_int16().value + rhs.as_int16().value),
             Type::I32 => Object::int32(self.as_int32().value + rhs.as_int32().value),
             Type::I64 => Object::int64(self.as_int64().value + rhs.as_int64().value),
+            Type::Byte => Object::byte(self.as_byte().value + rhs.as_byte().value),
             Type::UI8 => Object::uint8(self.as_uint8().value + rhs.as_uint8().value),
             Type::UI => Object::uint(self.as_uint().value + rhs.as_uint().value),
             Type::UI16 => Object::uint16(self.as_uint16().value + rhs.as_uint16().value),
@@ -1056,7 +1058,7 @@ impl Display for Object {
                 f.write_char(']')?;
             }
             Type::Slice => {
-                let values = unsafe { this.as_vec_unchecked() };
+                let values = this.as_slice();
                 f.write_char('[')?;
                 for (i, obj) in values.iter().enumerate() {
                     if i > 0 {

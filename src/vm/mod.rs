@@ -61,8 +61,12 @@ impl GoroutineTracker {
     }
 
     async fn wait_all(&self) {
-        while self.count.load(AtomicOrdering::SeqCst) > 0 {
-            self.done.notified().await;
+        loop {
+            let notified = self.done.notified();
+            if self.count.load(AtomicOrdering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
         }
     }
 }
@@ -861,9 +865,13 @@ impl Goroutine {
                         Type::Float64 => unsafe { Object::float64(-left.as_float64()) },
                         Type::Float32 => unsafe { Object::float32(-left.as_float32()) },
                         Type::Int => Object::int(-left.as_isize()),
+                        Type::I8 => Object::int8(-left.as_int8().value),
+                        Type::I16 => Object::int16(-left.as_int16().value),
+                        Type::I32 => Object::int32(-left.as_int32().value),
+                        Type::I64 => Object::int64(-left.as_int64().value),
                         _ => {
                             return Err(Error::TypeError(format!(
-                                "expected float or int, got: {:#?}",
+                                "cannot negate type: {:#?}",
                                 left.tag()
                             )))
                         }
@@ -1406,16 +1414,15 @@ fn index_get_array(array: &Vec<Object>, mut index: isize) -> Result<Object, Erro
 }
 
 fn index_get_string(obj: Object, index: isize) -> Result<Object, Error> {
-    let str = obj.as_str();
+    let s = obj.as_str();
     if index < 0 {
-        return Err(Error::IndexError("i: out of bounds".to_string()));
+        return Err(Error::IndexError("index out of bounds".to_string()));
     }
-    let i = index as usize + 1;
-    if i >= str.len() - 1 {
-        return Err(Error::IndexError("out of bounds".to_string()));
+    let i = index as usize;
+    if i >= s.len() {
+        return Err(Error::IndexError("index out of bounds".to_string()));
     }
-    let ch = str.chars().nth(i).unwrap();
-    let result = Object::string(ch.to_string());
+    let result = Object::uint8(s.as_bytes()[i]);
     Ok(result)
 }
 

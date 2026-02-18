@@ -155,31 +155,18 @@ pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
     if !t.is_integer() {
         return false;
     }
-    if i > 0 {
-        let num = i as usize;
-        let (min, max) = t.integer_max_usize();
-        if num >= min && num <= max {
-            return true;
-        }
-    } else {
-        let (min, max) = t.integer_max_isize();
-        if i >= min && i <= max {
-            return true;
-        }
-    }
-    false
+    let val = i as i128;
+    let (min, max) = t.integer_range_i128();
+    val >= min && val <= max
 }
 
 pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
     if !t.is_integer() {
         return false;
     }
-
-    let (min, max) = t.integer_max_usize();
-    if i >= min && i <= max {
-        return true;
-    }
-    false
+    let val = i as i128;
+    let (min, max) = t.integer_range_i128();
+    val >= min && val <= max
 }
 
 impl DefineType {
@@ -406,6 +393,24 @@ impl DefineType {
         }
 
         false
+    }
+
+    pub fn integer_range_i128(&self) -> (i128, i128) {
+        match &self {
+            Self::Int => (isize::MIN as i128, isize::MAX as i128),
+            Self::Byte => (u8::MIN as i128, u8::MAX as i128),
+            Self::Int8 => (i8::MIN as i128, i8::MAX as i128),
+            Self::Int16 => (i16::MIN as i128, i16::MAX as i128),
+            Self::Int32 => (i32::MIN as i128, i32::MAX as i128),
+            Self::Int64 => (i64::MIN as i128, i64::MAX as i128),
+            Self::Uint => (usize::MIN as i128, usize::MAX as i128),
+            Self::Uint8 => (u8::MIN as i128, u8::MAX as i128),
+            Self::Uint16 => (u16::MIN as i128, u16::MAX as i128),
+            Self::Uint32 => (u32::MIN as i128, u32::MAX as i128),
+            Self::Uint64 => (u64::MIN as i128, u64::MAX as i128),
+            Self::Qualified(_, inner) => inner.integer_range_i128(),
+            _ => panic!("not integer: {:#?}", self),
+        }
     }
 
     pub fn integer_max_usize(&self) -> (usize, usize) {
