@@ -492,6 +492,9 @@ fn call_close(args: &[Object]) -> Result<Object, Error> {
         )));
     }
     let ch = unsafe { Channel::read_mut(&ch_obj) };
+    if ch.closed {
+        return Err(Error::GoPanic(Object::string("close of closed channel")));
+    }
     ch.closed = true;
     ch.sender.close();
     Ok(Object::null())
@@ -509,7 +512,13 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
 
     let obj = match tv.value {
         Type::Channel => {
-            let capacity = len.map(|l| l.as_isize() as usize).unwrap_or(0);
+            let capacity = len.map(|l| {
+                let v = l.as_isize();
+                if v < 0 {
+                    panic!("makechan: size out of range");
+                }
+                v as usize
+            }).unwrap_or(0);
             Channel::new(capacity)
         }
         Type::Slice => {

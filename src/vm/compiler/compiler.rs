@@ -601,8 +601,9 @@ impl Compiler {
                     methods: vec![],
                 })
             }
-            Expression::TypeChannel(_ch) => {
-                Some(DefineType::Channel)
+            Expression::TypeChannel(ch) => {
+                let inner = self.expression_to_define_type(pkg, &ch.typ)?;
+                Some(DefineType::Channel(Box::new(inner)))
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
@@ -2786,9 +2787,13 @@ impl Compiler {
                         }
                     },
                     Operator::Arrow => {
-                        self.compile_expression(pkg, op.x.as_ref())?;
+                        let ch_type = self.compile_expression(pkg, op.x.as_ref())?;
                         self.emit_opcode(OpCode::ChanRecv);
-                        return Ok(DefineType::Null);
+                        let elem_type = match ch_type.strip_var() {
+                            DefineType::Channel(inner) => (*inner).strip_type(),
+                            _ => DefineType::Null,
+                        };
+                        return Ok(elem_type);
                     }
                     _ => panic!("unsupported op: {:#?}", op),
                 }
@@ -3647,15 +3652,20 @@ impl Compiler {
         pkg: &str,
         select_stmt: &SelectStmt,
     ) -> Result<(), Error> {
-        let mut case_end_jumps: Vec<usize> = Vec::new();
+        let cases = &select_stmt.body.body;
+        let num_cases = cases.len();
 
-        for (i, clause) in select_stmt.body.body.iter().enumerate() {
-            let is_default = clause.tok == Keyword::Default;
+        // case kind constants: 0=recv, 1=send, 2=default
+        const CASE_RECV: u8 = 0;
+        const CASE_SEND: u8 = 1;
+        const CASE_DEFAULT: u8 = 2;
 
-            if is_default {
-                for stmt in clause.body.iter() {
-                    self.compile_statement(pkg, stmt)?;
-                }
+        let mut case_kinds: Vec<u8> = Vec::with_capacity(num_cases);
+
+        // Phase 1: push channels (and send values) onto the stack for each case
+        for clause in cases.iter() {
+            if clause.tok == Keyword::Default {
+                case_kinds.push(CASE_DEFAULT);
                 continue;
             }
 
@@ -3664,30 +3674,98 @@ impl Compiler {
                     Statement::Send(send) => {
                         self.compile_expression(pkg, &send.chan)?;
                         self.compile_expression(pkg, &send.value)?;
-                        self.emit_opcode(OpCode::ChanSend);
+                        case_kinds.push(CASE_SEND);
                     }
                     Statement::Expr(expr) => {
-                        self.compile_expression(pkg, &expr.expr)?;
-                        self.emit_opcode(OpCode::Pop);
+                        // <-ch as expression statement: extract channel from recv
+                        if let Expression::Operation(op) = &expr.expr {
+                            if op.op == Operator::Arrow {
+                                self.compile_expression(pkg, op.x.as_ref())?;
+                            }
+                        }
+                        case_kinds.push(CASE_RECV);
                     }
                     Statement::Assign(assign) => {
-                        if assign.right.len() == 1 {
-                            self.compile_expression(pkg, &assign.right[0])?;
+                        // val := <-ch: extract channel from recv expression
+                        if !assign.right.is_empty() {
+                            if let Expression::Operation(op) = &assign.right[0] {
+                                if op.op == Operator::Arrow {
+                                    self.compile_expression(pkg, op.x.as_ref())?;
+                                }
+                            }
                         }
-                        for left in &assign.left {
-                            self.compile_statement(
-                                pkg,
-                                &Statement::Assign(AssignStmt {
-                                    pos: assign.pos,
-                                    op: assign.op,
-                                    left: vec![left.clone()],
-                                    right: vec![],
-                                }),
-                            )?;
-                        }
+                        case_kinds.push(CASE_RECV);
                     }
                     _ => {
-                        self.compile_statement(pkg, comm.as_ref())?;
+                        case_kinds.push(CASE_RECV);
+                    }
+                }
+            } else {
+                case_kinds.push(CASE_DEFAULT);
+            }
+        }
+
+        // Phase 2: emit Select opcode + inline case descriptors
+        self.emit_opcode(OpCode::Select);
+        self.emit_u8(num_cases as u8);
+
+        let desc_start = self.instructions.len();
+        for kind in &case_kinds {
+            self.instructions.push(*kind);        // kind byte
+            self.instructions.push(0);            // body_ip low (placeholder)
+            self.instructions.push(0);            // body_ip high (placeholder)
+        }
+
+        // Phase 3: emit case bodies and backfill body_ip values
+        let mut case_end_jumps: Vec<usize> = Vec::new();
+
+        for (i, clause) in cases.iter().enumerate() {
+            let body_ip = self.instructions.len() as u16;
+            let desc_offset = desc_start + i * 3 + 1;
+            self.instructions[desc_offset] = body_ip as u8;
+            self.instructions[desc_offset + 1] = (body_ip >> 8) as u8;
+
+            // For recv cases, handle the received value on the stack
+            if case_kinds[i] == CASE_RECV {
+                if let Some(comm) = &clause.comm {
+                    match comm.as_ref() {
+                        Statement::Assign(assign) => {
+                            let left = &assign.left[0];
+                            let name = match left {
+                                Expression::Ident(ident) => &ident.name,
+                                _ => panic!("select recv: expected identifier"),
+                            };
+                            if assign.op == Operator::Define {
+                                let symbol = self.symbols.define(
+                                    pkg,
+                                    name.as_str(),
+                                    DefineType::Var(Box::new(DefineType::Int)),
+                                    false,
+                                );
+                                let op = if symbol.scope == Scope::Global {
+                                    OpCode::SetGlobal
+                                } else {
+                                    OpCode::SetLocal
+                                };
+                                self.emit_opcode(op);
+                                self.emit_u16(symbol.index);
+                            } else {
+                                let resolved = self.symbols.resolve(pkg, name.as_str())
+                                    .expect("select recv: undefined variable");
+                                let sym = resolved.get_symbol();
+                                let op = if sym.scope == Scope::Global {
+                                    OpCode::SetGlobal
+                                } else {
+                                    OpCode::SetLocal
+                                };
+                                self.emit_opcode(op);
+                                self.emit_u16(sym.index);
+                            }
+                        }
+                        Statement::Expr(_) => {
+                            self.emit_opcode(OpCode::Pop);
+                        }
+                        _ => {}
                     }
                 }
             }

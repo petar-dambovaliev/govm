@@ -122,6 +122,7 @@ pub(crate) enum OpCode {
     ChanRecv,
     MakeChan,
     ChanClose,
+    Select,
 }
 
 const JUMP_PLACEHOLDER: u16 = 1337;
@@ -234,7 +235,8 @@ impl OpCode {
             | OpCode::ChanSend
             | OpCode::ChanRecv
             | OpCode::ChanClose
-            | OpCode::MakeChan => &[],
+            | OpCode::MakeChan
+            | OpCode::Select => &[],
         }
     }
 }
@@ -542,6 +544,7 @@ impl Display for OpCode {
             Self::ChanRecv => "ChanRecv",
             Self::MakeChan => "MakeChan",
             Self::ChanClose => "ChanClose",
+            Self::Select => "Select",
         };
         f.write_str(s)
     }

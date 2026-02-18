@@ -527,7 +527,7 @@ impl Goroutine {
                 OpCode::IncGlobal => {
                     let id = self.read_u16();
                     let mut globals = self.shared.globals.write().await;
-                    let val = &mut globals[self.bp as usize + id as usize];
+                    let val = &mut globals[id as usize];
                     let new_val = val.as_int_mut();
                     new_val.value += 1;
                 }
@@ -1092,7 +1092,9 @@ impl Goroutine {
                         if let Some(cl) = closure_obj {
                             g.closure_ctx.push(cl);
                         }
-                        let _ = g.execute_loop().await;
+                        if let Err(e) = g.execute_loop().await {
+                            eprintln!("goroutine error: {}", e);
+                        }
                         shared.tracker.finish();
                     });
                 }
@@ -1107,9 +1109,12 @@ impl Goroutine {
                     }
                     let ch = unsafe { Channel::read(&ch_obj) };
                     if ch.sender.send(value).await.is_err() {
-                        return Err(Error::InternalError(
-                            "send on closed channel".to_string(),
+                        return Err(Error::GoPanic(
+                            Object::string("send on closed channel"),
                         ));
+                    }
+                    if let Some(ref ack_rx) = ch.ack_receiver {
+                        let _ = ack_rx.recv().await;
                     }
                 }
                 OpCode::ChanRecv => {
@@ -1122,7 +1127,12 @@ impl Goroutine {
                     }
                     let ch = unsafe { Channel::read(&ch_obj) };
                     match ch.receiver.recv().await {
-                        Ok(val) => self.push(val),
+                        Ok(val) => {
+                            if let Some(ref ack_tx) = ch.ack_sender {
+                                let _ = ack_tx.send(()).await;
+                            }
+                            self.push(val);
+                        }
                         Err(_) => self.push(Object::null()),
                     }
                 }
@@ -1144,8 +1154,137 @@ impl Goroutine {
                         )));
                     }
                     let ch = unsafe { Channel::read_mut(&ch_obj) };
+                    if ch.closed {
+                        return Err(Error::GoPanic(Object::string("close of closed channel")));
+                    }
                     ch.closed = true;
                     ch.sender.close();
+                }
+                OpCode::Select => {
+                    let num_cases = self.read_u8() as usize;
+
+                    const CASE_RECV: u8 = 0;
+                    const CASE_SEND: u8 = 1;
+                    const CASE_DEFAULT: u8 = 2;
+
+                    let mut case_descs: Vec<(u8, u16)> = Vec::with_capacity(num_cases);
+                    for _ in 0..num_cases {
+                        let kind = self.read_u8();
+                        let body_ip = self.read_u16();
+                        case_descs.push((kind, body_ip));
+                    }
+
+                    // Collect channels and send values from the stack (in reverse
+                    // since the last-pushed case is on top)
+                    struct CaseData {
+                        kind: u8,
+                        body_ip: u16,
+                        channel: Option<Object>,
+                        send_value: Option<Object>,
+                    }
+
+                    let mut case_data: Vec<CaseData> = Vec::with_capacity(num_cases);
+                    for &(kind, body_ip) in case_descs.iter().rev() {
+                        match kind {
+                            CASE_SEND => {
+                                let value = self.pop();
+                                let ch = self.pop();
+                                case_data.push(CaseData { kind, body_ip, channel: Some(ch), send_value: Some(value) });
+                            }
+                            CASE_RECV => {
+                                let ch = self.pop();
+                                case_data.push(CaseData { kind, body_ip, channel: Some(ch), send_value: None });
+                            }
+                            CASE_DEFAULT | _ => {
+                                case_data.push(CaseData { kind, body_ip, channel: None, send_value: None });
+                            }
+                        }
+                    }
+                    case_data.reverse();
+
+                    let mut selected: Option<usize> = None;
+                    let mut recv_val: Option<Object> = None;
+                    let mut default_idx: Option<usize> = None;
+
+                    // First pass: try non-blocking operations
+                    for (i, case) in case_data.iter().enumerate() {
+                        match case.kind {
+                            CASE_RECV => {
+                                let ch_obj = case.channel.unwrap();
+                                let ch = unsafe { Channel::read(&ch_obj) };
+                                if let Ok(val) = ch.receiver.try_recv() {
+                                    if let Some(ref ack_tx) = ch.ack_sender {
+                                        let _ = ack_tx.try_send(());
+                                    }
+                                    selected = Some(i);
+                                    recv_val = Some(val);
+                                    break;
+                                }
+                            }
+                            CASE_SEND => {
+                                let ch_obj = case.channel.unwrap();
+                                let ch = unsafe { Channel::read(&ch_obj) };
+                                let value = case.send_value.unwrap();
+                                if ch.sender.try_send(value).is_ok() {
+                                    selected = Some(i);
+                                    break;
+                                }
+                            }
+                            CASE_DEFAULT => {
+                                default_idx = Some(i);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // If none ready and we have a default, use it
+                    if selected.is_none() {
+                        if let Some(def_idx) = default_idx {
+                            selected = Some(def_idx);
+                        }
+                    }
+
+                    // If still none ready, block until one is available
+                    if selected.is_none() {
+                        loop {
+                            for (i, case) in case_data.iter().enumerate() {
+                                match case.kind {
+                                    CASE_RECV => {
+                                        let ch_obj = case.channel.unwrap();
+                                        let ch = unsafe { Channel::read(&ch_obj) };
+                                        if let Ok(val) = ch.receiver.try_recv() {
+                                            if let Some(ref ack_tx) = ch.ack_sender {
+                                                let _ = ack_tx.try_send(());
+                                            }
+                                            selected = Some(i);
+                                            recv_val = Some(val);
+                                            break;
+                                        }
+                                    }
+                                    CASE_SEND => {
+                                        let ch_obj = case.channel.unwrap();
+                                        let ch = unsafe { Channel::read(&ch_obj) };
+                                        let value = case.send_value.unwrap();
+                                        if ch.sender.try_send(value).is_ok() {
+                                            selected = Some(i);
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if selected.is_some() {
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    }
+
+                    let sel = selected.unwrap();
+                    if let Some(val) = recv_val {
+                        self.push(val);
+                    }
+                    self.ip = case_data[sel].body_ip as usize;
                 }
             }
         }

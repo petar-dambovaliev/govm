@@ -110,7 +110,7 @@ pub enum DefineType {
         is_transparent: bool,
         methods: Vec<Self>,
     },
-    Channel,
+    Channel(Box<DefineType>),
     Package {
         path: String,
         alias: String,
@@ -261,7 +261,7 @@ impl DefineType {
 
                 TypeValue::object_map(Type::Map, Some(k_obj), Some(v_obj))
             }
-            DefineType::Channel => TypeValue::object(Type::Channel, None),
+            DefineType::Channel(_) => TypeValue::object(Type::Channel, None),
             _ => unimplemented!("DefineType::to_object {:#?}", self),
         }
     }
@@ -618,7 +618,7 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Slice { .. } => true,
+            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Slice { .. } | Self::Channel(_) => true,
             _ => false,
         }
     }
