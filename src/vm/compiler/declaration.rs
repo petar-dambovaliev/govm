@@ -884,7 +884,6 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
                         "#,
                         );
 
-                        println!("gen_m_str: {}", gen_m_str);
                         let mut p = Parser::from(gen_m_str);
 
                         let gen_m = p.parse_func_decl()

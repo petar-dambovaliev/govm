@@ -175,21 +175,23 @@ impl OpCode {
             | OpCode::SwapGG
             | OpCode::SwapGL
             | OpCode::DynamicDispatch
-            | OpCode::MakeArray
             | OpCode::MakeSlice
             | OpCode::Slice => &[2, 2],
+
+            // OpCodes with 1 operand of 2 bytes (array length):
+            OpCode::MakeArray => &[2],
 
             // OpCodes with 2 operands of 1 bytes each
             OpCode::CallBuiltin => &[1, 1],
 
-            // OpCodes with 1 operand op 1 byte:
+            // OpCodes with 1 operand of 1 byte:
             OpCode::Call
             | OpCode::CastToFloat32
             | OpCode::CastToFloat64
-            | OpCode::CastToAlias
             | OpCode::Defer
             | OpCode::GoSpawn => &[1],
 
+            // OpCodes with 1 operand of 2 bytes:
             OpCode::SetLocal
             | OpCode::GetGlobal
             | OpCode::SetGlobal
@@ -199,6 +201,7 @@ impl OpCode {
             | OpCode::LocalPtrWrite
             | OpCode::GlobalPtrWrite
             | OpCode::EnclosedPtrWrite
+            | OpCode::CastToAlias
             | OpCode::Propagate => &[2],
 
             // OpCodes with no operands
@@ -510,7 +513,7 @@ impl Display for OpCode {
             Self::Struct => "Struct",
             Self::LocalPtrWrite => "LocalPtrWrite",
             Self::GlobalPtrWrite => "GlobalPtrWrite",
-            Self::EnclosedPtrWrite => "GlobalPtrWrite",
+            Self::EnclosedPtrWrite => "EnclosedPtrWrite",
             Self::CopyLL => "CopyLL",
             Self::CopyLG => "CopyLG",
             Self::CopyGG => "CopyGG",
@@ -521,7 +524,7 @@ impl Display for OpCode {
             Self::SwapGG => "SwapGG",
             Self::Propagate => "Propagate",
             Self::Deref => "Deref",
-            Self::Upcast => "Icast",
+            Self::Upcast => "Upcast",
             Self::Downcast => "Downcast",
             Self::DynamicDispatch => "DynamicDispatch",
             Self::TypeOf => "TypeOf",

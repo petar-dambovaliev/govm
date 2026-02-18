@@ -97,6 +97,19 @@ impl ModuleResolver {
     /// First tries local resolution (within this module), then
     /// checks require directives for remote dependencies.
     pub fn resolve_import(&self, import_path: &str) -> std::result::Result<PathBuf, String> {
+        self.resolve_import_inner(import_path, 0)
+    }
+
+    const MAX_RESOLVE_DEPTH: u8 = 10;
+
+    fn resolve_import_inner(&self, import_path: &str, depth: u8) -> std::result::Result<PathBuf, String> {
+        if depth > Self::MAX_RESOLVE_DEPTH {
+            return Err(format!(
+                "import '{}': maximum transitive resolution depth exceeded (cycle?)",
+                import_path
+            ));
+        }
+
         // Check replace directives first
         if let Some(repl) = self.find_replace(import_path) {
             let subpath = import_path
@@ -133,8 +146,11 @@ impl ModuleResolver {
         }
 
         // Local module resolution
-        if let Some(rel) = import_path.strip_prefix(&self.module_path) {
-            let rel = rel.trim_start_matches('/');
+        if is_path_match(import_path, &self.module_path) {
+            let rel = import_path
+                .strip_prefix(&self.module_path)
+                .unwrap_or("")
+                .trim_start_matches('/');
             let fs_path = if rel.is_empty() {
                 self.project_root.clone()
             } else {
@@ -180,7 +196,7 @@ impl ModuleResolver {
             let cached = self.cached_module_path(&req.module_path, &req.version);
             if cached.exists() {
                 if let Some(sub) = self.sub_resolver(&cached) {
-                    if let Ok(path) = sub.resolve_import(import_path) {
+                    if let Ok(path) = sub.resolve_import_inner(import_path, depth + 1) {
                         return Ok(path);
                     }
                 }
@@ -209,14 +225,24 @@ impl ModuleResolver {
     fn find_require(&self, import_path: &str) -> Option<&Require> {
         self.requires
             .iter()
-            .filter(|r| import_path.starts_with(&r.module_path))
+            .filter(|r| is_path_match(import_path, &r.module_path))
             .max_by_key(|r| r.module_path.len())
     }
 
     fn find_replace(&self, import_path: &str) -> Option<&Replace> {
         self.replaces
             .iter()
-            .filter(|r| import_path.starts_with(&r.old_path))
+            .filter(|r| is_path_match(import_path, &r.old_path))
+            .filter(|r| {
+                // If the replace has a version constraint, only match if
+                // the corresponding require has that exact version.
+                match &r.old_version {
+                    Some(ver) => self.requires.iter().any(|req| {
+                        req.module_path == r.old_path && req.version == *ver
+                    }),
+                    None => true,
+                }
+            })
             .max_by_key(|r| r.old_path.len())
     }
 
@@ -240,23 +266,42 @@ impl ModuleResolver {
         let url = module_to_git_url(module_path);
         let destination = self.cached_module_path(module_path, version);
 
-        fs::create_dir_all(&destination)
+        // Remove any leftover partial download
+        if destination.exists() {
+            let _ = fs::remove_dir_all(&destination);
+        }
+
+        fs::create_dir_all(destination.parent().unwrap_or(&destination))
             .map_err(|e| format!("failed to create cache directory: {}", e))?;
 
         let fetch_options = FetchOptions::new();
-        let repo = RepoBuilder::new()
+        let repo = match RepoBuilder::new()
             .fetch_options(fetch_options)
             .clone(&url, &destination)
-            .map_err(|e| format!("failed to clone '{}': {}", url, e))?;
+        {
+            Ok(repo) => repo,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&destination);
+                return Err(format!("failed to clone '{}': {}", url, e));
+            }
+        };
 
         if !version.is_empty() && !version.starts_with("v0.0.0-") {
-            let obj = repo
-                .revparse_single(version)
-                .map_err(|e| format!("failed to find version '{}': {}", version, e))?;
-            repo.checkout_tree(&obj, None)
-                .map_err(|e| format!("failed to checkout '{}': {}", version, e))?;
-            repo.set_head_detached(obj.id())
-                .map_err(|e| format!("failed to set HEAD to '{}': {}", version, e))?;
+            let checkout_result = (|| -> std::result::Result<(), String> {
+                let obj = repo
+                    .revparse_single(version)
+                    .map_err(|e| format!("failed to find version '{}': {}", version, e))?;
+                repo.checkout_tree(&obj, None)
+                    .map_err(|e| format!("failed to checkout '{}': {}", version, e))?;
+                repo.set_head_detached(obj.id())
+                    .map_err(|e| format!("failed to set HEAD to '{}': {}", version, e))?;
+                Ok(())
+            })();
+
+            if let Err(e) = checkout_result {
+                let _ = fs::remove_dir_all(&destination);
+                return Err(e);
+            }
         }
 
         // Record hash in go.sum
@@ -291,6 +336,12 @@ impl ModuleResolver {
 
         Ok(())
     }
+}
+
+/// Checks if `import_path` matches `prefix` at a path boundary.
+/// Returns true if import_path == prefix or import_path starts with prefix + "/".
+fn is_path_match(import_path: &str, prefix: &str) -> bool {
+    import_path == prefix || import_path.starts_with(&format!("{}/", prefix))
 }
 
 /// Computes a SHA-256 hash of a directory's contents (sorted by path).
@@ -421,7 +472,7 @@ fn parse_module_path(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("module ") {
-            let module = trimmed["module ".len()..].trim();
+            let module = trimmed["module ".len()..].split("//").next()?.trim();
             if !module.is_empty() {
                 return Some(module.to_string());
             }

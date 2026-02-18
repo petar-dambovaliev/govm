@@ -19,6 +19,7 @@ use crate::vm::object::r#ref::Ref;
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
 use crate::vm::Error;
+use num::Complex;
 use std::alloc::{handle_alloc_error, Layout};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -300,8 +301,8 @@ impl Object {
     }
 
     #[inline(always)]
-    pub fn complex64(value: usize) -> Self {
-        Uint::from_usize(value)
+    pub fn complex64(value: Complex<f32>) -> Self {
+        Complex64::from_isize(value)
     }
 
     /// Create a new function value
@@ -886,8 +887,6 @@ macro_rules! impl_arith {
                     Object::float32(self.as_float32() $op rhs.as_float32())
                 }
 
-                Type::String => add_strings(self, rhs),
-
                 _ => return Err(Error::TypeError(format!("unsupported op {} for type {}", stringify!($op), self.tag()))),
             };
 
@@ -941,7 +940,31 @@ macro_rules! impl_cmp {
 }
 
 impl Object {
-    impl_arith!(add, +);
+    #[inline(always)]
+    pub(crate) fn add(self, rhs: Self) -> Result<Object, Error> {
+        if self.tag() == Type::String && rhs.tag() == Type::String {
+            return Ok(add_strings(self, rhs));
+        }
+        if self.tag() != rhs.tag() {
+            return Err(Error::TypeError(format!("invalid op + for types ({} and {})", self.tag(), rhs.tag())));
+        }
+        let result = match self.tag() {
+            Type::Int => Object::int(self.as_isize() + rhs.as_isize()),
+            Type::I8 => Object::int8(self.as_int8().value + rhs.as_int8().value),
+            Type::I16 => Object::int16(self.as_int16().value + rhs.as_int16().value),
+            Type::I32 => Object::int32(self.as_int32().value + rhs.as_int32().value),
+            Type::I64 => Object::int64(self.as_int64().value + rhs.as_int64().value),
+            Type::UI8 => Object::uint8(self.as_uint8().value + rhs.as_uint8().value),
+            Type::UI => Object::uint(self.as_uint().value + rhs.as_uint().value),
+            Type::UI16 => Object::uint16(self.as_uint16().value + rhs.as_uint16().value),
+            Type::UI32 => Object::uint32(self.as_uint32().value + rhs.as_uint32().value),
+            Type::UI64 => Object::uint64(self.as_uint64().value + rhs.as_uint64().value),
+            Type::Float64 => Object::float64(self.as_float64() + rhs.as_float64()),
+            Type::Float32 => unsafe { Object::float32(self.as_float32() + rhs.as_float32()) },
+            _ => return Err(Error::TypeError(format!("unsupported op + for type {}", self.tag()))),
+        };
+        Ok(result)
+    }
     impl_arith!(sub, -);
     impl_arith!(mul, *);
     impl_arith!(div, /);

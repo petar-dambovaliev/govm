@@ -402,7 +402,7 @@ impl Goroutine {
                         Type::UI32 => n.as_uint32().value as f64,
                         Type::UI64 => n.as_uint64().value as f64,
                         Type::Float32 => n.as_float32() as f64,
-                        Type::Float64 => return Ok(final_result),
+                        Type::Float64 => continue,
                         _ => {
                             return Err(Error::TypeError(format!(
                                 "cannot cast {:?} to float64",
@@ -428,7 +428,7 @@ impl Goroutine {
                         Type::UI32 => n.as_uint32().value as f32,
                         Type::UI64 => n.as_uint64().value as f32,
                         Type::Float64 => n.as_float64() as f32,
-                        Type::Float32 => return Ok(final_result),
+                        Type::Float32 => continue,
                         _ => {
                             return Err(Error::TypeError(format!(
                                 "cannot cast {:?} to float32",
@@ -527,7 +527,7 @@ impl Goroutine {
                 OpCode::IncGlobal => {
                     let id = self.read_u16();
                     let mut globals = self.shared.globals.write().await;
-                    let val = &mut globals[self.bp as usize + id as usize];
+                    let val = &mut globals[id as usize];
                     let new_val = val.as_int_mut();
                     new_val.value += 1;
                 }
@@ -599,12 +599,20 @@ impl Goroutine {
                     let iface = unsafe { Interface::read(&value) };
                     let method_name = &iface.methods[method_id as usize];
                     let strct = iface.value.as_struct();
+                    let mut found = false;
                     for (name, ip) in &strct.method_dispatch {
                         if method_name == name {
                             let base_pointer = self.stack.len() as u16 - num_args;
                             self.pushframe(*ip as u32, base_pointer);
+                            found = true;
                             break;
                         }
+                    }
+                    if !found {
+                        return Err(Error::TypeError(format!(
+                            "method '{}' not found in dynamic dispatch",
+                            method_name
+                        )));
                     }
                 }
                 OpCode::Upcast => {
@@ -753,27 +761,27 @@ impl Goroutine {
                     globals.swap(src as usize, dst as usize);
                 }
                 OpCode::SwapLG => {
-                    let src = self.read_u16();
-                    let dst = self.read_u16();
+                    let local_idx = self.read_u16();
+                    let global_idx = self.read_u16();
                     let mut globals = self.shared.globals.write().await;
                     std::mem::swap(
-                        &mut self.stack[self.bp as usize + dst as usize],
-                        &mut globals[src as usize],
+                        &mut self.stack[self.bp as usize + local_idx as usize],
+                        &mut globals[global_idx as usize],
                     );
                 }
                 OpCode::SwapGL => {
-                    let src = self.read_u16();
-                    let dst = self.read_u16();
+                    let global_idx = self.read_u16();
+                    let local_idx = self.read_u16();
                     let mut globals = self.shared.globals.write().await;
                     std::mem::swap(
-                        &mut self.stack[self.bp as usize + dst as usize],
-                        &mut globals[src as usize],
+                        &mut globals[global_idx as usize],
+                        &mut self.stack[self.bp as usize + local_idx as usize],
                     );
                 }
                 OpCode::SwapLL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-                    self.stack.swap(src as usize, dst as usize);
+                    self.stack.swap(self.bp as usize + src as usize, self.bp as usize + dst as usize);
                 }
                 OpCode::Range => {
                     let key_idx = self.read_u16();

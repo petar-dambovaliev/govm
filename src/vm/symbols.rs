@@ -401,7 +401,7 @@ impl DefineType {
         }
 
         if other.is_spec() {
-            let (_, _, _, is_transparent) = self.as_spec().unwrap();
+            let (_, _, _, is_transparent) = other.as_spec().unwrap();
             return is_transparent;
         }
 
