@@ -117,6 +117,11 @@ pub(crate) enum OpCode {
     CastToAlias,
     Defer,
     Halt,
+    GoSpawn,
+    ChanSend,
+    ChanRecv,
+    MakeChan,
+    ChanClose,
 }
 
 const JUMP_PLACEHOLDER: u16 = 1337;
@@ -180,7 +185,8 @@ impl OpCode {
             | OpCode::CastToFloat32
             | OpCode::CastToFloat64
             | OpCode::CastToAlias
-            | OpCode::Defer => &[1],
+            | OpCode::Defer
+            | OpCode::GoSpawn => &[1],
 
             OpCode::SetLocal
             | OpCode::GetGlobal
@@ -224,7 +230,11 @@ impl OpCode {
             | OpCode::TypeOf
             | OpCode::TypeCmp
             | OpCode::PanicIfFalse
-            | OpCode::SetDefault => &[],
+            | OpCode::SetDefault
+            | OpCode::ChanSend
+            | OpCode::ChanRecv
+            | OpCode::ChanClose
+            | OpCode::MakeChan => &[],
         }
     }
 }
@@ -527,6 +537,11 @@ impl Display for OpCode {
             Self::CastToAlias => "CastToAlias",
             Self::Defer => "Defer",
             Self::Halt => "Halt",
+            Self::GoSpawn => "GoSpawn",
+            Self::ChanSend => "ChanSend",
+            Self::ChanRecv => "ChanRecv",
+            Self::MakeChan => "MakeChan",
+            Self::ChanClose => "ChanClose",
         };
         f.write_str(s)
     }

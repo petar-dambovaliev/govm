@@ -1,4 +1,5 @@
 use super::{Error, Object};
+use crate::vm::object::channel::Channel;
 use crate::vm::object::collections::{Map, Slice};
 use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::int::{Byte, Int, Int64};
@@ -35,6 +36,7 @@ pub enum Builtin {
     Sprintf,
     Panic,
     Recover,
+    Close,
 }
 
 impl Builtin {
@@ -46,7 +48,8 @@ impl Builtin {
             | Self::Delete
             | Self::Clear
             | Self::GcCollect
-            | Self::Panic => true,
+            | Self::Panic
+            | Self::Close => true,
             _ => false,
         }
     }
@@ -75,6 +78,7 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "sprintf" => Some(Builtin::Sprintf),
         "panic" => Some(Builtin::Panic),
         "recover" => Some(Builtin::Recover),
+        "close" => Some(Builtin::Close),
         _ => None,
     }
 }
@@ -139,6 +143,7 @@ pub fn call(
             Err(Error::GoPanic(value))
         }
         Builtin::Recover => Ok(Object::null()),
+        Builtin::Close => call_close(args),
     }
 }
 
@@ -473,7 +478,25 @@ fn call_cap(args: &[Object]) -> Result<Object, Error> {
     Ok(Int::from_isize(i as isize))
 }
 
-//slices, maps, or channels
+fn call_close(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(
+            "close expects 1 argument".to_string(),
+        ));
+    }
+    let ch_obj = args[0];
+    if ch_obj.tag() != Type::Channel {
+        return Err(Error::TypeError(format!(
+            "close: expected channel, got {}",
+            ch_obj.tag()
+        )));
+    }
+    let ch = unsafe { Channel::read_mut(&ch_obj) };
+    ch.closed = true;
+    ch.sender.close();
+    Ok(Object::null())
+}
+
 fn call_make(args: &[Object]) -> Result<Object, Error> {
     let mut arg_iter = args.iter();
     let t = arg_iter.next().unwrap();
@@ -485,6 +508,10 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
     let tv = unsafe { TypeValue::read(t) };
 
     let obj = match tv.value {
+        Type::Channel => {
+            let capacity = len.map(|l| l.as_isize() as usize).unwrap_or(0);
+            Channel::new(capacity)
+        }
         Type::Slice => {
             let p = tv.inner_k.unwrap();
             let inner = unsafe { TypeValue::read(&p) };

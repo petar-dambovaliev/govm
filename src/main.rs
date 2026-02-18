@@ -66,8 +66,16 @@ enum ModSubCommand {
 fn main() {
     unsafe { Allocator::initialize() }
 
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let cli = Cli::parse();
-    //println!("{:?}", cli);
 
     match cli.action {
         SubCommand::Build {
@@ -122,7 +130,7 @@ fn main() {
             };
 
             let mut vm = VM::new();
-            if let Err(e) = vm.run(code) {
+            if let Err(e) = vm.run(code).await {
                 eprintln!("{}", vm.error_with_location(&e));
                 std::process::exit(1);
             }

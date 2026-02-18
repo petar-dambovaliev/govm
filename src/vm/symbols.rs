@@ -110,6 +110,7 @@ pub enum DefineType {
         is_transparent: bool,
         methods: Vec<Self>,
     },
+    Channel,
     Package {
         path: String,
         alias: String,
@@ -260,15 +261,7 @@ impl DefineType {
 
                 TypeValue::object_map(Type::Map, Some(k_obj), Some(v_obj))
             }
-            // DefineType::Array { len, inner_type } => Expression::TypeArray(ArrayType {
-            //     pos: (0, 0),
-            //     len: Box::new(Expression::BasicLit(BasicLit {
-            //         pos: 0,
-            //         kind: LitKind::Integer,
-            //         value: format!("{}", len),
-            //     })),
-            //     typ: Box::new(inner_type.to_expression()),
-            // }),
+            DefineType::Channel => TypeValue::object(Type::Channel, None),
             _ => unimplemented!("DefineType::to_object {:#?}", self),
         }
     }

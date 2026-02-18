@@ -1,8 +1,8 @@
 use crate::parser::ast::{ArrayType, Field};
 use crate::parser::ast::{
     AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
-    ExprStmt, Expression, FieldList, Ident, KeyedElement, LiteralValue, Operation, Statement,
-    TypeSpec,
+    ExprStmt, Expression, FieldList, Ident, KeyedElement, LiteralValue, Operation, SelectStmt,
+    Statement, TypeSpec,
 };
 use crate::parser::ast::{InterfaceType, Package};
 use crate::parser::parse_dir_recursive;
@@ -600,6 +600,9 @@ impl Compiler {
                     fields,
                     methods: vec![],
                 })
+            }
+            Expression::TypeChannel(_ch) => {
+                Some(DefineType::Channel)
             }
             _ => panic!("expression_to_define_type: unsupported expr {:#?}", expr),
         }
@@ -2070,6 +2073,23 @@ impl Compiler {
                 self.emit_opcode(OpCode::Defer);
                 self.emit_u8(call.args.len().try_into().unwrap());
             }
+            Statement::Go(go_stmt) => {
+                let call = &go_stmt.call;
+                for a in &call.args {
+                    self.compile_expression(pkg, a)?;
+                }
+                self.compile_expression(pkg, &call.func)?;
+                self.emit_opcode(OpCode::GoSpawn);
+                self.emit_u8(call.args.len().try_into().unwrap());
+            }
+            Statement::Send(send_stmt) => {
+                self.compile_expression(pkg, &send_stmt.chan)?;
+                self.compile_expression(pkg, &send_stmt.value)?;
+                self.emit_opcode(OpCode::ChanSend);
+            }
+            Statement::Select(select_stmt) => {
+                self.compile_select(pkg, select_stmt)?;
+            }
             _ => {
                 return Err(Error::ReferenceError(format!(
                     "stmt not supported: {:#?}",
@@ -2530,6 +2550,15 @@ impl Compiler {
 
                 return Ok(rt);
             }
+            Expression::TypeChannel(_ch) => {
+                let rt = self.expression_to_define_type(&pkg, expr).unwrap();
+                let obj = rt.clone().to_object();
+                let idx = self.add_constant(obj);
+                self.emit_opcode(OpCode::Const);
+                self.emit_u16(idx);
+
+                return Ok(rt);
+            }
             Expression::Operation(op) => {
                 match op.op {
                     Operator::Star => {
@@ -2756,6 +2785,11 @@ impl Compiler {
                             unimplemented!("operator::not y {:#?}", y)
                         }
                     },
+                    Operator::Arrow => {
+                        self.compile_expression(pkg, op.x.as_ref())?;
+                        self.emit_opcode(OpCode::ChanRecv);
+                        return Ok(DefineType::Null);
+                    }
                     _ => panic!("unsupported op: {:#?}", op),
                 }
                 //
@@ -3606,5 +3640,74 @@ impl Compiler {
         let idx = self.constants.len();
         self.constants.push(obj);
         idx.try_into().unwrap()
+    }
+
+    fn compile_select(
+        &mut self,
+        pkg: &str,
+        select_stmt: &SelectStmt,
+    ) -> Result<(), Error> {
+        let mut case_end_jumps: Vec<usize> = Vec::new();
+
+        for (i, clause) in select_stmt.body.body.iter().enumerate() {
+            let is_default = clause.tok == Keyword::Default;
+
+            if is_default {
+                for stmt in clause.body.iter() {
+                    self.compile_statement(pkg, stmt)?;
+                }
+                continue;
+            }
+
+            if let Some(comm) = &clause.comm {
+                match comm.as_ref() {
+                    Statement::Send(send) => {
+                        self.compile_expression(pkg, &send.chan)?;
+                        self.compile_expression(pkg, &send.value)?;
+                        self.emit_opcode(OpCode::ChanSend);
+                    }
+                    Statement::Expr(expr) => {
+                        self.compile_expression(pkg, &expr.expr)?;
+                        self.emit_opcode(OpCode::Pop);
+                    }
+                    Statement::Assign(assign) => {
+                        if assign.right.len() == 1 {
+                            self.compile_expression(pkg, &assign.right[0])?;
+                        }
+                        for left in &assign.left {
+                            self.compile_statement(
+                                pkg,
+                                &Statement::Assign(AssignStmt {
+                                    pos: assign.pos,
+                                    op: assign.op,
+                                    left: vec![left.clone()],
+                                    right: vec![],
+                                }),
+                            )?;
+                        }
+                    }
+                    _ => {
+                        self.compile_statement(pkg, comm.as_ref())?;
+                    }
+                }
+            }
+
+            for stmt in clause.body.iter() {
+                self.compile_statement(pkg, stmt)?;
+            }
+
+            let jump_pos = self.instructions.len();
+            self.emit_opcode(OpCode::Jump);
+            self.emit_u16(JUMP_PLACEHOLDER);
+            case_end_jumps.push(jump_pos + 1);
+        }
+
+        let after_select = self.instructions.len() as u16;
+        for pos in case_end_jumps {
+            self.instructions[pos] = after_select as u8;
+            self.instructions[pos + 1] = (after_select >> 8) as u8;
+        }
+
+        Ok(())
     }
 }

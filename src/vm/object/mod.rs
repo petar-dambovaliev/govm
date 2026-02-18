@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod collections;
 pub mod float;
 pub mod function;
@@ -84,6 +85,7 @@ pub enum Type {
     Slice,
     Variadic,
     Alias,
+    Channel,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -779,7 +781,8 @@ impl PartialEq for Object {
             | Type::Closure
             | Type::Interface
             | Type::Slice
-            | Type::Variadic => {
+            | Type::Variadic
+            | Type::Channel => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     this.tag(),
@@ -838,7 +841,8 @@ impl PartialOrd for Object {
             | Type::Interface
             | Type::Type
             | Type::Slice
-            | Type::Variadic => {
+            | Type::Variadic
+            | Type::Channel => {
                 unimplemented!("cannot compare {}", self.tag())
             }
         }
@@ -1127,6 +1131,10 @@ impl Display for Object {
                 }
                 f.write_char(']')?;
             }
+            Type::Channel => {
+                let ch = unsafe { channel::Channel::read(&this) };
+                write!(f, "chan(cap={})", ch.capacity)?;
+            }
         }
         Ok(())
     }
@@ -1172,6 +1180,7 @@ impl Display for Type {
             Type::Slice => "slice",
             Type::Variadic => "variadic",
             Type::Alias => "alias",
+            Type::Channel => "chan",
         };
         f.write_str(str)
     }

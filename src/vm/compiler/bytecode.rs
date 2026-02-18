@@ -281,6 +281,9 @@ fn serialize_object(buf: &mut Vec<u8>, obj: &Object) {
                 serialize_object(buf, el);
             }
         }
+        Type::Channel => {
+            panic!("cannot serialize channel objects");
+        }
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             panic!("cannot serialize {:?} objects", tag);
         }
@@ -506,6 +509,9 @@ fn deserialize_object(cursor: &mut Cursor<&[u8]>) -> Result<Object, String> {
                 elements.push(deserialize_object(cursor)?);
             }
             Ok(crate::vm::object::collections::Variadic::from_vec(elements))
+        }
+        Type::Channel => {
+            Err("cannot deserialize channel objects".to_string())
         }
         Type::Iter | Type::Complex64 | Type::Complex128 => {
             Err(format!("cannot deserialize {:?} objects", tag))

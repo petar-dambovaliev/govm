@@ -20,12 +20,15 @@ lazy-regex = "3.1.0"
 lazy_static = "1.4.0"
 chrono = "0.4.31"
 rust_decimal = "1.33.1"
+tokio = {version = "1", features = ["full"]}
+async-channel = "2"
 
 [debug]
 panic = "unwind"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
+tokio = {version = "1", features = ["full"]}
 
 [[bench]]
 name = "fibonacci"
