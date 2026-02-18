@@ -872,6 +872,7 @@ mod tests {
     use super::*;
     use crate::parser::ast::*;
     use crate::parser::token::{LitKind, Operator};
+    use std::path::Path;
     use std::rc::Rc;
 
     fn make_var(name: &str, deps: Vec<&str>) -> Declaration {
@@ -1261,5 +1262,184 @@ mod tests {
         let pos_b = names.iter().position(|n| n == "b").unwrap();
 
         assert!(pos_b < pos_a, "const b should come before const a");
+    }
+
+    // ============================================================
+    // compute_package_order tests
+    // ============================================================
+
+    fn make_package(dir: &Path, name: &str, imports: Vec<&str>) -> Package {
+        let import_specs: Vec<Import> = imports
+            .iter()
+            .map(|path| Import {
+                name: None,
+                path: StringLit {
+                    pos: 0,
+                    value: format!("\"{}\"", path),
+                },
+            })
+            .collect();
+
+        Package {
+            path: dir.to_path_buf(),
+            files: vec![File {
+                path: None,
+                line_info: vec![],
+                docs: vec![],
+                pkg_name: Ident {
+                    pos: 0,
+                    name: name.to_string(),
+                },
+                imports: import_specs,
+                decl: vec![],
+                comments: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_pkg_order_single_package_no_imports() {
+        let dir = std::env::temp_dir().join("govm_test_pkg_order_single");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pkg = make_package(&dir, "main", vec![]);
+        let result = compute_package_order(vec![pkg], None);
+        assert!(result.is_ok());
+        let (order, _) = result.unwrap();
+        assert_eq!(order.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pkg_order_linear_dependency() {
+        let base = std::env::temp_dir().join("govm_test_pkg_order_linear");
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let canon_a = dir_a.canonicalize().unwrap();
+        let canon_b = dir_b.canonicalize().unwrap();
+
+        let pkg_a = make_package(&dir_a, "a", vec![]);
+        let import_path = canon_a.to_str().unwrap();
+        let pkg_b = make_package(&dir_b, "b", vec![import_path]);
+
+        let result = compute_package_order(vec![pkg_a, pkg_b], None);
+        assert!(result.is_ok());
+        let (order, _) = result.unwrap();
+        assert_eq!(order.len(), 2);
+
+        let pos_a = order.iter().position(|k| k == canon_a.to_str().unwrap()).unwrap();
+        let pos_b = order.iter().position(|k| k == canon_b.to_str().unwrap()).unwrap();
+        assert!(pos_a < pos_b, "package a should come before package b");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_pkg_order_diamond_dependency() {
+        let base = std::env::temp_dir().join("govm_test_pkg_order_diamond");
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_leaf = base.join("leaf");
+        let dir_mid1 = base.join("mid1");
+        let dir_mid2 = base.join("mid2");
+        let dir_top = base.join("top");
+        std::fs::create_dir_all(&dir_leaf).unwrap();
+        std::fs::create_dir_all(&dir_mid1).unwrap();
+        std::fs::create_dir_all(&dir_mid2).unwrap();
+        std::fs::create_dir_all(&dir_top).unwrap();
+
+        let canon_leaf = dir_leaf.canonicalize().unwrap();
+        let canon_mid1 = dir_mid1.canonicalize().unwrap();
+        let canon_mid2 = dir_mid2.canonicalize().unwrap();
+        let canon_top = dir_top.canonicalize().unwrap();
+
+        let leaf_path = canon_leaf.to_str().unwrap();
+        let mid1_path = canon_mid1.to_str().unwrap();
+        let mid2_path = canon_mid2.to_str().unwrap();
+
+        let pkg_leaf = make_package(&dir_leaf, "leaf", vec![]);
+        let pkg_mid1 = make_package(&dir_mid1, "mid1", vec![leaf_path]);
+        let pkg_mid2 = make_package(&dir_mid2, "mid2", vec![leaf_path]);
+        let pkg_top = make_package(&dir_top, "top", vec![mid1_path, mid2_path]);
+
+        let result = compute_package_order(vec![pkg_leaf, pkg_mid1, pkg_mid2, pkg_top], None);
+        assert!(result.is_ok());
+        let (order, _) = result.unwrap();
+        assert_eq!(order.len(), 4);
+
+        let pos_leaf = order.iter().position(|k| k == canon_leaf.to_str().unwrap()).unwrap();
+        let pos_mid1 = order.iter().position(|k| k == canon_mid1.to_str().unwrap()).unwrap();
+        let pos_mid2 = order.iter().position(|k| k == canon_mid2.to_str().unwrap()).unwrap();
+        let pos_top = order.iter().position(|k| k == canon_top.to_str().unwrap()).unwrap();
+
+        assert!(pos_leaf < pos_mid1, "leaf before mid1");
+        assert!(pos_leaf < pos_mid2, "leaf before mid2");
+        assert!(pos_mid1 < pos_top, "mid1 before top");
+        assert!(pos_mid2 < pos_top, "mid2 before top");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_pkg_order_cycle_detected() {
+        let base = std::env::temp_dir().join("govm_test_pkg_order_cycle");
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let canon_a = dir_a.canonicalize().unwrap();
+        let canon_b = dir_b.canonicalize().unwrap();
+
+        let pkg_a = make_package(&dir_a, "a", vec![canon_b.to_str().unwrap()]);
+        let pkg_b = make_package(&dir_b, "b", vec![canon_a.to_str().unwrap()]);
+
+        let result = compute_package_order(vec![pkg_a, pkg_b], None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("cyclic"), "error should mention cycle: {}", err);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_pkg_order_with_module_resolver() {
+        let base = std::env::temp_dir().join("govm_test_pkg_order_resolver");
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_main = base.join("main_pkg");
+        let dir_sub = base.join("main_pkg").join("sub");
+        std::fs::create_dir_all(&dir_main).unwrap();
+        std::fs::create_dir_all(&dir_sub).unwrap();
+
+        std::fs::write(
+            dir_main.join("go.mod"),
+            "module example.com/testmod\n\ngo 1.20\n",
+        )
+        .unwrap();
+
+        let resolver = ModuleResolver::from_project_root(&dir_main).unwrap();
+
+        let pkg_sub = make_package(&dir_sub, "sub", vec![]);
+        let pkg_main = make_package(&dir_main, "main", vec!["example.com/testmod/sub"]);
+
+        let result = compute_package_order(vec![pkg_sub, pkg_main], Some(&resolver));
+        assert!(result.is_ok());
+        let (order, _) = result.unwrap();
+        assert_eq!(order.len(), 2);
+
+        let canon_main = dir_main.canonicalize().unwrap();
+        let canon_sub = dir_sub.canonicalize().unwrap();
+
+        let pos_main = order.iter().position(|k| k == canon_main.to_str().unwrap()).unwrap();
+        let pos_sub = order.iter().position(|k| k == canon_sub.to_str().unwrap()).unwrap();
+        assert!(pos_sub < pos_main, "sub should come before main");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -5,12 +5,13 @@ use crate::parser::ast::{
     TypeSpec,
 };
 use crate::parser::ast::{InterfaceType, Package};
+use crate::parser::parse_dir_recursive;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{
-    literal, make_method_name, Bytecode, Context, FuncContext, LoopContext, OpCode, SwitchContext,
-    JUMP_PLACEHOLDER,
+    literal, make_method_name, pos_to_line_col, Bytecode, Context, FuncContext, LoopContext,
+    OpCode, SourceMap, Span, SwitchContext, JUMP_PLACEHOLDER,
 };
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -42,6 +43,9 @@ pub struct Compiler {
     pub(crate) label_contexts: AHashMap<(usize, usize), String>,
     anonymous_struct: usize,
     pub(crate) iota: usize,
+    pub(crate) source_map: SourceMap,
+    current_file: Option<String>,
+    current_lines: Vec<usize>,
 }
 
 const BUILTIN: &str = "0xbuiltin";
@@ -59,6 +63,21 @@ impl Compiler {
             label_contexts: AHashMap::new(),
             anonymous_struct: 0,
             iota: 0,
+            source_map: SourceMap::new(),
+            current_file: None,
+            current_lines: Vec::new(),
+        }
+    }
+
+    pub(crate) fn record_span(&mut self, pos: usize) {
+        if let Some(ref file) = self.current_file {
+            let (line, col) = pos_to_line_col(&self.current_lines, pos);
+            let ip = self.instructions.len();
+            self.source_map.add(ip, Span {
+                file: file.clone(),
+                line,
+                col,
+            });
         }
     }
 
@@ -231,6 +250,32 @@ impl Compiler {
         //self.constants.push(Rune::from_char(0 as char));
         let resolver = ModuleResolver::from_project_root(&project_path);
 
+        let mut project = project;
+        if let Some(ref resolver) = resolver {
+            let mut remote_dirs: Vec<PathBuf> = Vec::new();
+            for pkg in &project {
+                for file in &pkg.files {
+                    for import in &file.imports {
+                        let import_path = import.path.value.trim_matches('"');
+                        if !import_path.starts_with(resolver.module_path()) {
+                            if let Ok(resolved) = resolver.resolve_import(import_path) {
+                                if resolved.exists() && !remote_dirs.contains(&resolved) {
+                                    remote_dirs.push(resolved);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for dir in &remote_dirs {
+                if let Ok(pkgs) = parse_dir_recursive(dir) {
+                    for (_, pkg) in pkgs {
+                        project.push(pkg);
+                    }
+                }
+            }
+        }
+
         let (pkg_order, pkgs_map) = compute_package_order(project, resolver.as_ref())
             .map_err(|e| Error::InternalError(e))?;
 
@@ -246,8 +291,11 @@ impl Compiler {
                 .unwrap()
                 .to_string();
 
-            // Process imports and comments from all files
             for file in &pkg.files {
+                if let Some(ref path) = file.path {
+                    self.current_file = Some(path.to_string_lossy().to_string());
+                    self.current_lines = file.line_info.clone();
+                }
                 if file.pkg_name.name == "main" {
                     let mut is_output = false;
                     for comment in file.comments.clone() {
@@ -349,11 +397,13 @@ impl Compiler {
         self.emit_opcode(OpCode::Halt);
         self.instructions.shrink_to_fit();
         self.constants.shrink_to_fit();
+        self.source_map.sort();
 
         Ok(Bytecode {
             constants: self.constants.clone(),
             instructions: std::mem::take(&mut self.instructions),
             assert_stdout: adb.map(|a| (a, BufWriter::new(vec![]))),
+            source_map: std::mem::take(&mut self.source_map),
         })
     }
 
@@ -801,6 +851,7 @@ impl Compiler {
     ) -> Result<Option<bool>, Error> {
         match stmt {
             Statement::For(forstmt) => {
+                self.record_span(forstmt.pos);
                 self.emit_opcode(OpCode::Null);
 
                 self.symbols.enter_scope();
@@ -886,6 +937,7 @@ impl Compiler {
                 return Ok(Some(loop_terminates));
             }
             Statement::If(ifstmt) => {
+                self.record_span(ifstmt.pos);
                 if let Some(init) = &ifstmt.init {
                     self.compile_statement(pkg, init.as_ref())?;
                 }
@@ -939,6 +991,7 @@ impl Compiler {
                 return Ok(Some(terminates));
             }
             Statement::Assign(assign) => {
+                self.record_span(assign.pos);
                 if assign.left.len() > 1 && assign.right.len() == 1 {
                     let first = assign.right.first().unwrap();
                     let dt = self.compile_expression(pkg, first)?;
@@ -1280,6 +1333,7 @@ impl Compiler {
                 }
             },
             Statement::Return(expr) => {
+                self.record_span(expr.pos);
                 let mut rts = Vec::with_capacity(expr.ret.len());
 
                 for r in &expr.ret {
@@ -3048,7 +3102,7 @@ impl Compiler {
 
                     assert!(updated);
 
-                    let obj = Struct::object(name.to_string(), field_values, vec![], true);
+                    let obj = Struct::object(name.to_string(), field_values, vec![], vec![], true);
                     let idx = self.add_constant(obj);
                     self.emit_opcode(OpCode::Const);
                     self.emit_u16(idx);

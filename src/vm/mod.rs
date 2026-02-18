@@ -13,7 +13,7 @@ use std::ptr;
 
 #[cfg(feature = "debug")]
 use crate::compiler::bytecode_to_human;
-use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
+use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode, SourceMap};
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
@@ -52,34 +52,10 @@ pub struct VM {
     deferred: Vec<Vec<DeferredCall>>,
     assert_stdout: Option<(String, BufWriter<Vec<u8>>)>,
     panic_value: Option<Object>,
+    source_map: SourceMap,
 }
 
 impl VM {
-    // #[inline]
-    // fn cur_mem(&self) -> usize {
-    //     self.heap.len()
-    // }
-    //
-    // #[inline]
-    // fn prev_mem(&self) -> usize {
-    //     self.last_gc_round_mem
-    // }
-    //
-    // #[inline]
-    // fn run_gc(&mut self) {
-    //     let percent = (self.opts.gogc * self.prev_mem() as f64) / 100.0;
-    //     let target = percent as usize + self.prev_mem();
-    //
-    //     if self.opts.min_gc < target && self.cur_mem() >= target {
-    //         dbg!(
-    //             "running GC: current memory: {} target memory: {}",
-    //             self.cur_mem(),
-    //             target
-    //         );
-    //         self.heap.clean();
-    //     }
-    // }
-
     /// Creates a new VM with an empty stack and callframes vector
     pub fn new() -> Self {
         let mut frames = Vec::with_capacity(128);
@@ -96,6 +72,7 @@ impl VM {
             deferred: vec![Vec::new()],
             assert_stdout: None,
             panic_value: None,
+            source_map: SourceMap::default(),
         }
     }
 
@@ -381,6 +358,7 @@ impl VM {
 
         self.assert_stdout = code.assert_stdout;
         self.instructions = code.instructions;
+        self.source_map = code.source_map;
         self.ip = 0;
         self.bp = 0;
         self.frames[0].ip = 0;
@@ -435,6 +413,14 @@ impl VM {
 
     fn execute_loop(&mut self, constants: &[Object]) -> Result<Object, Error> {
         self.execute_loop_inner(constants, true)
+    }
+
+    pub fn error_with_location(&self, err: &Error) -> String {
+        if let Some(span) = self.source_map.lookup(self.ip) {
+            format!("{}: {}", span, err)
+        } else {
+            format!("{}", err)
+        }
     }
 
     fn execute_loop_inner(
@@ -979,8 +965,7 @@ impl VM {
                     let pos = self.read_u16();
                     self.jump(pos);
 
-                    // collect garbage on every jump instruction
-                    // gc.run(&[&self.stack, &constants, &self.globals, &[final_result]]);
+
                 }
                 OpCode::JumpIfFalse => {
                     let condition = self.pop();
@@ -1235,6 +1220,7 @@ impl VM {
                         strct.name.clone(),
                         fields,
                         strct.method_dispatch.clone(),
+                        strct.tags.clone(),
                         strct.is_anonymous,
                     );
                     // remove struct const from the stack
@@ -1351,8 +1337,6 @@ fn index_get_map(obj: Object, key: Object) -> Result<(Object, Option<bool>), Err
 
 fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), Error> {
     let map = left.as_map_mut();
-    //isert returns the old value
-    // later for the gc
     map.insert(index, value);
 
     Ok(())
@@ -1471,18 +1455,16 @@ pub enum Error {
     GoPanic(Object),
 }
 
-// #[derive(Default, Debug)]
-// pub struct Opts {
-//     // percantage of the heap increasing
-//     // to trigger a garbage collection cycle
-//     pub gogc: f64,
-//     // min heap size in bytes to trigger a
-//     // garbage collection cycle
-//     pub min_gc: usize,
-// }
-
-// #[derive(Default, Debug)]
-// struct Stats {
-//     allocs: usize,
-//     prev_allocs: usize,
-// }
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::TypeError(s) => write!(f, "TypeError: {}", s),
+            Error::SyntaxError(s) => write!(f, "SyntaxError: {}", s),
+            Error::ReferenceError(s) => write!(f, "ReferenceError: {}", s),
+            Error::IndexError(s) => write!(f, "IndexError: {}", s),
+            Error::ArgumentError(s) => write!(f, "ArgumentError: {}", s),
+            Error::InternalError(s) => write!(f, "InternalError: {}", s),
+            Error::GoPanic(obj) => write!(f, "panic: {}", obj),
+        }
+    }
+}

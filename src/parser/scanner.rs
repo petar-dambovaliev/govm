@@ -74,6 +74,10 @@ impl Scanner {
         self.semicolon = pre.1
     }
 
+    pub(crate) fn lines(&self) -> &Vec<usize> {
+        &self.lines
+    }
+
     pub(crate) fn line_info(&self, pos: usize) -> (usize, usize) {
         match self.lines.binary_search(&pos) {
             Ok(index) => (index + 1, 0),

@@ -681,7 +681,8 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
     let t = spec.name.clone();
     let mut field_types = vec![];
 
-    //todo tags
+    let mut tags: Vec<Option<String>> = vec![];
+
     for field in &ta.fields {
         let (inner_t, is_ref) = match &field.typ {
             Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
@@ -700,14 +701,18 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
             r.strip_type()
         };
 
+        let tag_str = field.tag.as_ref().map(|t| t.value.clone());
+
         if field.name.is_empty() {
             field_types.push(ContextType::Embedded(inner_t.name.clone(), dt.clone()));
+            tags.push(tag_str);
         } else {
             for name in &field.name {
                 field_types.push(ContextType::Named(
                     name.name.as_str().to_string(),
                     dt.clone(),
                 ));
+                tags.push(tag_str.clone());
             }
         }
     }
@@ -764,7 +769,7 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
 
     assert!(updated);
 
-    let obj = Struct::object(name.to_string(), field_values, vec![], false);
+    let obj = Struct::object(name.to_string(), field_values, vec![], tags, false);
     let idx = c.add_constant(obj);
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);

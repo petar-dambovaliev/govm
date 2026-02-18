@@ -1,3 +1,4 @@
+pub mod bytecode;
 mod call;
 pub mod compiler;
 pub mod declaration;
@@ -228,11 +229,68 @@ impl OpCode {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Span {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.file, self.line, self.col)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SourceMap {
+    entries: Vec<(usize, Span)>,
+}
+
+impl SourceMap {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    pub fn add(&mut self, ip: usize, span: Span) {
+        self.entries.push((ip, span));
+    }
+
+    pub fn lookup(&self, ip: usize) -> Option<&Span> {
+        match self.entries.binary_search_by_key(&ip, |(offset, _)| *offset) {
+            Ok(idx) => Some(&self.entries[idx].1),
+            Err(0) => None,
+            Err(idx) => Some(&self.entries[idx - 1].1),
+        }
+    }
+
+    pub fn entries(&self) -> &[(usize, Span)] {
+        &self.entries
+    }
+
+    pub fn sort(&mut self) {
+        self.entries.sort_by_key(|(offset, _)| *offset);
+    }
+}
+
+/// Convert a character position to (line, col) using a line offset table
+pub fn pos_to_line_col(lines: &[usize], pos: usize) -> (usize, usize) {
+    match lines.binary_search(&pos) {
+        Ok(index) => (index + 1, 0),
+        Err(0) => (1, pos),
+        Err(index) => {
+            let start_at = lines[index - 1];
+            (index, pos - start_at)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Bytecode {
     pub constants: Vec<Object>,
     pub instructions: Vec<u8>,
     pub assert_stdout: Option<(String, BufWriter<Vec<u8>>)>,
+    pub source_map: SourceMap,
 }
 
 impl Clone for Bytecode {
@@ -246,6 +304,7 @@ impl Clone for Bytecode {
             constants: self.constants.clone(),
             instructions: self.instructions.clone(),
             assert_stdout: std,
+            source_map: self.source_map.clone(),
         }
     }
 }

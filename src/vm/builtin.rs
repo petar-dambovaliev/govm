@@ -1,5 +1,6 @@
 use super::{Error, Object};
 use crate::vm::object::collections::{Map, Slice};
+use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
@@ -111,11 +112,11 @@ pub fn call(
 ) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args, stdout),
-        //Builtin::Type => call_type(args, gc),
-        //Builtin::String => call_string(args, gc),
-        // Builtin::Bool => call_bool(args),
-        // Builtin::Float => call_float(args, gc),
-        // Builtin::Int => call_int(args),
+        Builtin::Type => call_type(args),
+        Builtin::String => call_string(args),
+        Builtin::Bool => call_bool(args),
+        Builtin::Float => call_float(args),
+        Builtin::Int => call_int(args),
         Builtin::Byte => call_byte(args),
         Builtin::Length => call_length(args),
         Builtin::Rune => call_rune(args),
@@ -138,8 +139,192 @@ pub fn call(
             Err(Error::GoPanic(value))
         }
         Builtin::Recover => Ok(Object::null()),
-        _ => unimplemented!("{:#?}", builtin),
     }
+}
+
+fn call_int(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "int expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let num = args[0];
+    let i = match num.tag() {
+        Type::Int => return Ok(num),
+        Type::I8 => num.as_int8().value as isize,
+        Type::I16 => num.as_int16().value as isize,
+        Type::I32 => num.as_int32().value as isize,
+        Type::I64 => num.as_int64().value as isize,
+        Type::UI => num.as_uint().value as isize,
+        Type::UI8 => num.as_uint8().value as isize,
+        Type::UI16 => num.as_uint16().value as isize,
+        Type::UI32 => num.as_uint32().value as isize,
+        Type::UI64 => num.as_uint64().value as isize,
+        Type::Float32 => num.as_float32() as isize,
+        Type::Float64 => num.as_float64() as isize,
+        Type::Byte => num.as_byte().value as isize,
+        Type::Rune => num.as_rune().value as isize,
+        Type::Bool => {
+            if num.as_bool() {
+                1
+            } else {
+                0
+            }
+        }
+        Type::String => {
+            let s = num.as_str().trim_matches('"');
+            match s.parse::<isize>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(Error::TypeError(format!(
+                        "cannot convert string {:?} to int",
+                        s
+                    )))
+                }
+            }
+        }
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to int",
+                num.tag()
+            )))
+        }
+    };
+    Ok(Int::from_isize(i))
+}
+
+fn call_float(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "float expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let num = args[0];
+    let f = match num.tag() {
+        Type::Float64 => return Ok(num),
+        Type::Float32 => num.as_float32() as f64,
+        Type::Int => num.as_int().value as f64,
+        Type::I8 => num.as_int8().value as f64,
+        Type::I16 => num.as_int16().value as f64,
+        Type::I32 => num.as_int32().value as f64,
+        Type::I64 => num.as_int64().value as f64,
+        Type::UI => num.as_uint().value as f64,
+        Type::UI8 => num.as_uint8().value as f64,
+        Type::UI16 => num.as_uint16().value as f64,
+        Type::UI32 => num.as_uint32().value as f64,
+        Type::UI64 => num.as_uint64().value as f64,
+        Type::Byte => num.as_byte().value as f64,
+        Type::Rune => num.as_rune().value as u32 as f64,
+        Type::String => {
+            let s = num.as_str().trim_matches('"');
+            match s.parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(Error::TypeError(format!(
+                        "cannot convert string {:?} to float",
+                        s
+                    )))
+                }
+            }
+        }
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to float",
+                num.tag()
+            )))
+        }
+    };
+    Ok(Float64::from_f64(f))
+}
+
+fn call_string(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "string expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let s = match obj.tag() {
+        Type::String => return Ok(obj),
+        Type::Byte => {
+            let b = obj.as_byte().value;
+            std::string::String::from(b as char)
+        }
+        Type::Rune => {
+            let r = obj.as_rune().value;
+            std::string::String::from(r)
+        }
+        Type::Slice => {
+            let slice = obj.as_slice();
+            if !slice.is_empty() && slice[0].tag() == Type::Byte {
+                let bytes: Vec<u8> = slice.iter().map(|o| o.as_byte().value).collect();
+                match std::string::String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Err(Error::TypeError(format!(
+                            "invalid UTF-8 in byte slice: {}",
+                            e
+                        )))
+                    }
+                }
+            } else {
+                format!("{}", obj)
+            }
+        }
+        _ => format!("{}", obj),
+    };
+    Ok(Object::string(s))
+}
+
+fn call_bool(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "bool expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let b = match obj.tag() {
+        Type::Bool => return Ok(obj),
+        Type::Int => obj.as_int().value != 0,
+        Type::I8 => obj.as_int8().value != 0,
+        Type::I16 => obj.as_int16().value != 0,
+        Type::I32 => obj.as_int32().value != 0,
+        Type::I64 => obj.as_int64().value != 0,
+        Type::UI => obj.as_uint().value != 0,
+        Type::UI8 => obj.as_uint8().value != 0,
+        Type::UI16 => obj.as_uint16().value != 0,
+        Type::UI32 => obj.as_uint32().value != 0,
+        Type::UI64 => obj.as_uint64().value != 0,
+        Type::Float32 => obj.as_float32() != 0.0,
+        Type::Float64 => obj.as_float64() != 0.0,
+        Type::Byte => obj.as_byte().value != 0,
+        Type::Null => false,
+        Type::String => {
+            let s = obj.as_str();
+            !s.is_empty() && s != "\"\""
+        }
+        _ => true,
+    };
+    Ok(Object::bool(b))
+}
+
+fn call_type(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "type expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let t = match obj.tag() {
+        Type::Ref => obj.as_ref().value.tag(),
+        other => other,
+    };
+    Ok(TypeValue::object(t, None))
 }
 
 fn call_sprintf(args: &[Object]) -> Result<Object, Error> {
