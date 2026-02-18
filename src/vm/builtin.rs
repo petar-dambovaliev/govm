@@ -1,11 +1,12 @@
 use super::{Error, Object};
+use crate::vm::object::channel::Channel;
 use crate::vm::object::collections::{Map, Slice};
+use crate::vm::object::float::Float64;
 use crate::vm::object::int::{Byte, Int, Int64};
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{FromString, Type};
 use crate::vm::symbols::{ContextType, DefineType};
-use crate::vm::VM;
 use bdwgc_alloc::Allocator;
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -32,6 +33,9 @@ pub enum Builtin {
     Clear,
     GcCollect,
     Sprintf,
+    Panic,
+    Recover,
+    Close,
 }
 
 impl Builtin {
@@ -42,7 +46,9 @@ impl Builtin {
             | Self::Copy
             | Self::Delete
             | Self::Clear
-            | Self::GcCollect => true,
+            | Self::GcCollect
+            | Self::Panic
+            | Self::Close => true,
             _ => false,
         }
     }
@@ -69,6 +75,9 @@ pub(crate) fn resolve(name: &str) -> Option<Builtin> {
         "clear" => Some(Builtin::Clear),
         "gccollect" => Some(Builtin::GcCollect),
         "sprintf" => Some(Builtin::Sprintf),
+        "panic" => Some(Builtin::Panic),
+        "recover" => Some(Builtin::Recover),
+        "close" => Some(Builtin::Close),
         _ => None,
     }
 }
@@ -106,11 +115,11 @@ pub fn call(
 ) -> Result<Object, Error> {
     match builtin {
         Builtin::Print => call_print(args, stdout),
-        //Builtin::Type => call_type(args, gc),
-        //Builtin::String => call_string(args, gc),
-        // Builtin::Bool => call_bool(args),
-        // Builtin::Float => call_float(args, gc),
-        // Builtin::Int => call_int(args),
+        Builtin::Type => call_type(args),
+        Builtin::String => call_string(args),
+        Builtin::Bool => call_bool(args),
+        Builtin::Float => call_float(args),
+        Builtin::Int => call_int(args),
         Builtin::Byte => call_byte(args),
         Builtin::Length => call_length(args),
         Builtin::Rune => call_rune(args),
@@ -124,8 +133,202 @@ pub fn call(
         Builtin::Clear => call_clear(args),
         Builtin::GcCollect => call_collect(args),
         Builtin::Sprintf => call_sprintf(args),
-        _ => unimplemented!("{:#?}", builtin),
+        Builtin::Panic => {
+            let value = if args.is_empty() {
+                Object::null()
+            } else {
+                args[0]
+            };
+            Err(Error::GoPanic(value))
+        }
+        Builtin::Recover => Ok(Object::null()),
+        Builtin::Close => call_close(args),
     }
+}
+
+fn call_int(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "int expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let num = args[0];
+    let i = match num.tag() {
+        Type::Int => return Ok(num),
+        Type::I8 => num.as_int8().value as isize,
+        Type::I16 => num.as_int16().value as isize,
+        Type::I32 => num.as_int32().value as isize,
+        Type::I64 => num.as_int64().value as isize,
+        Type::UI => num.as_uint().value as isize,
+        Type::UI8 => num.as_uint8().value as isize,
+        Type::UI16 => num.as_uint16().value as isize,
+        Type::UI32 => num.as_uint32().value as isize,
+        Type::UI64 => num.as_uint64().value as isize,
+        Type::Float32 => num.as_float32() as isize,
+        Type::Float64 => num.as_float64() as isize,
+        Type::Byte => num.as_byte().value as isize,
+        Type::Rune => num.as_rune().value as isize,
+        Type::Bool => {
+            if num.as_bool() {
+                1
+            } else {
+                0
+            }
+        }
+        Type::String => {
+            let s = num.as_str().trim_matches('"');
+            match s.parse::<isize>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(Error::TypeError(format!(
+                        "cannot convert string {:?} to int",
+                        s
+                    )))
+                }
+            }
+        }
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to int",
+                num.tag()
+            )))
+        }
+    };
+    Ok(Int::from_isize(i))
+}
+
+fn call_float(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "float expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let num = args[0];
+    let f = match num.tag() {
+        Type::Float64 => return Ok(num),
+        Type::Float32 => num.as_float32() as f64,
+        Type::Int => num.as_isize() as f64,
+        Type::I8 => num.as_int8().value as f64,
+        Type::I16 => num.as_int16().value as f64,
+        Type::I32 => num.as_int32().value as f64,
+        Type::I64 => num.as_int64().value as f64,
+        Type::UI => num.as_uint().value as f64,
+        Type::UI8 => num.as_uint8().value as f64,
+        Type::UI16 => num.as_uint16().value as f64,
+        Type::UI32 => num.as_uint32().value as f64,
+        Type::UI64 => num.as_uint64().value as f64,
+        Type::Byte => num.as_byte().value as f64,
+        Type::Rune => num.as_rune().value as u32 as f64,
+        Type::String => {
+            let s = num.as_str().trim_matches('"');
+            match s.parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(Error::TypeError(format!(
+                        "cannot convert string {:?} to float",
+                        s
+                    )))
+                }
+            }
+        }
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to float",
+                num.tag()
+            )))
+        }
+    };
+    Ok(Float64::from_f64(f))
+}
+
+fn call_string(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "string expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let s = match obj.tag() {
+        Type::String => return Ok(obj),
+        Type::Byte => {
+            let b = obj.as_byte().value;
+            std::string::String::from(b as char)
+        }
+        Type::Rune => {
+            let r = obj.as_rune().value;
+            std::string::String::from(r)
+        }
+        Type::Slice => {
+            let slice = obj.as_slice();
+            if !slice.is_empty() && slice[0].tag() == Type::Byte {
+                let bytes: Vec<u8> = slice.iter().map(|o| o.as_byte().value).collect();
+                match std::string::String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Err(Error::TypeError(format!(
+                            "invalid UTF-8 in byte slice: {}",
+                            e
+                        )))
+                    }
+                }
+            } else {
+                format!("{}", obj)
+            }
+        }
+        _ => format!("{}", obj),
+    };
+    Ok(Object::string(s))
+}
+
+fn call_bool(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "bool expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let b = match obj.tag() {
+        Type::Bool => return Ok(obj),
+        Type::Int => obj.as_isize() != 0,
+        Type::I8 => obj.as_int8().value != 0,
+        Type::I16 => obj.as_int16().value != 0,
+        Type::I32 => obj.as_int32().value != 0,
+        Type::I64 => obj.as_int64().value != 0,
+        Type::UI => obj.as_uint().value != 0,
+        Type::UI8 => obj.as_uint8().value != 0,
+        Type::UI16 => obj.as_uint16().value != 0,
+        Type::UI32 => obj.as_uint32().value != 0,
+        Type::UI64 => obj.as_uint64().value != 0,
+        Type::Float32 => obj.as_float32() != 0.0,
+        Type::Float64 => obj.as_float64() != 0.0,
+        Type::Byte => obj.as_byte().value != 0,
+        Type::Null => false,
+        Type::String => {
+            let s = obj.as_str();
+            !s.is_empty() && s != "\"\""
+        }
+        _ => true,
+    };
+    Ok(Object::bool(b))
+}
+
+fn call_type(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(format!(
+            "type expects 1 argument, given {}",
+            args.len()
+        )));
+    }
+    let obj = args[0];
+    let t = match obj.tag() {
+        Type::Ref => obj.as_ref().value.tag(),
+        other => other,
+    };
+    Ok(TypeValue::object(t, None))
 }
 
 fn call_sprintf(args: &[Object]) -> Result<Object, Error> {
@@ -140,7 +343,9 @@ fn call_sprintf(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_collect(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 0);
+    if args.len() != 0 {
+        return Err(Error::ArgumentError("collect expects 0 arguments".to_string()));
+    }
 
     println!("collecting");
     Allocator::force_collect();
@@ -150,7 +355,9 @@ fn call_collect(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_clear(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 1);
+    if args.len() != 1 {
+        return Err(Error::ArgumentError("clear expects 1 argument".to_string()));
+    }
 
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
@@ -160,6 +367,10 @@ fn call_clear(args: &[Object]) -> Result<Object, Error> {
             let m = unsafe { Map::read_mut(collection) };
             m.clear();
         }
+        Type::Slice => {
+            let s = collection.as_slice_mut();
+            s.clear();
+        }
         t => unimplemented!("builtin::clear: {:#?}", t),
     }
 
@@ -167,7 +378,9 @@ fn call_clear(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_delete(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(args.len(), 2);
+    if args.len() != 2 {
+        return Err(Error::ArgumentError("delete expects 2 arguments".to_string()));
+    }
 
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
@@ -179,7 +392,9 @@ fn call_delete(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_copy(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(2, args.len());
+    if args.len() != 2 {
+        return Err(Error::ArgumentError("copy expects 2 arguments".to_string()));
+    }
     let mut dst = args[0];
     let src = args[1];
 
@@ -202,7 +417,12 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
         return Ok(Object::null());
     }
 
-    assert_eq!(dst.tag(), src.tag());
+    if dst.tag() != src.tag() {
+        return Err(Error::TypeError(format!(
+            "copy: mismatched types {:?} and {:?}",
+            dst.tag(), src.tag()
+        )));
+    }
 
     match dst.tag() {
         Type::String => {
@@ -239,7 +459,9 @@ fn call_copy(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_append(args: &[Object]) -> Result<Object, Error> {
-    assert!(args.len() > 1);
+    if args.len() <= 1 {
+        return Err(Error::ArgumentError("append expects at least 2 arguments".to_string()));
+    }
     let mut iter = args.iter();
     let collection = iter.next().unwrap();
 
@@ -256,7 +478,9 @@ fn call_append(args: &[Object]) -> Result<Object, Error> {
 }
 
 fn call_cap(args: &[Object]) -> Result<Object, Error> {
-    assert_eq!(1, args.len());
+    if args.len() != 1 {
+        return Err(Error::ArgumentError("cap expects 1 argument".to_string()));
+    }
     let obj = args[0];
 
     let i = match obj.tag() {
@@ -270,7 +494,28 @@ fn call_cap(args: &[Object]) -> Result<Object, Error> {
     Ok(Int::from_isize(i as isize))
 }
 
-//slices, maps, or channels
+fn call_close(args: &[Object]) -> Result<Object, Error> {
+    if args.len() != 1 {
+        return Err(Error::ArgumentError(
+            "close expects 1 argument".to_string(),
+        ));
+    }
+    let ch_obj = args[0];
+    if ch_obj.tag() != Type::Channel {
+        return Err(Error::TypeError(format!(
+            "close: expected channel, got {}",
+            ch_obj.tag()
+        )));
+    }
+    let ch = unsafe { Channel::read_mut(&ch_obj) };
+    if ch.closed {
+        return Err(Error::GoPanic(Object::string("close of closed channel")));
+    }
+    ch.closed = true;
+    ch.sender.close();
+    Ok(Object::null())
+}
+
 fn call_make(args: &[Object]) -> Result<Object, Error> {
     let mut arg_iter = args.iter();
     let t = arg_iter.next().unwrap();
@@ -282,6 +527,16 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
     let tv = unsafe { TypeValue::read(t) };
 
     let obj = match tv.value {
+        Type::Channel => {
+            let capacity = len.map(|l| {
+                let v = l.as_isize();
+                if v < 0 {
+                    panic!("makechan: size out of range");
+                }
+                v as usize
+            }).unwrap_or(0);
+            Channel::new(capacity)
+        }
         Type::Slice => {
             let p = tv.inner_k.unwrap();
             let inner = unsafe { TypeValue::read(&p) };
@@ -289,21 +544,22 @@ fn call_make(args: &[Object]) -> Result<Object, Error> {
             let l = len.unwrap().as_isize();
 
             if l < 0 {
-                panic!("len can't be negative");
+                return Err(Error::ArgumentError("make: length cannot be negative".to_string()));
             }
 
-            let mut v = Vec::with_capacity(
-                cap.map(|a| {
+            let capacity = match cap {
+                Some(a) => {
                     let i = a.as_isize();
-
                     if i < l {
-                        panic!("len can't be greater than the cap");
+                        return Err(Error::ArgumentError(
+                            "make: length cannot be greater than capacity".to_string(),
+                        ));
                     }
-
-                    i
-                })
-                .unwrap_or(l) as usize,
-            );
+                    i as usize
+                }
+                None => l as usize,
+            };
+            let mut v = Vec::with_capacity(capacity);
 
             let def_value = match inner.value {
                 Type::String => Object::string(""),
@@ -343,7 +599,23 @@ fn call_int64(args: &[Object]) -> Result<Object, Error> {
         Type::Int => num.as_isize() as i64,
         Type::I64 => return Ok(num),
         Type::UI => num.as_uint().value as i64,
-        _ => unimplemented!(),
+        Type::I8 => num.as_int8().value as i64,
+        Type::I16 => num.as_int16().value as i64,
+        Type::I32 => num.as_int32().value as i64,
+        Type::UI8 => num.as_uint8().value as i64,
+        Type::UI16 => num.as_uint16().value as i64,
+        Type::UI32 => num.as_uint32().value as i64,
+        Type::UI64 => num.as_uint64().value as i64,
+        Type::Float32 => num.as_float32() as i64,
+        Type::Float64 => num.as_float64() as i64,
+        Type::Byte => num.as_byte().value as i64,
+        Type::Rune => num.as_rune().value as i64,
+        _ => {
+            return Err(Error::TypeError(format!(
+                "cannot convert {:?} to int64",
+                num.tag()
+            )))
+        }
     };
 
     Ok(Int64::from_i64(i))
@@ -442,8 +714,7 @@ fn call_byte(args: &[Object]) -> Result<Object, Error> {
             Ok(Byte::from_u8(byte))
         }
         Type::Int => {
-            let i = args[0].as_int().value;
-            Ok(Byte::from_u8(i as u8))
+            Ok(Byte::from_u8(args[0].as_isize() as u8))
         }
         Type::I8 => {
             let i = args[0].as_int8().value;
@@ -503,8 +774,7 @@ fn call_rune(args: &[Object]) -> Result<Object, Error> {
             Ok(Rune::from_char(r))
         }
         Type::Int => {
-            let i = args[0].as_int().value;
-            Ok(Rune::from_char(char::from_u32(i as u32).unwrap()))
+            Ok(Rune::from_char(char::from_u32(args[0].as_isize() as u32).unwrap()))
         }
         Type::I8 => {
             let i = args[0].as_int8().value;

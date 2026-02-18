@@ -4,6 +4,19 @@ use gno_rs::vm::compiler::Compiler;
 use gno_rs::vm::VM;
 
 fn fibonacci() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(|| {
+            unsafe {
+                bdwgc_alloc::Allocator::register_current_thread()
+                    .expect("failed to register GC thread");
+            }
+        })
+        .on_thread_stop(|| {
+            unsafe { bdwgc_alloc::Allocator::unregister_current_thread() }
+        })
+        .build()
+        .unwrap();
     let mut parser = Parser::from(
         r#"
         package main
@@ -26,7 +39,7 @@ fn fibonacci() {
     let code = goc.compile_ast(&f).unwrap();
 
     let mut vm = VM::new();
-    let _ = vm.run(code).unwrap();
+    let _ = rt.block_on(vm.run(code)).unwrap();
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

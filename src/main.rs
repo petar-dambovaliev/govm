@@ -1,7 +1,7 @@
 pub mod parser;
 pub mod vm;
 
-use crate::parser::{parse_dir_recursive, Parser};
+use crate::vm::compiler::bytecode::{deserialize_bytecode, serialize_bytecode};
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::module::parse_local_dependencies;
 use crate::vm::VM;
@@ -11,7 +11,7 @@ use clap::{Parser as ClapParser, Subcommand};
 use gno_rs::gomod::{add_dependency, list_dependencies, remove_dependency};
 use std::env;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 #[global_allocator]
@@ -28,11 +28,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
-    #[clap(name = "build", about = "A Go virtual machine")]
+    #[clap(name = "build", about = "Compile Go source to bytecode")]
     Build {
-        #[arg(short, long)]
-        output_assert: bool,
         source: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     #[clap(name = "run", about = "Builds and runs a Go binary")]
     Run {
@@ -66,31 +66,74 @@ enum ModSubCommand {
 fn main() {
     unsafe { Allocator::initialize() }
 
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let cli = Cli::parse();
-    //println!("{:?}", cli);
 
     match cli.action {
         SubCommand::Build {
-            output_assert,
             source,
+            output,
         } => {
-            unimplemented!("Building project from source: {:?}", source);
+            let mut src = source.clone();
+            let pkgs = parse_local_dependencies(&src).unwrap();
+
+            let mut goc = Compiler::new();
+            let main = src.clone();
+            src.pop();
+
+            let code = goc.compile(main, src, pkgs, false).unwrap();
+            let bytes = serialize_bytecode(&code);
+
+            let out_path = output.unwrap_or_else(|| {
+                let mut p = source.clone();
+                p.set_extension("govm");
+                p
+            });
+
+            let mut file = File::create(&out_path)
+                .unwrap_or_else(|e| panic!("failed to create output file {:?}: {}", out_path, e));
+            file.write_all(&bytes)
+                .unwrap_or_else(|e| panic!("failed to write bytecode: {}", e));
+
+            println!("compiled to {:?}", out_path);
         }
         SubCommand::Run {
             output_assert,
             mut binary,
         } => {
-            //println!("Running binary: {:?}", binary);
-            let pkgs = parse_local_dependencies(&binary).unwrap();
+            let is_bytecode = binary.extension().map_or(false, |ext| ext == "govm");
 
-            let mut goc = Compiler::new();
-            let main = binary.clone();
-            binary.pop();
+            let code = if is_bytecode {
+                let mut file = File::open(&binary)
+                    .unwrap_or_else(|e| panic!("failed to open {:?}: {}", binary, e));
+                let mut data = Vec::new();
+                file.read_to_end(&mut data)
+                    .unwrap_or_else(|e| panic!("failed to read {:?}: {}", binary, e));
+                deserialize_bytecode(&data)
+                    .unwrap_or_else(|e| panic!("failed to load bytecode: {}", e))
+            } else {
+                let pkgs = parse_local_dependencies(&binary).unwrap();
 
-            let code = goc.compile(main, binary, pkgs, output_assert).unwrap();
+                let mut goc = Compiler::new();
+                let main = binary.clone();
+                binary.pop();
+
+                goc.compile(main, binary, pkgs, output_assert).unwrap()
+            };
+
             let mut vm = VM::new();
-
-            vm.run(code).unwrap();
+            if let Err(e) = vm.run(code).await {
+                eprintln!("{}", vm.error_with_location(&e));
+                std::process::exit(1);
+            }
         }
         SubCommand::Mod(mod_command) => match mod_command.command {
             ModSubCommand::Init { module_name } => {

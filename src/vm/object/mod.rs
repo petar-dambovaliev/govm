@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
+pub mod channel;
 pub mod collections;
 pub mod float;
 pub mod function;
@@ -22,7 +26,6 @@ use std::alloc::{handle_alloc_error, Layout};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
-use std::ops::Shl;
 use std::string::String as RString;
 use string::String;
 
@@ -30,6 +33,7 @@ use string::String;
 // Constants for our bit manipulation
 const LOWER_TAG_BITS: usize = 3;  // Using bottom 3 bits (0-2)
 const UPPER_TAG_BITS: usize = 5;  // Using 5 bits in the higher part
+#[allow(dead_code)]
 const TOTAL_TAG_BITS: usize = LOWER_TAG_BITS + UPPER_TAG_BITS;  // 8 bits total
 
 // Masks for tag bits
@@ -46,6 +50,11 @@ const MAX_INT: isize = isize::MAX;
 #[allow(unused)]
 /// The minimum integer value we can store in a value object
 const MIN_INT: isize = isize::MIN;
+
+const SMALL_INT_BITS: usize = 56;
+const SMALL_INT_MAX: isize = (1isize << (SMALL_INT_BITS - 1)) - 1;
+const SMALL_INT_MIN: isize = -(1isize << (SMALL_INT_BITS - 1));
+const SMALL_INT_VALUE_MASK: usize = (1usize << SMALL_INT_BITS) - 1;
 
 // ARM uses 49 bits and x86-64 uses 48 bits (some newer cpus have opt-in using 57 bits)
 // we have at least 7 upper bits and 3 lower to work with
@@ -84,6 +93,8 @@ pub enum Type {
     Slice,
     Variadic,
     Alias,
+    Channel,
+    SmallInt,
 }
 
 pub fn is_builtin_const(n: &str) -> bool {
@@ -161,7 +172,7 @@ impl Object {
 
     pub(crate) fn deep_copy(&self) -> Object {
         match self.tag() {
-            Type::Int => Int::from_isize(self.as_int().value),
+            Type::Int => Object::int(self.as_isize()),
             Type::Float64 => Float64::from_f64(self.as_float64()),
             Type::Float32 => Float32::from_f32(self.as_float32()),
             Type::Interface => {
@@ -195,18 +206,29 @@ impl Object {
         Self(ptr as _)
     }
 
-    /// Returns the type of this object pointer
     #[inline(always)]
-    pub fn tag(self) -> Type {
-        // Extract both parts of the tag
+    fn raw_tag(self) -> Type {
         let lower_part = (self.0 as usize) & LOWER_MASK;
         let upper_part = ((self.0 as usize) & UPPER_MASK) >> (64 - UPPER_TAG_BITS);
-
-        // Combine them to get the full type value
         let type_value = (upper_part << LOWER_TAG_BITS) | lower_part;
+        let byte = type_value as u8;
+        assert!(
+            byte <= Type::SmallInt as u8,
+            "invalid type tag: {byte}"
+        );
+        unsafe { std::mem::transmute(byte) }
+    }
 
-        // Convert to Type enum
-        unsafe { std::mem::transmute(type_value as u8) }
+    /// Returns the type of this object pointer.
+    /// SmallInt is transparently remapped to Int.
+    #[inline(always)]
+    pub fn tag(self) -> Type {
+        let t = self.raw_tag();
+        if matches!(t, Type::SmallInt) {
+            Type::Int
+        } else {
+            t
+        }
     }
 
     pub fn is_ref(&self) -> bool {
@@ -241,10 +263,20 @@ impl Object {
         Self((val | tag) as _)
     }
 
-    /// Create a new integer value
+    /// Create a new integer value.
+    /// Small values (56-bit signed range) are stored inline; larger values are heap-allocated.
     #[inline(always)]
     pub fn int(value: isize) -> Self {
-        Int::from_isize(value)
+        if value >= SMALL_INT_MIN && value <= SMALL_INT_MAX {
+            let tag = Type::SmallInt as usize;
+            let lower_bits = tag & LOWER_MASK;
+            let upper_bits = (tag >> LOWER_TAG_BITS) << (64 - UPPER_TAG_BITS);
+            let truncated = (value as usize) & SMALL_INT_VALUE_MASK;
+            let encoded = (truncated << LOWER_TAG_BITS) & PTR_MASK;
+            Self((encoded | lower_bits | upper_bits) as _)
+        } else {
+            Int::from_isize(value)
+        }
     }
 
     #[inline(always)]
@@ -346,14 +378,6 @@ impl Object {
         value != 0
     }
 
-    /// Returns the integer value of this object pointer
-    /// Note that is up to the caller to ensure this pointer is of the correct type
-    #[inline(always)]
-    pub fn as_int(&self) -> &Int {
-        assert_eq!(Type::Int, self.tag());
-        unsafe { Int::read_mut(&self) }
-    }
-
     #[inline(always)]
     pub fn as_int8(&self) -> &Int8 {
         assert_eq!(Type::I8, self.tag());
@@ -415,15 +439,20 @@ impl Object {
     }
 
     #[inline(always)]
-    pub fn as_int_mut(&self) -> &mut Int {
-        assert_eq!(Type::Int, self.tag());
-        unsafe { Int::read_mut(&self) }
-    }
-
-    #[inline(always)]
     pub fn as_isize(&self) -> isize {
-        assert_eq!(Type::Int, self.tag());
-        unsafe { Int::read_val(&self) }
+        match self.raw_tag() {
+            Type::SmallInt => {
+                let raw = ((self.0 as usize) & PTR_MASK) >> LOWER_TAG_BITS;
+                let sign_bit = 1usize << (SMALL_INT_BITS - 1);
+                if raw & sign_bit != 0 {
+                    (raw | !SMALL_INT_VALUE_MASK) as isize
+                } else {
+                    raw as isize
+                }
+            }
+            Type::Int => unsafe { Int::read_val(self) },
+            _ => panic!("as_isize called on non-Int object: {:?}", self.tag()),
+        }
     }
 
     /// Returns the function value of this object
@@ -759,7 +788,7 @@ impl PartialEq for Object {
                 let r = other.as_complex128();
                 l.value == r.value
             }
-            Type::Float32 => unsafe { this.as_float32() == other.as_float32() },
+            Type::Float32 => this.as_float32() == other.as_float32(),
             Type::Float64 => this.as_float64() == other.as_float64(),
             Type::String => unsafe { this.as_str_unchecked() == other.as_str_unchecked() },
             Type::Type => {
@@ -779,13 +808,15 @@ impl PartialEq for Object {
             | Type::Closure
             | Type::Interface
             | Type::Slice
-            | Type::Variadic => {
+            | Type::Variadic
+            | Type::Channel => {
                 unimplemented!(
                     "Can not yet compare objects of type {} and {}",
                     this.tag(),
                     other.tag()
                 )
             }
+            Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
         }
     }
 }
@@ -809,7 +840,7 @@ impl PartialOrd for Object {
 
         match this.tag() {
             Type::Null | Type::Bool => this.0.partial_cmp(&other.0),
-            Type::Int => this.as_int().value.partial_cmp(&other.as_int().value),
+            Type::Int => this.as_isize().partial_cmp(&other.as_isize()),
             Type::I8 => this.as_int8().value.partial_cmp(&other.as_int8().value),
             Type::I16 => this.as_int16().value.partial_cmp(&other.as_int16().value),
             Type::I32 => this.as_int32().value.partial_cmp(&other.as_int32().value),
@@ -821,7 +852,7 @@ impl PartialOrd for Object {
             Type::UI32 => this.as_uint32().value.partial_cmp(&other.as_uint32().value),
             Type::UI64 => this.as_uint64().value.partial_cmp(&other.as_uint64().value),
             Type::Float64 => this.as_float64().partial_cmp(&other.as_float64()),
-            Type::Float32 => unsafe { this.as_float32().partial_cmp(&other.as_float32()) },
+            Type::Float32 => this.as_float32().partial_cmp(&other.as_float32()),
             Type::String => unsafe { this.as_str_unchecked().partial_cmp(other.as_str()) },
             Type::Complex64 | Type::Complex128 => {
                 unimplemented!()
@@ -838,9 +869,11 @@ impl PartialOrd for Object {
             | Type::Interface
             | Type::Type
             | Type::Slice
-            | Type::Variadic => {
+            | Type::Variadic
+            | Type::Channel => {
                 unimplemented!("cannot compare {}", self.tag())
             }
+            Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
         }
     }
 }
@@ -878,9 +911,8 @@ macro_rules! impl_arith {
                 Type::Float64 =>
                     Object::float64(self.as_float64() $op rhs.as_float64()),
 
-                Type::Float32 => unsafe {
-                    Object::float32(self.as_float32() $op rhs.as_float32())
-                }
+                Type::Float32 =>
+                    Object::float32(self.as_float32() $op rhs.as_float32()),
 
                 Type::String => add_strings(self, rhs),
 
@@ -1001,9 +1033,9 @@ impl Display for Object {
             Type::Alias => unreachable!(),
             Type::Null => f.write_str("nil")?,
             Type::Bool => f.write_str(if this.as_bool() { "true" } else { "false" })?,
-            Type::Float32 => unsafe { f.write_str(&this.as_float32().to_string())? },
+            Type::Float32 => f.write_str(&this.as_float32().to_string())?,
             Type::Float64 => f.write_str(&this.as_float64().to_string())?,
-            Type::Int => f.write_str(&this.as_int().value.to_string())?,
+            Type::Int => f.write_str(&this.as_isize().to_string())?,
             Type::I8 => f.write_str(&this.as_int8().value.to_string())?,
             Type::I16 => f.write_str(&this.as_int16().value.to_string())?,
             Type::I32 => f.write_str(&this.as_int32().value.to_string())?,
@@ -1127,6 +1159,11 @@ impl Display for Object {
                 }
                 f.write_char(']')?;
             }
+            Type::Channel => {
+                let ch = unsafe { channel::Channel::read(&this) };
+                write!(f, "chan(cap={})", ch.capacity)?;
+            }
+            Type::SmallInt => unreachable!("SmallInt is remapped to Int by tag()"),
         }
         Ok(())
     }
@@ -1172,6 +1209,8 @@ impl Display for Type {
             Type::Slice => "slice",
             Type::Variadic => "variadic",
             Type::Alias => "alias",
+            Type::Channel => "chan",
+            Type::SmallInt => "int",
         };
         f.write_str(str)
     }

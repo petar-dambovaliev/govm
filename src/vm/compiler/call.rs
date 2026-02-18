@@ -2,9 +2,11 @@ use crate::parser::ast::{Call, Expression, Selector};
 use crate::vm::builtin::signature_from_t;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::compiler::{make_ident_name, make_method_name};
-use crate::vm::symbols::{ContextType, DefineType};
+use crate::vm::symbols::DefineType;
+use crate::vm::Error;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum CallType {
     Func {
         name: String,
@@ -36,7 +38,7 @@ fn find_method(name: &str, methods: Vec<DefineType>) -> Option<(usize, DefineTyp
 }
 
 impl CallType {
-    pub fn from_call(pkg: &str, call: &Call, c: &mut Compiler) -> (Self, String) {
+    pub fn from_call(pkg: &str, call: &Call, c: &mut Compiler) -> Result<(Self, String), Error> {
         match call.func.as_ref() {
             Expression::Selector(sel) => {
                 if let Expression::Ident(id) = sel.x.as_ref() {
@@ -54,7 +56,7 @@ impl CallType {
                     }
                 }
 
-                let sellt = c.compile_expression(pkg, &sel.x).unwrap().strip_var();
+                let sellt = c.compile_expression(pkg, &sel.x)?.strip_var();
                 let method_name = sel.sel.name.to_string();
 
                 fn find_sel(
@@ -63,7 +65,7 @@ impl CallType {
                     sel: &Selector,
                     dt: DefineType,
                     method_name: String,
-                ) -> (CallType, String) {
+                ) -> Result<(CallType, String), Error> {
                     match dt.clone() {
                         DefineType::Ref(inner) => {
                             find_sel(c, pkg, sel, inner.strip_var(), method_name)
@@ -72,30 +74,38 @@ impl CallType {
                             let m = find_method(&method_name, methods);
 
                             match m {
-                                Some((i, m)) => (
+                                Some((i, m)) => Ok((
                                     CallType::DynamicDispatch {
                                         method_index: i,
                                         method_dt: m,
                                         iface_expr: *sel.x.clone(),
                                     },
                                     pkg.to_string(),
-                                ),
-                                None => panic!("interface method not found"),
+                                )),
+                                None => Err(Error::ReferenceError(format!(
+                                    "interface method '{}' not found",
+                                    method_name
+                                ))),
                             }
                         }
                         DefineType::Struct { name, .. } => {
-                            let (_, _, methods) = c
+                            let resolved = c
                                 .symbols
                                 .resolve(pkg, &name)
-                                .unwrap()
+                                .ok_or_else(|| {
+                                    Error::ReferenceError(format!(
+                                        "unresolved struct '{}'",
+                                        name
+                                    ))
+                                })?;
+                            let (_, _, methods) = resolved
                                 .get_type()
                                 .0
-                                .as_struct()
-                                .unwrap();
+                                .as_struct()?;
 
                             match find_method(&method_name, methods.clone()) {
                                 Some((_, m)) => {
-                                    return (
+                                    return Ok((
                                         CallType::Method {
                                             mangled_name: make_method_name(
                                                 pkg,
@@ -108,29 +118,34 @@ impl CallType {
                                             struct_dt: dt.clone(),
                                         },
                                         pkg.to_string(),
-                                    );
+                                    ));
                                 }
                                 None => {
-                                    panic!(
-                                        "method '{}' not found in struct: {} methods: {:#?}",
-                                        method_name, name, methods
-                                    )
+                                    return Err(Error::ReferenceError(format!(
+                                        "method '{}' not found in struct '{}'",
+                                        method_name, name
+                                    )));
                                 }
                             }
                         }
                         DefineType::Spec { name, .. } => {
-                            let (_, _, methods, _) = c
+                            let resolved = c
                                 .symbols
                                 .resolve(pkg, &name)
-                                .unwrap()
+                                .ok_or_else(|| {
+                                    Error::ReferenceError(format!(
+                                        "unresolved spec '{}'",
+                                        name
+                                    ))
+                                })?;
+                            let (_, _, methods, _) = resolved
                                 .get_type()
                                 .0
-                                .as_spec()
-                                .unwrap();
+                                .as_spec()?;
 
                             match find_method(&method_name, methods.clone()) {
                                 Some((_, m)) => {
-                                    return (
+                                    return Ok((
                                         CallType::Method {
                                             mangled_name: make_method_name(
                                                 pkg,
@@ -143,14 +158,14 @@ impl CallType {
                                             struct_dt: dt.clone(),
                                         },
                                         pkg.to_string(),
-                                    );
+                                    ));
                                 }
                                 None => {
                                     let n = make_method_name(pkg, dt.clone(), &method_name);
                                     match c.symbols.resolve(pkg, &n) {
                                         Some(s) => {
                                             let m = s.get_type();
-                                            return (
+                                            return Ok((
                                                 CallType::Method {
                                                     mangled_name: make_method_name(
                                                         pkg,
@@ -163,14 +178,19 @@ impl CallType {
                                                     struct_dt: dt.clone(),
                                                 },
                                                 pkg.to_string(),
-                                            );
+                                            ));
                                         }
-                                        None => panic!("cannot find function {}", method_name),
+                                        None => {
+                                            return Err(Error::ReferenceError(format!(
+                                                "cannot find function '{}'",
+                                                method_name
+                                            )));
+                                        }
                                     }
                                 }
                             }
                         }
-                        DefineType::Package { path, alias } => {
+                        DefineType::Package { path, alias: _alias } => {
                             return CallType::from_call(
                                 &path,
                                 &Call {
@@ -182,7 +202,12 @@ impl CallType {
                                 c,
                             );
                         }
-                        _ => unimplemented!("call selector: {:#?}", dt),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "unsupported call selector type: {:?}",
+                                dt
+                            )));
+                        }
                     }
                 }
 
@@ -190,35 +215,53 @@ impl CallType {
                     c,
                     pkg,
                     sel,
-                    sellt.clone().strip_var().strip_const(),
+                    sellt.clone().unwrap_to_base_type(),
                     method_name,
                 )
             }
             Expression::Ident(id) => {
-                let mut t = c
+                let resolved = c
                     .symbols
                     .resolve(pkg, &id.name)
-                    .unwrap_or_else(|| panic!("unresolved: {:#?} pkg: {}", id, pkg))
-                    .get_type()
-                    .0
-                    .strip_var();
+                    .ok_or_else(|| {
+                        Error::ReferenceError(format!(
+                            "unresolved identifier '{}' in package '{}'",
+                            id.name, pkg
+                        ))
+                    })?;
+                let mut t = resolved.get_type().0.strip_var();
 
                 if !t.is_type() {
-                    assert!(t.is_func(), "{}+{}->{:#?}", pkg, id.name, t);
+                    if !t.is_func() {
+                        return Err(Error::TypeError(format!(
+                            "expected function, got {:?} for '{}' in '{}'",
+                            t, id.name, pkg
+                        )));
+                    }
                 } else {
-                    t = signature_from_t(t).unwrap();
+                    t = signature_from_t(t).ok_or_else(|| {
+                        Error::TypeError(format!(
+                            "failed to get signature for type '{}'",
+                            id.name
+                        ))
+                    })?;
                 }
 
-                return (
+                return Ok((
                     Self::Func {
                         name: make_ident_name(pkg, &id.name),
                         func_dt: t,
                         expr: *call.func.clone(),
                     },
                     pkg.to_string(),
-                );
+                ));
             }
-            _ => unimplemented!("call: {:#?}", call),
+            _ => {
+                return Err(Error::SyntaxError(format!(
+                    "unsupported call expression: {:?}",
+                    call
+                )));
+            }
         }
     }
 }

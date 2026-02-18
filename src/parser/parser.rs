@@ -264,6 +264,7 @@ impl Parser {
             });
         }
 
+        file.line_info = self.scan.lines().clone();
         file.comments.extend(self.comments.drain(0..));
         Ok(file)
     }

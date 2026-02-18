@@ -53,11 +53,17 @@ pub enum ContextType {
     Unnamed(DefineType),
 }
 
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash, Copy)]
+pub enum Qualifier {
+    Var,
+    Const,
+    Invar,
+}
+
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub enum DefineType {
     Null,
-    Var(Box<Self>),
-    Const(Box<Self>),
+    Qualified(Qualifier, Box<Self>),
     Struct {
         name: String,
         fields: Vec<ContextType>,
@@ -97,7 +103,6 @@ pub enum DefineType {
     Ref(Box<Self>),
     Tuple(Vec<Self>),
     Type(Box<Self>, Type),
-    Invar(Box<Self>),
     //should only contain functions
     Interface {
         name: String,
@@ -110,6 +115,7 @@ pub enum DefineType {
         is_transparent: bool,
         methods: Vec<Self>,
     },
+    Channel(Box<DefineType>),
     Package {
         path: String,
         alias: String,
@@ -140,32 +146,10 @@ impl Display for DefineType {
     }
 }
 
-// impl PartialEq for DefineType {
-//     fn eq(&self, other: &Self) -> bool {
-//         match (self, other) {
-//             (DefineType::Struct { .. }, DefineType::Struct { .. }) => {
-//                 let (n1, _, _) = self.as_struct().unwrap();
-//                 let (n2, _, _) = other.as_struct().unwrap();
-//                 n1 == n2
-//             }
-//             (DefineType::Null, DefineType::Null) => true,
-//             (DefineType::Array { .. }, DefineType::Array { .. }) => {
-//                 let (ll, ldt) = self.as_array();
-//                 let (lr, rdt) = self.as_array();
-//
-//                 ll == lr && ldt == rdt
-//             }
-//             (DefineType::Int, DefineType::Int) => true,
-//             (DefineType::Float64, DefineType::Float64) => true,
-//             (DefineType::Float32, DefineType::Float32) => true,
-//             (DefineType::Slice(t1), DefineType::Slice(t2)) => t1 == t2,
-//             (DefineType::Type(dt1, t1), DefineType::Type(dt2, t2)) => dt1 == dt2 && t1 == t2,
-//             (DefineType::Map(k1, v1), DefineType::Map(k2, v2)) => k1 == k2 && v1 == v2,
-//             (DefineType::)
-//             _ => false,
-//         }
-//     }
-// }
+/// Compares two DefineTypes by their base types, ignoring wrapper layers.
+pub fn types_equal(a: &DefineType, b: &DefineType) -> bool {
+    a.unwrap_to_base_type() == b.unwrap_to_base_type()
+}
 
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
     if !t.is_integer() {
@@ -260,15 +244,7 @@ impl DefineType {
 
                 TypeValue::object_map(Type::Map, Some(k_obj), Some(v_obj))
             }
-            // DefineType::Array { len, inner_type } => Expression::TypeArray(ArrayType {
-            //     pos: (0, 0),
-            //     len: Box::new(Expression::BasicLit(BasicLit {
-            //         pos: 0,
-            //         kind: LitKind::Integer,
-            //         value: format!("{}", len),
-            //     })),
-            //     typ: Box::new(inner_type.to_expression()),
-            // }),
+            DefineType::Channel(_) => TypeValue::object(Type::Channel, None),
             _ => unimplemented!("DefineType::to_object {:#?}", self),
         }
     }
@@ -332,7 +308,7 @@ impl DefineType {
         let mut got_methods = if strct.is_struct() {
             let (name, fields, _) = strct.as_struct().unwrap();
 
-            let (_, _, mut got_methods) = c
+            let (_, _, got_methods) = c
                 .symbols
                 .resolve(pkg, &name)
                 .unwrap()
@@ -342,7 +318,7 @@ impl DefineType {
                 .unwrap();
 
             for field in fields {
-                if let ContextType::Embedded(e_name, e_t) = field {
+                if let ContextType::Embedded(_e_name, e_t) = field {
                     panic!("{:#?}", e_t);
                 }
             }
@@ -394,15 +370,15 @@ impl DefineType {
 
     pub fn is_float(&self) -> bool {
         match self {
-            Self::Float32 => true,
-            Self::Float64 => true,
+            Self::Float32 | Self::Float64 => true,
+            Self::Qualified(_, inner) => inner.is_float(),
             _ => false,
         }
     }
 
     pub fn is_const_coerceable_to(&self, other: &DefineType) -> bool {
         match self {
-            Self::Const(inner) => inner.is_integer() && other.is_float(),
+            Self::Qualified(Qualifier::Const, inner) => inner.is_integer() && other.is_float(),
             _ => false,
         }
     }
@@ -445,6 +421,7 @@ impl DefineType {
             Self::Uint16 => (u16::MIN as usize, u16::MAX as usize),
             Self::Uint32 => (u32::MIN as usize, u32::MAX as usize),
             Self::Uint64 => (u64::MIN as usize, u64::MAX as usize),
+            Self::Qualified(_, inner) => inner.integer_max_usize(),
             _ => panic!("not integer: {:#?}", self),
         }
     }
@@ -462,6 +439,7 @@ impl DefineType {
             Self::Uint16 => (u16::MIN as isize, u16::MAX as isize),
             Self::Uint32 => (u32::MIN as isize, u32::MAX as isize),
             Self::Uint64 => (u64::MIN as isize, u64::MAX as isize),
+            Self::Qualified(_, inner) => inner.integer_max_isize(),
             _ => panic!("not integer: {:#?}", self),
         }
     }
@@ -479,14 +457,12 @@ impl DefineType {
             | Self::Uint16
             | Self::Uint32
             | Self::Uint64 => true,
+            Self::Qualified(_, inner) => inner.is_integer(),
             _ => false,
         }
     }
     pub fn is_invar(&self) -> bool {
-        match &self {
-            Self::Invar(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Qualified(Qualifier::Invar, _))
     }
 
     pub fn is_interface(&self) -> bool {
@@ -511,6 +487,7 @@ impl DefineType {
             | Self::Uint64
             | Self::Float32
             | Self::Float64 => true,
+            Self::Qualified(_, inner) => inner.is_numeric(),
             _ => false,
         }
     }
@@ -545,7 +522,7 @@ impl DefineType {
                 let mut tuple = vec![];
 
                 for t in v {
-                    tuple.push(t.strip_var().strip_type());
+                    tuple.push(t.unwrap_to_base_type());
                 }
                 DefineType::Tuple(tuple)
             }
@@ -565,7 +542,7 @@ impl DefineType {
         }
     }
     pub fn strip_var(&self) -> DefineType {
-        if let Self::Var(v) = self {
+        if let Self::Qualified(Qualifier::Var, v) = self {
             *v.clone()
         } else {
             self.clone()
@@ -573,10 +550,20 @@ impl DefineType {
     }
 
     pub fn strip_const(&self) -> DefineType {
-        if let Self::Const(v) = self {
+        if let Self::Qualified(Qualifier::Const, v) = self {
             *v.clone()
         } else {
             self.clone()
+        }
+    }
+
+    /// Strips all wrapper layers (Qualified, Ref, Type) to get the base type.
+    pub fn unwrap_to_base_type(&self) -> DefineType {
+        match self {
+            Self::Qualified(_, inner)
+            | Self::Ref(inner) => inner.unwrap_to_base_type(),
+            Self::Type(inner, _) => inner.unwrap_to_base_type(),
+            other => other.clone(),
         }
     }
     pub fn strip_ret(&self) -> DefineType {
@@ -617,7 +604,7 @@ impl DefineType {
     }
     pub fn is_nullable(&self) -> bool {
         match &self {
-            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Slice { .. } => true,
+            Self::Ref(_) | Self::Func { .. } | Self::Map(_, _) | Self::Slice { .. } | Self::Channel(_) => true,
             _ => false,
         }
     }
@@ -657,10 +644,7 @@ impl DefineType {
     }
 
     pub fn is_var(&self) -> bool {
-        match &self {
-            Self::Var(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Qualified(Qualifier::Var, _))
     }
 
     pub fn is_variadic(&self) -> bool {
@@ -762,8 +746,8 @@ impl DefineType {
 
     pub fn as_var(&self) -> DefineType {
         match &self {
-            Self::Var(t) => *t.clone(),
-            _ => panic!("expected Self::Var, got {:#?}", self),
+            Self::Qualified(Qualifier::Var, t) => *t.clone(),
+            _ => panic!("expected Qualified(Var, ...), got {:#?}", self),
         }
     }
 
@@ -782,14 +766,14 @@ impl DefineType {
                 args,
                 rt,
             } => (name.clone(), recv.clone(), args.clone(), rt.clone()),
-            _ => panic!("expected Self::Var, got {:#?}", self),
+            _ => panic!("expected Self::Func, got {:#?}", self),
         }
     }
 
     pub fn as_ref(&self) -> DefineType {
         match &self {
             Self::Ref(t) => *t.clone(),
-            _ => panic!("expected Self::Var, got {:#?}", self),
+            _ => panic!("expected Self::Ref, got {:#?}", self),
         }
     }
 }

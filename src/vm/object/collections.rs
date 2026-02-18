@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::vm::object::rune::Rune;
 use crate::vm::object::structure::TypeValue;
 use crate::vm::object::{allocate, Object, Type};
@@ -94,6 +97,14 @@ impl Slice {
 
     pub(crate) fn from_slice(slice: &[Object], type_value: TypeValue) -> Object {
         Self::from_vec(slice.to_vec(), type_value)
+    }
+
+    pub(crate) fn get_is_null(ptr: &Object) -> bool {
+        unsafe { ptr.get::<Self>().is_null }
+    }
+
+    pub(crate) fn get_type_value(ptr: &Object) -> &TypeValue {
+        unsafe { &ptr.get::<Self>().type_value }
     }
 }
 

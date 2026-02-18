@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use crate::gomod::semserver;
-use chrono::Utc;
-use chrono::{DateTime, TimeZone};
+use chrono::NaiveDateTime;
+use chrono::{DateTime, TimeZone, Utc};
 use glob::Pattern;
 use lazy_regex::regex;
 use rust_decimal::prelude::*;
@@ -792,7 +794,7 @@ fn inc_decimal(decimal: &str) -> String {
 // ZeroPseudoVersion returns a pseudo-version with a zero timestamp and
 // revision, which may be used as a placeholder.
 pub fn zero_pseudo_version(major: &str) -> String {
-    pseudo_version(major, "", Utc.timestamp(0, 0), "000000000000")
+    pseudo_version(major, "", Utc.timestamp_opt(0, 0).unwrap(), "000000000000")
 }
 
 fn dec_decimal(decimal: &str) -> String {
@@ -837,7 +839,8 @@ fn is_zero_pseudo_version(v: &str) -> bool {
 fn pseudo_version_time(v: &str) -> Result<DateTime<Utc>, InvalidVersionError> {
     let (_, timestamp, _, _) = parse_pseudo_version(v)?;
 
-    Utc.datetime_from_str(&timestamp, PSEUDO_VERSION_TIMESTAMP_FORMAT)
+    NaiveDateTime::parse_from_str(&timestamp, PSEUDO_VERSION_TIMESTAMP_FORMAT)
+        .map(|ndt| ndt.and_utc())
         .map_err(|err| InvalidVersionError {
             version: v.to_string(),
             pseudo: true,
@@ -1044,7 +1047,7 @@ mod test {
             }
 
             if let Ok(tm) = pseudo_version_time(tt.1) {
-                assert_eq!(tm, Utc.timestamp(0, 0), "arg: {}", tt.1,);
+                assert_eq!(tm, Utc.timestamp_opt(0, 0).unwrap(), "arg: {}", tt.1,);
             }
         }
     }

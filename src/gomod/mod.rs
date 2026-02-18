@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod module;
 mod semserver;
 
@@ -5,21 +7,18 @@ use std::collections::HashMap;
 use std::fs;
 
 use git2::build::RepoBuilder;
-use git2::{FetchOptions, Repository};
+use git2::FetchOptions;
 use regex::Regex;
-use reqwest;
 use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
 
 pub fn remove_dependency(module_to_remove: &str) -> Result<(), Box<dyn Error>> {
     // Read the contents of the go.mod file
     let go_mod_path = "go.mod";
-    let mut go_mod_contents = fs::read_to_string(go_mod_path)?;
+    let go_mod_contents = fs::read_to_string(go_mod_path)?;
 
     // Define a regular expression to match require lines
     let re = Regex::new(r#"^\s*require\s+"([^"]+)""#)?;
@@ -56,12 +55,31 @@ pub fn remove_dependency(module_to_remove: &str) -> Result<(), Box<dyn Error>> {
 
 pub fn list_dependencies() -> Result<(), Box<dyn Error>> {
     let go_mod_contents = fs::read_to_string("go.mod")?;
-    let re = Regex::new(r#"^\s*module\s+"([^"]+)""#)?;
 
+    let mut in_require_block = false;
     for line in go_mod_contents.lines() {
-        if let Some(captures) = re.captures(line) {
-            let module_name = captures.get(1).unwrap().as_str();
-            println!("{}", module_name);
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("require (") || trimmed == "require (" {
+            in_require_block = true;
+            continue;
+        }
+        if in_require_block {
+            if trimmed == ")" {
+                in_require_block = false;
+                continue;
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                println!("{}", trimmed);
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("require ") && !trimmed.contains('(') {
+            let dep = trimmed.strip_prefix("require ").unwrap().trim();
+            if !dep.is_empty() {
+                println!("{}", dep);
+            }
         }
     }
 
@@ -90,7 +108,7 @@ pub fn add_dependency(dependency: &str) -> Result<(), String> {
             return Ok(());
         }
 
-        if let Some((idx, line)) = file_lines
+        if let Some((idx, _line)) = file_lines
             .iter()
             .enumerate()
             .find(|(_, line)| line.starts_with("module "))

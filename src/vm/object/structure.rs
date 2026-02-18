@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::vm::object::{allocate, Object, Type};
 use std::alloc::Layout;
 
@@ -48,6 +51,7 @@ pub struct Struct {
     pub(crate) name: String,
     pub values: Vec<Object>,
     pub method_dispatch: Vec<(String, usize)>,
+    pub tags: Vec<Option<String>>,
     pub is_anonymous: bool,
 }
 
@@ -64,6 +68,7 @@ impl Struct {
         name: String,
         values: Vec<Object>,
         method_dispatch: Vec<(String, usize)>,
+        tags: Vec<Option<String>>,
         is_anonymous: bool,
     ) -> Object {
         let ptr = Object::with_type(allocate(Layout::new::<Self>()), Type::Struct);
@@ -72,6 +77,7 @@ impl Struct {
         obj.is_anonymous = is_anonymous;
         init!(obj.values => values);
         init!(obj.method_dispatch => method_dispatch);
+        init!(obj.tags => tags);
         init!(obj.name => name);
         ptr
     }

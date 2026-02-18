@@ -5,15 +5,15 @@ pub mod object;
 pub mod symbols;
 
 use std::collections::{BTreeMap, VecDeque};
-//use std::default::Default;
 use std::fmt::Debug;
-use std::io::{BufWriter, Write};
-use std::io::{Cursor, Stdout};
+use std::io::BufWriter;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use tokio::sync::{Notify, RwLock};
 
-#[cfg(feature = "debug")]
-use crate::compiler::bytecode_to_human;
-use crate::vm::compiler::{bytecode_to_human, Bytecode, OpCode};
+use crate::vm::compiler::{Bytecode, OpCode, SourceMap};
+use crate::vm::object::channel::Channel;
 use crate::vm::object::collections::{Array, Map, ObjIter, Slice, Variadic};
 use crate::vm::object::float::{Float32, Float64};
 use crate::vm::object::structure::{Alias, Interface, Struct, TypeValue};
@@ -21,11 +21,7 @@ use crate::vm::object::{FromString, FromVec, Object, Type};
 
 #[derive(Copy, Clone, Debug)]
 struct Frame {
-    /// Index of the current instruction
     ip: usize,
-
-    /// Pointer to the index of the stack before function call started
-    /// This is where the VM returns its stack to after the function returns
     base_pointer: u16,
 }
 
@@ -36,68 +32,111 @@ impl Frame {
     }
 }
 
-pub struct VM {
-    stack: Vec<Object>,
-    globals: Vec<Object>,
-    frames: Vec<Frame>,
+struct DeferredCall {
+    func: Object,
+    args: Vec<Object>,
+}
+
+struct GoroutineTracker {
+    count: AtomicUsize,
+    done: Notify,
+}
+
+impl GoroutineTracker {
+    fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            done: Notify::new(),
+        }
+    }
+
+    fn spawn(&self) {
+        self.count.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
+    fn finish(&self) {
+        if self.count.fetch_sub(1, AtomicOrdering::SeqCst) == 1 {
+            self.done.notify_waiters();
+        }
+    }
+
+    async fn wait_all(&self) {
+        while self.count.load(AtomicOrdering::SeqCst) > 0 {
+            self.done.notified().await;
+        }
+    }
+}
+
+struct SharedState {
     instructions: Vec<u8>,
+    constants: Vec<Object>,
+    globals: RwLock<Vec<Object>>,
+    #[allow(dead_code)]
+    source_map: SourceMap,
+    tracker: GoroutineTracker,
+}
+
+struct Goroutine {
+    shared: Arc<SharedState>,
+    stack: Vec<Object>,
+    frames: Vec<Frame>,
     ip: usize,
     bp: u16,
     closure_ctx: Vec<Object>,
+    deferred: Vec<Vec<DeferredCall>>,
+    assert_stdout: Option<(String, BufWriter<Vec<u8>>)>,
+    panic_value: Option<Object>,
 }
 
-impl VM {
-    // #[inline]
-    // fn cur_mem(&self) -> usize {
-    //     self.heap.len()
-    // }
-    //
-    // #[inline]
-    // fn prev_mem(&self) -> usize {
-    //     self.last_gc_round_mem
-    // }
-    //
-    // #[inline]
-    // fn run_gc(&mut self) {
-    //     let percent = (self.opts.gogc * self.prev_mem() as f64) / 100.0;
-    //     let target = percent as usize + self.prev_mem();
-    //
-    //     if self.opts.min_gc < target && self.cur_mem() >= target {
-    //         dbg!(
-    //             "running GC: current memory: {} target memory: {}",
-    //             self.cur_mem(),
-    //             target
-    //         );
-    //         self.heap.clean();
-    //     }
-    // }
-
-    /// Creates a new VM with an empty stack and callframes vector
-    pub fn new() -> Self {
+impl Goroutine {
+    fn new(shared: Arc<SharedState>) -> Self {
         let mut frames = Vec::with_capacity(128);
         frames.push(Frame::new(0, 0));
 
         Self {
+            shared,
             stack: Vec::with_capacity(128),
-            globals: Vec::with_capacity(8),
             frames,
-            instructions: Vec::new(),
             ip: 0,
             bp: 0,
             closure_ctx: Vec::with_capacity(10),
+            deferred: vec![Vec::new()],
+            assert_stdout: None,
+            panic_value: None,
         }
     }
 
-    /// Get a local variable (stored on the stack)
-    /// The passed index is the relative position to the base pointer of the current callframe
-    /// Performance: Skipping the bounds check here does not yield any significant performance improvement
+    fn for_spawn(shared: Arc<SharedState>, ip: u32, args: Vec<Object>, num_locals: u32) -> Self {
+        let mut frames = Vec::with_capacity(32);
+        frames.push(Frame::new(0, 0));
+        frames.push(Frame::new(ip as usize, 0));
+
+        let mut stack = Vec::with_capacity(64);
+        for arg in &args {
+            stack.push(*arg);
+        }
+        for _ in 0..(num_locals as usize).saturating_sub(args.len()) {
+            stack.push(Object::null());
+        }
+
+        Self {
+            shared,
+            stack,
+            frames,
+            ip: ip as usize,
+            bp: 0,
+            closure_ctx: Vec::with_capacity(4),
+            deferred: vec![Vec::new()],
+            assert_stdout: None,
+            panic_value: None,
+        }
+    }
+
     #[inline(always)]
     fn get_local(&self, rel_idx: u16) -> Object {
         self.stack[self.bp as usize + rel_idx as usize]
     }
 
-    /// Store a local variable (on the stack)
-    /// The passed index is the relative position to the base pointer of the current callframe
     #[inline(always)]
     fn set_local(&mut self, rel_idx: u16, value: Object) {
         self.stack[self.bp as usize + rel_idx as usize] = value;
@@ -110,66 +149,84 @@ impl VM {
     }
 
     #[inline(always)]
-    fn copy_gl(&mut self, src_idx: u16, dst_idx: u16) {
-        self.stack[self.bp as usize + dst_idx as usize] = self.globals[src_idx as usize];
+    fn read_u8(&mut self) -> u8 {
+        let v = unsafe { *self.shared.instructions.get_unchecked(self.ip) };
+        self.ip += 1;
+        v
     }
 
     #[inline(always)]
-    fn copy_lg(&mut self, src_idx: u16, dst_idx: u16) {
-        self.globals[src_idx as usize] = self.stack[self.bp as usize + dst_idx as usize];
+    fn read_u16(&mut self) -> u16 {
+        let start = self.ip;
+        self.ip += 2;
+        let bytes = unsafe { self.shared.instructions.get_unchecked(start..self.ip) };
+        bytes[0] as u16 | (bytes[1] as u16) << 8
     }
 
     #[inline(always)]
-    fn copy_gg(&mut self, src_idx: u16, dst_idx: u16) {
-        self.globals[src_idx as usize] = self.globals[dst_idx as usize];
+    fn jump(&mut self, ip: u16) {
+        self.ip = ip as usize;
     }
 
     #[inline(always)]
-    fn swap_ll(&mut self, src_idx: u16, dst_idx: u16) {
-        self.stack.swap(src_idx as usize, dst_idx as usize);
+    fn next(&mut self) -> OpCode {
+        let byte = unsafe { *self.shared.instructions.get_unchecked(self.ip) };
+        self.ip += 1;
+        OpCode::from(byte)
     }
 
     #[inline(always)]
-    fn swap_gl(&mut self, src_idx: u16, dst_idx: u16) {
-        std::mem::swap(
-            &mut self.stack[self.bp as usize + dst_idx as usize],
-            &mut self.globals[src_idx as usize],
-        );
+    fn pop(&mut self) -> Object {
+        assert!(!self.stack.is_empty(), "VM stack underflow");
+        unsafe {
+            let new_len = self.stack.len() - 1;
+            self.stack.set_len(new_len);
+            ptr::read(self.stack.as_ptr().add(new_len))
+        }
+    }
+
+    fn pop_ref_mut(&mut self) -> &mut Object {
+        debug_assert!(!self.stack.is_empty());
+        let i = self.stack.len() - 1;
+        &mut self.stack[i]
     }
 
     #[inline(always)]
-    fn swap_lg(&mut self, src_idx: u16, dst_idx: u16) {
-        std::mem::swap(
-            &mut self.stack[self.bp as usize + dst_idx as usize],
-            &mut self.globals[src_idx as usize],
-        );
+    fn push(&mut self, obj: Object) {
+        self.stack.push(obj)
     }
 
     #[inline(always)]
-    fn swap_gg(&mut self, src_idx: u16, dst_idx: u16) {
-        self.globals.swap(src_idx as usize, dst_idx as usize);
+    fn popframe(&mut self) {
+        let frame = self.frames.pop().unwrap();
+        self.stack.truncate(frame.base_pointer as usize);
+        let frame = self.frames.last().unwrap();
+        self.ip = frame.ip;
+        self.bp = frame.base_pointer;
+    }
+
+    #[inline(always)]
+    fn pushframe(&mut self, ip: u32, base_pointer: u16) {
+        let frame = self.frames.last_mut().unwrap();
+        frame.ip = self.ip;
+        self.frames.push(Frame::new(ip as usize, base_pointer));
+        self.deferred.push(Vec::new());
+        self.ip = ip as usize;
+        self.bp = base_pointer;
     }
 
     #[inline(always)]
     fn enclosed_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let ctx = self.closure_ctx[rel_idx as usize];
-
-        let mut ptr = match ctx.tag() {
-            Type::Ref => ctx.as_ref_mut().value,
-            Type::Closure => ctx,
-            _ => panic!("not supported ptr write"),
-        };
-
-        assert_eq!(ptr.tag(), value.tag());
-
-        match ptr.tag() {
-            Type::Int => {
-                ptr.as_int_mut().value = value.as_isize();
+        let mut ctx = self.closure_ctx[rel_idx as usize];
+        match ctx.tag() {
+            Type::Ref => {
+                let r = ctx.as_ref_mut();
+                assert_eq!(r.value.tag(), value.tag());
+                r.value = value;
             }
             Type::Closure => {
-                let c = ptr.as_closure_mut();
+                let c = ctx.as_closure_mut();
                 let v = value.as_closure();
-
                 c.is_null = v.is_null;
                 c.ip = v.ip;
                 c.captured = v.captured.clone();
@@ -181,24 +238,16 @@ impl VM {
 
     #[inline(always)]
     fn local_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        let ctx = self.stack[self.bp as usize + rel_idx as usize];
-
-        let mut ptr = match ctx.tag() {
-            Type::Ref => ctx.as_ref_mut().value,
-            Type::Closure => ctx,
-            _ => panic!("not supported ptr write"),
-        };
-
-        assert_eq!(ptr.tag(), value.tag());
-
-        match ptr.tag() {
-            Type::Int => {
-                ptr.as_int_mut().value = value.as_isize();
+        let mut ctx = self.stack[self.bp as usize + rel_idx as usize];
+        match ctx.tag() {
+            Type::Ref => {
+                let r = ctx.as_ref_mut();
+                assert_eq!(r.value.tag(), value.tag());
+                r.value = value;
             }
             Type::Closure => {
-                let c = ptr.as_closure_mut();
+                let c = ctx.as_closure_mut();
                 let v = value.as_closure();
-
                 c.is_null = v.is_null;
                 c.ip = v.ip;
                 c.captured = v.captured.clone();
@@ -208,175 +257,67 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    fn global_ptr_write(&mut self, rel_idx: u16, value: Object) {
-        if self.globals[rel_idx as usize].is_null() {
-            panic!("global_ptr_write: nil pointer dereference");
-        }
-        let ctx = self.globals[rel_idx as usize];
+    fn execute_deferred<'a>(
+        &'a mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let calls = self.deferred.pop().unwrap_or_default();
+            for call in calls.into_iter().rev() {
+                let num_args = call.args.len();
+                for arg in &call.args {
+                    self.push(arg.clone());
+                }
+                let base_pointer = self.stack.len() as u16 - num_args as u16;
 
-        let mut ptr = match ctx.tag() {
-            Type::Ref => ctx.as_ref_mut().value,
-            Type::Closure => ctx,
-            _ => panic!("global_ptr_write: not supported ptr write"),
-        };
+                let (ip, num_locals) = match call.func.tag() {
+                    Type::Function => {
+                        let [ip, num_locals] = call.func.as_function();
+                        (ip, num_locals)
+                    }
+                    Type::Closure => {
+                        self.closure_ctx.push(call.func);
+                        let closure = call.func.as_closure();
+                        (closure.ip, closure.num_locals as u32)
+                    }
+                    _ => {
+                        return Err(Error::TypeError(format!(
+                            "deferred call is not a function: {:?}",
+                            call.func.tag()
+                        )));
+                    }
+                };
 
-        assert_eq!(ptr.tag(), value.tag());
+                for _ in 0..num_locals - num_args as u32 {
+                    self.push(Object::null());
+                }
 
-        match ptr.tag() {
-            Type::Int => {
-                ptr.as_int_mut().value = value.as_isize();
+                self.pushframe(ip, base_pointer);
+                match self.execute_loop_inner(false).await {
+                    Ok(_) => {}
+                    Err(Error::GoPanic(v)) => {
+                        self.panic_value = Some(v);
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Type::Closure => {
-                let c = ptr.as_closure_mut();
-                let v = value.as_closure();
-
-                c.is_null = v.is_null;
-                c.ip = v.ip;
-                c.captured = v.captured.clone();
-                c.num_locals = v.num_locals;
-            }
-            _ => panic!("global_ptr_write: not supported ptr write"),
-        }
+            Ok(())
+        })
     }
 
-    /// Reads a u16 value from the current position in the instructions array
-    #[inline(always)]
-    fn read_u8(&mut self) -> u8 {
-        let v = unsafe { *self.instructions.get_unchecked(self.ip) };
-        self.ip += 1;
-        v
+    fn execute_loop<'a>(
+        &'a mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Object, Error>> + Send + 'a>>
+    {
+        self.execute_loop_inner(true)
     }
 
-    /// Reads a u16 value from the current position in the instructions array
-    #[inline(always)]
-    fn read_u16(&mut self) -> u16 {
-        let start = self.ip;
-        self.ip += 2;
-        let bytes = unsafe { self.instructions.get_unchecked(start..self.ip) };
-        bytes[0] as u16 | (bytes[1] as u16) << 8
-    }
-
-    /// Sets the instruction pointer to the given value
-    #[inline(always)]
-    fn jump(&mut self, ip: u16) {
-        self.ip = ip as usize;
-    }
-
-    /// Reads the next OpCode from the instructions vector
-    /// This function still accounts for 25-35% of runtime right now...
-    #[inline(always)]
-    fn next(&mut self) -> OpCode {
-        // Safety: if compiler did its job correctly, IP will always be in bounds
-        // Performance: skipping the bounds check yields a 22% performance improvement
-        let byte = unsafe { *self.instructions.get_unchecked(self.ip) };
-        self.ip += 1;
-        OpCode::from(byte)
-    }
-
-    #[allow(unused)]
-    #[inline(always)]
-    fn peek_next(&self) -> OpCode {
-        // Safety: if compiler did its job correctly, IP will always be in bounds
-        // Performance: skipping the bounds check yields a 22% performance improvement
-        let byte = unsafe { *self.instructions.get_unchecked(self.ip) };
-        OpCode::from(byte)
-    }
-
-    #[allow(unused)]
-    fn peak_instruction(&self) -> Option<OpCode> {
-        self.instructions.get(self.ip + 1).map(|a| OpCode::from(*a))
-    }
-
-    #[allow(unused)]
-    fn ignore_next_instruction(&mut self) {
-        let new_ip = self.ip + 1;
-        if self.instructions.len() < new_ip {
-            self.ip = new_ip;
-        }
-    }
-
-    /// Pop an object off the stack
-    /// This is like `Vec::pop`, but without checking if it's empty first.
-    /// Performance: -25% over a regular call to `Vec::pop()`
-    #[inline(always)]
-    fn pop(&mut self) -> Object {
-        debug_assert!(!self.stack.is_empty());
-
-        // Safety: if the compiler and VM are implemented correctly, the stack will never be empty
-        unsafe {
-            let new_len = self.stack.len() - 1;
-            self.stack.set_len(new_len);
-            ptr::read(self.stack.as_ptr().add(new_len))
-        }
-    }
-
-    fn pop_ref_mut(&mut self) -> &mut Object {
-        debug_assert!(!self.stack.is_empty());
-
-        let i = self.stack.len() - 1;
-        &mut self.stack[i]
-    }
-
-    /// Push a new object on the stack
-    #[inline(always)]
-    fn push(&mut self, obj: Object) {
-        self.stack.push(obj)
-    }
-
-    /// Pop a callframe and return IP to the IP of the last callframe
-    /// This also truncates the stack back to SP from when this frame was pushed
-    #[inline(always)]
-    fn popframe(&mut self) {
-        // pop frame and return stack to frame's base pointer
-        let frame = self.frames.pop().unwrap();
-        self.stack.truncate(frame.base_pointer as usize);
-
-        // copy base pointer and instruction pointer out of new current frame
-        // this yields an enormous performance improvement
-        let frame = self.frames.last().unwrap();
-        self.ip = frame.ip;
-        self.bp = frame.base_pointer;
-    }
-
-    /// Push new callframe with the given IP and Base Pointer
-    #[inline(always)]
-    fn pushframe(&mut self, ip: u32, base_pointer: u16) {
-        // store current IP into the frame that we're leaving
-        // so we can return to it later
-        let frame = self.frames.last_mut().unwrap();
-        frame.ip = self.ip;
-
-        // push new frame and copy over IP and BP
-        // this somehow yields an enormous performance improvent
-        self.frames.push(Frame::new(ip as usize, base_pointer));
-        self.ip = ip as usize;
-        self.bp = base_pointer;
-    }
-
-    /// Executes the given Bytecode inside the context of this VM
-    pub fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
-        #[cfg(feature = "debug")]
-        {
-            println!("Bytecode (raw)= \n{:?}", &code.instructions);
-            print!(
-                "Bytecode (human)= {}\n",
-                bytecode_to_human(&code.instructions, true)
-            );
-            println!("{:16}= {:?}", "Constants", code.constants);
-            println!("{:16}= {:?}", "Frames", self.frames);
-        }
-
-        // reset some state
-        let mut assert_stdout = code.assert_stdout;
-        self.instructions = code.instructions;
-        self.ip = 0;
-        self.bp = 0;
-        self.frames[0].ip = 0;
-        self.frames[0].base_pointer = 0;
-
-        // Keep your friends close
-        let constants = code.constants;
+    fn execute_loop_inner<'a>(
+        &'a mut self,
+        check_panic: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Object, Error>> + Send + 'a>>
+    {
+        Box::pin(async move {
+        let initial_depth = self.frames.len();
         let mut final_result = Object::null();
 
         macro_rules! impl_binary_op_method {
@@ -393,77 +334,44 @@ impl VM {
                 let local_idx = self.read_u16();
                 let left = self.get_local(local_idx);
                 let constant_idx = self.read_u16();
-                let right = constants[constant_idx as usize];
-                //println!("local: {:#?} const: {:#?}", local_idx, constant_idx);
+                let right = self.shared.constants[constant_idx as usize];
                 let result = left.$op(right)?;
                 self.push(result);
             }};
         }
 
-        //#[cfg(feature = "debug")]
-        //let mut debug_pause = 0;
-
-        //#[cfg(feature = "debug")]
-        // Buffer used to capture input from stdin during stepped debugging
-        //let mut buffer = String::new();
         loop {
-            //#[cfg(feature = "debug")]
-            // {
-            //     println!(
-            //         "{:16}= {}/{}: {}",
-            //         "Instruction",
-            //         self.ip,
-            //         self.instructions.len() - 1,
-            //         // This prints the OpCode along with all of its operand values (in decimal form)
-            //         bytecode_to_human(&self.instructions[self.ip..], false)
-            //             .split(" ")
-            //             .next()
-            //             .unwrap()
-            //     );
-            //     print!("{:16}= [", "Globals");
-            //     for (i, v) in self.globals.iter().enumerate() {
-            //         print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
-            //     }
-            //     println!("]");
-            //     print!("{:16}= [", "Stack");
-            //     for (i, v) in self.stack.iter().enumerate() {
-            //         print!("{}{}: {:?}", if i > 0 { ", " } else { "" }, i, v)
-            //     }
-            //     println!("]");
-            //
-            //     if debug_pause == 0 {
-            //         print!("{} ", ">".repeat(40));
-            //         std::io::stdout().flush().unwrap();
-            //         buffer.clear();
-            //         std::io::stdin().read_line(&mut buffer).unwrap();
-            //         debug_pause = buffer.trim().parse().unwrap_or(1) - 1;
-            //     } else {
-            //         println!("{} ", ">".repeat(40));
-            //         debug_pause -= 1;
-            //     }
-            // }
-            //println!("{:#?}--{:#?}", self.peek_next(), self.stack);
-            //println!("{:#?}", self.stack);
-
-            // println!(
-            //     "instr=>{:#?} const6=>{}",
-            //     self.peek_next(),
-            //     constants[7].as_isize()
-            // );
+            if check_panic && self.panic_value.is_some() {
+                self.execute_deferred().await?;
+                if self.panic_value.is_none() {
+                    self.popframe();
+                    self.push(Object::null());
+                    self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(Object::null());
+                    }
+                    continue;
+                }
+                self.deferred.pop();
+                self.popframe();
+                self.closure_ctx.pop();
+                if self.frames.len() < initial_depth {
+                    return Err(Error::GoPanic(self.panic_value.take().unwrap()));
+                }
+                continue;
+            }
             match self.next() {
                 OpCode::CastToAlias => {
                     let alias_id = self.read_u16();
                     let value = self.pop();
-                    let c = self.globals[alias_id as usize];
+                    let c = self.shared.globals.try_read().unwrap()[alias_id as usize];
                     if c.tag() != Type::Alias {
                         panic!(
-                            "expected alias: got {:#?} globals: {:#?} id: {:#?}",
-                            c, self.globals, alias_id
+                            "expected alias: got {:#?} id: {:#?}",
+                            c, alias_id
                         );
                     }
-
                     let alias = unsafe { Alias::read(&c) };
-
                     self.push(Alias::object(
                         alias.name.clone(),
                         value,
@@ -474,48 +382,67 @@ impl VM {
                 OpCode::CastToFloat64 => {
                     let i = self.read_u8();
                     let len = self.stack.len();
-
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f64 = match n.tag() {
-                        Type::Int => {
-                            let i = n.as_int();
-                            i.value as f64
+                        Type::Int => n.as_isize() as f64,
+                        Type::I8 => n.as_int8().value as f64,
+                        Type::I16 => n.as_int16().value as f64,
+                        Type::I32 => n.as_int32().value as f64,
+                        Type::I64 => n.as_int64().value as f64,
+                        Type::UI => n.as_uint().value as f64,
+                        Type::UI8 => n.as_uint8().value as f64,
+                        Type::UI16 => n.as_uint16().value as f64,
+                        Type::UI32 => n.as_uint32().value as f64,
+                        Type::UI64 => n.as_uint64().value as f64,
+                        Type::Float32 => n.as_float32() as f64,
+                        Type::Float64 => return Ok(final_result),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "cannot cast {:?} to float64",
+                                n.tag()
+                            )))
                         }
-                        _ => unimplemented!(),
                     };
-
-                    *n = Float64::from_f64(f.clone());
+                    *n = Float64::from_f64(f);
                 }
                 OpCode::CastToFloat32 => {
                     let i = self.read_u8();
                     let len = self.stack.len();
                     let n = &mut self.stack[len - 1 - i as usize];
                     let f: f32 = match n.tag() {
-                        Type::Int => {
-                            let i = n.as_int();
-                            i.value as f32
+                        Type::Int => n.as_isize() as f32,
+                        Type::I8 => n.as_int8().value as f32,
+                        Type::I16 => n.as_int16().value as f32,
+                        Type::I32 => n.as_int32().value as f32,
+                        Type::I64 => n.as_int64().value as f32,
+                        Type::UI => n.as_uint().value as f32,
+                        Type::UI8 => n.as_uint8().value as f32,
+                        Type::UI16 => n.as_uint16().value as f32,
+                        Type::UI32 => n.as_uint32().value as f32,
+                        Type::UI64 => n.as_uint64().value as f32,
+                        Type::Float64 => n.as_float64() as f32,
+                        Type::Float32 => return Ok(final_result),
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "cannot cast {:?} to float32",
+                                n.tag()
+                            )))
                         }
-                        _ => unimplemented!(),
                     };
-
                     *n = Float32::from_f32(f);
                 }
                 OpCode::TypedNull => {
                     let num = self.read_u16() as usize;
                     let _p = self.pop();
-                    //println!("popped: {:#?}", p);
-                    let c = constants[num];
-
+                    let c = self.shared.constants[num];
                     self.push(c.typed_null());
                 }
                 OpCode::Variadic => {
                     let num = self.read_u16() as usize;
-
                     let mut args = VecDeque::with_capacity(num);
                     for _ in 0..num {
                         args.push_front(self.pop());
                     }
-
                     if num == 1 {
                         match args[0].tag() {
                             Type::Slice => {
@@ -526,7 +453,13 @@ impl VM {
                                 let arr = unsafe { Array::read(&args[0]) };
                                 self.push(Variadic::from_vec(arr.clone()));
                             }
-                            _ => unimplemented!(),
+                            Type::Variadic => {
+                                self.push(args[0]);
+                            }
+                            _ => {
+                                let vec: Vec<Object> = Vec::from(args);
+                                self.push(Variadic::from_vec(vec));
+                            }
                         }
                     } else {
                         let vec: Vec<Object> = Vec::from(args);
@@ -536,9 +469,7 @@ impl VM {
                 OpCode::Slice => {
                     let num = self.read_u16();
                     let ctv_id = self.read_u16();
-
-                    let ctv = constants[ctv_id as usize].as_type_value().clone();
-
+                    let ctv = self.shared.constants[ctv_id as usize].as_type_value().clone();
                     match num {
                         0 => {
                             let slice = self.pop();
@@ -547,16 +478,24 @@ impl VM {
                         1 => {
                             let start = self.pop();
                             let slice = self.pop();
+                            let start_val = start.as_isize();
+                            if start_val < 0 {
+                                return Err(Error::IndexError("slice index out of bounds".to_string()));
+                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()[start.as_isize() as usize..],
+                                &slice.as_slice()[start_val as usize..],
                                 ctv,
                             ));
                         }
                         2 => {
                             let end = self.pop();
                             let slice = self.pop();
+                            let end_val = end.as_isize();
+                            if end_val < 0 {
+                                return Err(Error::IndexError("slice index out of bounds".to_string()));
+                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()[..end.as_isize() as usize],
+                                &slice.as_slice()[..end_val as usize],
                                 ctv,
                             ));
                         }
@@ -564,9 +503,13 @@ impl VM {
                             let end = self.pop();
                             let start = self.pop();
                             let slice = self.pop();
+                            let start_val = start.as_isize();
+                            let end_val = end.as_isize();
+                            if start_val < 0 || end_val < 0 {
+                                return Err(Error::IndexError("slice index out of bounds".to_string()));
+                            }
                             self.push(Slice::from_slice(
-                                &slice.as_slice()
-                                    [start.as_isize() as usize..end.as_isize() as usize],
+                                &slice.as_slice()[start_val as usize..end_val as usize],
                                 ctv,
                             ));
                         }
@@ -576,28 +519,23 @@ impl VM {
                 OpCode::IncCaptured => {
                     let id = self.read_u16();
                     let closure = self.closure_ctx.last_mut().unwrap().as_closure_mut();
-
                     let val = unsafe { closure.captured.get_unchecked_mut(id as usize) };
-                    let new_val = val.as_int_mut();
-                    new_val.value += 1;
+                    *val = Object::int(val.as_isize() + 1);
                 }
                 OpCode::IncLocal => {
                     let id = self.read_u16();
-                    //println!("{:#?}-{:#?}-{:#?}", id, self.bp, self.stack);
                     let val = &mut self.stack[self.bp as usize + id as usize];
-                    let new_val = val.as_int_mut();
-                    new_val.value += 1;
+                    *val = Object::int(val.as_isize() + 1);
                 }
                 OpCode::IncGlobal => {
                     let id = self.read_u16();
-                    let val = &mut self.globals[self.bp as usize + id as usize];
-                    let new_val = val.as_int_mut();
-                    new_val.value += 1;
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    let val = &mut globals[id as usize];
+                    *val = Object::int(val.as_isize() + 1);
                 }
                 OpCode::SetDefault => {
                     let def = self.pop();
                     let value = self.pop();
-
                     if def.tag() == value.tag() {
                         self.push(value);
                     } else {
@@ -607,20 +545,17 @@ impl VM {
                 OpCode::PanicIfFalse => {
                     let val = self.pop();
                     let b = val.as_bool();
-
                     if !b {
-                        panic!("OpCode::PanicIfFalse: got false");
+                        self.panic_value = Some(Object::string("assertion failed"));
                     }
                 }
                 OpCode::TypeCmp => {
                     let left = self.pop();
                     let right = self.pop();
-
                     match (left.tag(), right.tag()) {
                         (Type::Interface, Type::Interface) => {
                             let left_i = unsafe { Interface::read(&left) };
                             let right_i = unsafe { Interface::read(&right) };
-
                             self.push(Object::bool(
                                 left.tag() == right.tag() && left_i.name == right_i.name,
                             ));
@@ -628,19 +563,16 @@ impl VM {
                         (Type::Struct, Type::Struct) => {
                             let left_i = unsafe { Struct::read(&left) };
                             let right_i = unsafe { Struct::read(&right) };
-
                             self.push(Object::bool(
                                 left.tag() == right.tag() && left_i.name == right_i.name,
                             ));
                         }
                         (Type::Type, _) => {
                             let left_i = unsafe { TypeValue::read(&left) };
-
                             self.push(Object::bool(left_i.value == right.tag()));
                         }
                         (_, Type::Type) => {
                             let right_i = unsafe { TypeValue::read(&right) };
-
                             self.push(Object::bool(right_i.value == left.tag()));
                         }
                         _ => {
@@ -649,34 +581,29 @@ impl VM {
                     };
                 }
                 OpCode::TypeOf => {
-                    unimplemented!()
-                    // let value = self.pop();
-                    //
-                    // if value.is_ref() {}
-                    //
-                    // self.push(TypeValue::object(value.tag()))
+                    let value = self.pop();
+                    let tag = if value.tag() == Type::Ref {
+                        value.as_ref().value.tag()
+                    } else {
+                        value.tag()
+                    };
+                    self.push(TypeValue::object(tag, None));
                 }
                 OpCode::Downcast => {
                     let value = self.pop();
-                    //println!("{}", value);
                     let iface = unsafe { Interface::read(&value) };
-                    //println!("{}", rref);
                     self.push(iface.value);
                 }
                 OpCode::DynamicDispatch => {
                     let num_args = self.read_u16();
                     let method_id = self.read_u16();
-
                     let value = self.pop();
                     let iface = unsafe { Interface::read(&value) };
                     let method_name = &iface.methods[method_id as usize];
-
                     let strct = iface.value.as_struct();
-
                     for (name, ip) in &strct.method_dispatch {
                         if method_name == name {
                             let base_pointer = self.stack.len() as u16 - num_args;
-                            //println!("base_pointer: {:#?}", name);
                             self.pushframe(*ip as u32, base_pointer);
                             break;
                         }
@@ -685,33 +612,26 @@ impl VM {
                 OpCode::Upcast => {
                     let iface_id = self.read_u16();
                     let value = self.pop();
-                    let c = self.globals[iface_id as usize];
+                    let c = self.shared.globals.try_read().unwrap()[iface_id as usize];
                     if c.tag() != Type::Interface {
                         panic!(
-                            "expected interface: got {:#?} globals: {:#?} id: {:#?}",
-                            c, self.globals, iface_id
+                            "expected interface: got {:#?} id: {:#?}",
+                            c, iface_id
                         );
                     }
-
                     let v = if value.is_ref() {
                         value.as_ref().value
                     } else {
                         value
                     };
-
                     let interface = unsafe { Interface::read(&c) };
                     let iface =
                         Interface::object(interface.name.clone(), interface.methods.clone(), v);
-
                     self.push(iface);
                 }
                 OpCode::Const => {
                     let idx = self.read_u16();
-                    let value = constants[idx as usize];
-                    // if idx == 8 {
-                    //     println!("const: {:#?} tag: {:#?}", value, value.as_ptr());
-                    // }
-                    //println!("const: {:#?} tag: {:#?}", value, value.tag());
+                    let value = self.shared.constants[idx as usize];
                     self.push(value.deep_copy());
                 }
                 OpCode::Deref => {
@@ -723,52 +643,32 @@ impl VM {
                     let idx = self.read_u16();
                     let value = self.pop();
                     let closure = self.pop_ref_mut().as_closure_mut();
-
                     let c = unsafe { closure.captured.get_unchecked_mut(idx as usize) };
-                    //println!("propagate: {:#?}", value.as_ptr());
                     *c = value;
                 }
                 OpCode::SetGlobal => {
                     let idx = self.read_u16() as usize;
-                    //println!("SetGlobal-before: {:#?}", constants);
                     let value = self.pop();
-
-                    while self.globals.len() <= idx {
-                        self.globals.push(Object::null());
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    while globals.len() <= idx {
+                        globals.push(Object::null());
                     }
-
-                    self.globals[idx] = value;
-                    //println!("SetGlobal-after: id {:#?} => value {:#?}", idx, value);
+                    globals[idx] = value;
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_u16();
-                    //println!("GetGlobal: {:#?} id: {}", self.globals, idx);
-                    let value = self.globals[idx as usize];
+                    let value = self.shared.globals.try_read().unwrap()[idx as usize];
                     self.push(value);
-                    //println!("GetGlobal-after: {:#?}", self.stack);
                 }
                 OpCode::SetLocal => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    // if idx == 0 {
-                    //     println!("setlocal: {:#?}", value);
-                    // }
-                    // println!(
-                    //     "setlocal: {:#?} to {:#?} {:#?}",
-                    //     idx + self.bp,
-                    //     value,
-                    //     value.as_ptr()
-                    // );
-                    //println!("id: {:#?} bp: {:#?}", idx, self.bp);
                     self.set_local(idx, value.clone());
                 }
                 OpCode::GetLocal => {
                     let idx = self.read_u16();
-
                     let value = self.get_local(idx);
-                    //
                     self.push(value);
-                    //println!("GetLocal-after: {:#?}", self.stack);
                 }
                 OpCode::SetCaptured => {
                     let idx = self.read_u16();
@@ -780,7 +680,6 @@ impl VM {
                 OpCode::GetCaptured => {
                     let idx = self.read_u16();
                     let closure = self.closure_ctx.last().unwrap().as_closure();
-
                     let c = unsafe { closure.captured.get_unchecked(idx as usize) };
                     self.push(c.clone());
                 }
@@ -797,77 +696,95 @@ impl VM {
                 OpCode::GlobalPtrWrite => {
                     let idx = self.read_u16();
                     let value = self.pop();
-                    while self.globals.len() <= idx as usize {
-                        self.globals.push(Object::null());
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    while globals.len() <= idx as usize {
+                        globals.push(Object::null());
                     }
-                    self.global_ptr_write(idx, value);
+                    let mut ctx = globals[idx as usize];
+                    if ctx.is_null() {
+                        panic!("global_ptr_write: nil pointer dereference");
+                    }
+                    match ctx.tag() {
+                        Type::Ref => {
+                            let r = ctx.as_ref_mut();
+                            assert_eq!(r.value.tag(), value.tag());
+                            r.value = value;
+                        }
+                        Type::Closure => {
+                            let c = ctx.as_closure_mut();
+                            let v = value.as_closure();
+                            c.is_null = v.is_null;
+                            c.ip = v.ip;
+                            c.captured = v.captured.clone();
+                            c.num_locals = v.num_locals;
+                        }
+                        _ => panic!("global_ptr_write: not supported ptr write"),
+                    }
                 }
                 OpCode::CopyGG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.copy_gg(src, dst);
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    globals[src as usize] = globals[dst as usize];
                 }
                 OpCode::CopyLG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.copy_lg(src, dst);
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    globals[src as usize] = self.stack[self.bp as usize + dst as usize];
                 }
                 OpCode::CopyGL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.copy_gl(src, dst);
+                    let globals = self.shared.globals.try_read().unwrap();
+                    self.stack[self.bp as usize + dst as usize] = globals[src as usize];
                 }
                 OpCode::CopyLL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
                     self.copy_ll(src, dst);
                 }
                 OpCode::SwapGG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.swap_gg(src, dst);
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    globals.swap(src as usize, dst as usize);
                 }
                 OpCode::SwapLG => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.swap_lg(src, dst);
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    std::mem::swap(
+                        &mut self.stack[self.bp as usize + dst as usize],
+                        &mut globals[src as usize],
+                    );
                 }
                 OpCode::SwapGL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.swap_gl(src, dst);
+                    let mut globals = self.shared.globals.try_write().unwrap();
+                    std::mem::swap(
+                        &mut self.stack[self.bp as usize + dst as usize],
+                        &mut globals[src as usize],
+                    );
                 }
                 OpCode::SwapLL => {
                     let src = self.read_u16();
                     let dst = self.read_u16();
-
-                    self.swap_ll(src, dst);
+                    self.stack.swap(src as usize, dst as usize);
                 }
                 OpCode::Range => {
                     let key_idx = self.read_u16();
                     let value_idx = self.read_u16();
-
                     let mut obj = self.pop();
-
                     let iter = obj.as_iter();
                     let (k, v) = iter.next();
-
                     self.set_local(key_idx, k);
                     self.set_local(value_idx, v);
                 }
                 OpCode::Jump => {
                     let pos = self.read_u16();
                     self.jump(pos);
-
-                    // collect garbage on every jump instruction
-                    // gc.run(&[&self.stack, &constants, &self.globals, &[final_result]]);
                 }
                 OpCode::JumpIfFalse => {
                     let condition = self.pop();
@@ -877,16 +794,13 @@ impl VM {
                             condition, self.stack
                         )));
                     }
-
                     let pos = self.read_u16();
                     if !condition.as_bool() {
-                        //panic!("{:#?}", self.stack);
                         self.jump(pos);
                     }
                 }
                 OpCode::Pop => {
                     final_result = self.pop();
-                    //println!("pop: {:#?}", final_result);
                 }
                 OpCode::Null => {
                     self.push(Object::null());
@@ -905,7 +819,6 @@ impl VM {
                     let result = left.div(right)?;
                     self.push(result);
                 }
-                //impl_binary_op_method!(div),
                 OpCode::Multiply => impl_binary_op_method!(mul),
                 OpCode::Gt => impl_binary_op_method!(gt),
                 OpCode::Gte => impl_binary_op_method!(gte),
@@ -935,8 +848,8 @@ impl VM {
                 OpCode::Negate => {
                     let left = self.pop();
                     let result = match left.tag() {
-                        Type::Float64 => unsafe { Object::float64(-left.as_float64()) },
-                        Type::Float32 => unsafe { Object::float32(-left.as_float32()) },
+                        Type::Float64 => Object::float64(-left.as_float64()),
+                        Type::Float32 => Object::float32(-left.as_float32()),
                         Type::Int => Object::int(-left.as_isize()),
                         _ => {
                             return Err(Error::TypeError(format!(
@@ -949,10 +862,8 @@ impl VM {
                 }
                 OpCode::Call => {
                     let num_args = self.read_u8();
-                    //println!("CALL");
                     let base_pointer = self.stack.len() as u16 - 1 - num_args as u16;
                     let obj = self.pop();
-
                     let (ip, num_locals) = match obj.tag() {
                         Type::Function => {
                             let [ip, num_locals] = obj.as_function();
@@ -962,75 +873,85 @@ impl VM {
                             self.closure_ctx.push(obj);
                             let closure = obj.as_closure();
                             if closure.is_null {
-                                panic!("closure is nil: {:#?}", obj);
+                                return Err(Error::RuntimeError("closure is nil".to_string()));
                             }
                             (closure.ip, closure.num_locals as u32)
                         }
                         _ => {
-                            //panic!("ins: {:#?} - {:#?}", self.peek_next(), self.stack);
                             return Err(Error::TypeError(format!(
                                 "expected a function|closure, got: {:#?}",
                                 obj.tag()
                             )));
                         }
                     };
-
-                    // Make room on the stack for any local variables defined inside this function
                     for _ in 0..num_locals - num_args as u32 {
                         self.push(Object::null());
                     }
-
                     self.pushframe(ip, base_pointer);
                 }
+                OpCode::Defer => {
+                    let num_args = self.read_u8();
+                    let func = self.pop();
+                    let mut args = Vec::with_capacity(num_args as usize);
+                    for _ in 0..num_args {
+                        args.push(self.pop());
+                    }
+                    args.reverse();
+                    self.deferred
+                        .last_mut()
+                        .unwrap()
+                        .push(DeferredCall { func, args });
+                }
                 OpCode::CallBuiltin => {
-                    //panic!("{:#?}", self.stack);
-                    //todo
-                    //this doesn't need to move memory
-                    // change builtin call to accept a reversed iterator
-                    // also take all arguments from the stack in 1 op
-
-                    let builtin = self.read_u8();
-                    //println!("builtin: {:#?}", self.stack);
+                    let builtin_id = self.read_u8();
                     let num_args = self.read_u8() as usize;
                     let mut args = Vec::with_capacity(num_args);
                     for _ in 0..num_args {
                         args.push(self.pop());
                     }
                     args.reverse();
-
-                    let builtin = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin) };
-                    let result =
-                        builtin::call(builtin, &args, assert_stdout.as_mut().map(|a| &mut a.1))?;
-                    self.push(result);
+                    let b = unsafe { std::mem::transmute::<u8, builtin::Builtin>(builtin_id) };
+                    if matches!(b, builtin::Builtin::Recover) {
+                        let val = self.panic_value.take().unwrap_or(Object::null());
+                        self.push(val);
+                    } else {
+                        match builtin::call(
+                            b,
+                            &args,
+                            self.assert_stdout.as_mut().map(|a| &mut a.1),
+                        ) {
+                            Ok(result) => self.push(result),
+                            Err(Error::GoPanic(v)) => {
+                                self.panic_value = Some(v);
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
                 }
                 OpCode::ReturnValue => {
                     let num_r = self.read_u16();
-
                     let mut res = Vec::with_capacity(num_r as usize);
-
                     for _ in 0..num_r {
                         res.push(self.pop());
                     }
-                    //println!("{:#?}", res);
-                    //println!("before popframe: {:#?}", self.stack);
-
+                    self.execute_deferred().await?;
                     self.popframe();
-
-                    //println!("after popframe: {:#?}", self.stack);
-
-                    //println!("res: {:#?}", num_r);
-
                     for re in res.iter().rev() {
                         self.push(re.clone());
                     }
-
                     self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(final_result);
+                    }
                 }
                 OpCode::Return => {
-                    //println!("return");
+                    self.execute_deferred().await?;
                     self.popframe();
                     self.push(Object::null());
                     self.closure_ctx.pop();
+                    if self.frames.len() < initial_depth {
+                        return Ok(Object::null());
+                    }
                 }
                 OpCode::GtLocalConst => impl_binary_const_local_op_method!(gt),
                 OpCode::GteLocalConst => impl_binary_const_local_op_method!(gte),
@@ -1045,23 +966,18 @@ impl VM {
                 OpCode::ModuloLocalConst => impl_binary_const_local_op_method!(rem),
                 OpCode::Ref => {
                     let val = self.pop();
-                    /// here is the bug
                     let r = Object::ref_t(val);
-                    ////
                     self.push(r);
                 }
                 OpCode::MakeSlice => {
                     let length = self.read_u16();
                     let ctv_id = self.read_u16();
-
-                    let ctv = constants[ctv_id as usize].as_type_value().clone();
-
+                    let ctv = self.shared.constants[ctv_id as usize].as_type_value().clone();
                     let mut vec = Vec::with_capacity(length as usize);
                     for _ in 0..length {
                         vec.push(self.pop());
                     }
                     vec.reverse();
-
                     self.push(Slice::from_vec(vec, ctv));
                 }
                 OpCode::MakeArray => {
@@ -1071,7 +987,6 @@ impl VM {
                         vec.push(self.pop());
                     }
                     vec.reverse();
-
                     self.push(Object::array(vec));
                 }
                 OpCode::Map => {
@@ -1082,42 +997,33 @@ impl VM {
                         let key = self.pop();
                         map.insert(key, value);
                     }
-
                     let obj = Map::from_map(map);
                     self.push(obj);
                 }
                 OpCode::Struct => {
                     let length = self.read_u16();
-
                     let mut fields = Vec::with_capacity(length as usize);
-
                     for _ in 0..length {
                         let value = self.pop();
                         fields.push(value);
                     }
-
                     let strct = self.pop_ref_mut();
                     let strct = strct.as_struct();
-
                     let obj = Struct::object(
                         strct.name.clone(),
                         fields,
                         strct.method_dispatch.clone(),
+                        strct.tags.clone(),
                         strct.is_anonymous,
                     );
-                    // remove struct const from the stack
                     self.pop();
-
                     self.push(obj);
-                    //println!("{:#?}", self.stack);
                 }
                 OpCode::IndexGet => {
                     let index = self.pop();
                     let left = self.pop();
                     let (obj, found) = index_get(left, index)?;
-
                     self.push(obj);
-
                     if let Some(b) = found {
                         self.push(Object::bool(b))
                     }
@@ -1128,25 +1034,300 @@ impl VM {
                     self.push(iter);
                 }
                 OpCode::IndexSet => {
-                    //println!("{:#?}", self.stack);
                     let value = self.pop();
                     let index = self.pop();
                     let left = self.pop();
-                    //println!("value: {:#?} index: {:#?} left: {:#?}", value, index, left);
                     index_set(left, index, value)?;
                     self.push(left);
                 }
                 OpCode::Halt => {
-                    if let Some((expected, got_buf)) = &assert_stdout {
+                    if let Some((expected, got_buf)) = &self.assert_stdout {
                         let got = String::from_utf8(got_buf.buffer().to_vec()).unwrap();
-
                         println!("asserting VM output");
                         assert_eq!(&got, expected);
                     }
-
+                    self.shared.tracker.wait_all().await;
                     return Ok(final_result);
                 }
+                OpCode::GoSpawn => {
+                    let num_args = self.read_u8();
+                    let obj = self.pop();
+
+                    let mut args = Vec::with_capacity(num_args as usize);
+                    for _ in 0..num_args {
+                        args.push(self.pop());
+                    }
+                    args.reverse();
+
+                    let shared = Arc::clone(&self.shared);
+
+                    let (ip, num_locals, closure_obj) = match obj.tag() {
+                        Type::Function => {
+                            let [ip, num_locals] = obj.as_function();
+                            (ip, num_locals, None)
+                        }
+                        Type::Closure => {
+                            let closure = obj.as_closure();
+                            (closure.ip, closure.num_locals as u32, Some(obj))
+                        }
+                        _ => {
+                            return Err(Error::TypeError(format!(
+                                "go: expected function|closure, got: {:?}",
+                                obj.tag()
+                            )));
+                        }
+                    };
+
+                    shared.tracker.spawn();
+
+                    tokio::task::spawn(async move {
+                        let mut g = Goroutine::for_spawn(
+                            Arc::clone(&shared),
+                            ip,
+                            args,
+                            num_locals,
+                        );
+                        if let Some(cl) = closure_obj {
+                            g.closure_ctx.push(cl);
+                        }
+                        if let Err(e) = g.execute_loop().await {
+                            eprintln!("goroutine error: {}", e);
+                        }
+                        shared.tracker.finish();
+                    });
+                }
+                OpCode::ChanSend => {
+                    let value = self.pop();
+                    let ch_obj = self.pop();
+                    if ch_obj.tag() != Type::Channel {
+                        return Err(Error::TypeError(format!(
+                            "send: expected channel, got {}",
+                            ch_obj.tag()
+                        )));
+                    }
+                    let ch = unsafe { Channel::read(&ch_obj) };
+                    if ch.sender.send(value).await.is_err() {
+                        return Err(Error::GoPanic(
+                            Object::string("send on closed channel"),
+                        ));
+                    }
+                    if let Some(ref ack_rx) = ch.ack_receiver {
+                        let _ = ack_rx.recv().await;
+                    }
+                }
+                OpCode::ChanRecv => {
+                    let ch_obj = self.pop();
+                    if ch_obj.tag() != Type::Channel {
+                        return Err(Error::TypeError(format!(
+                            "recv: expected channel, got {}",
+                            ch_obj.tag()
+                        )));
+                    }
+                    let ch = unsafe { Channel::read(&ch_obj) };
+                    match ch.receiver.recv().await {
+                        Ok(val) => {
+                            if let Some(ref ack_tx) = ch.ack_sender {
+                                let _ = ack_tx.send(()).await;
+                            }
+                            self.push(val);
+                        }
+                        Err(_) => self.push(Object::null()),
+                    }
+                }
+                OpCode::MakeChan => {
+                    let cap_obj = self.pop();
+                    let cap = if cap_obj.tag() == Type::Int {
+                        cap_obj.as_isize() as usize
+                    } else {
+                        0
+                    };
+                    self.push(Channel::new(cap));
+                }
+                OpCode::ChanClose => {
+                    let ch_obj = self.pop();
+                    if ch_obj.tag() != Type::Channel {
+                        return Err(Error::TypeError(format!(
+                            "close: expected channel, got {}",
+                            ch_obj.tag()
+                        )));
+                    }
+                    let ch = unsafe { Channel::read_mut(&ch_obj) };
+                    if ch.closed {
+                        return Err(Error::GoPanic(Object::string("close of closed channel")));
+                    }
+                    ch.closed = true;
+                    ch.sender.close();
+                }
+                OpCode::Select => {
+                    let num_cases = self.read_u8() as usize;
+
+                    const CASE_RECV: u8 = 0;
+                    const CASE_SEND: u8 = 1;
+                    const CASE_DEFAULT: u8 = 2;
+
+                    let mut case_descs: Vec<(u8, u16)> = Vec::with_capacity(num_cases);
+                    for _ in 0..num_cases {
+                        let kind = self.read_u8();
+                        let body_ip = self.read_u16();
+                        case_descs.push((kind, body_ip));
+                    }
+
+                    // Collect channels and send values from the stack (in reverse
+                    // since the last-pushed case is on top)
+                    struct CaseData {
+                        kind: u8,
+                        body_ip: u16,
+                        channel: Option<Object>,
+                        send_value: Option<Object>,
+                    }
+
+                    let mut case_data: Vec<CaseData> = Vec::with_capacity(num_cases);
+                    for &(kind, body_ip) in case_descs.iter().rev() {
+                        match kind {
+                            CASE_SEND => {
+                                let value = self.pop();
+                                let ch = self.pop();
+                                case_data.push(CaseData { kind, body_ip, channel: Some(ch), send_value: Some(value) });
+                            }
+                            CASE_RECV => {
+                                let ch = self.pop();
+                                case_data.push(CaseData { kind, body_ip, channel: Some(ch), send_value: None });
+                            }
+                            CASE_DEFAULT | _ => {
+                                case_data.push(CaseData { kind, body_ip, channel: None, send_value: None });
+                            }
+                        }
+                    }
+                    case_data.reverse();
+
+                    let mut selected: Option<usize> = None;
+                    let mut recv_val: Option<Object> = None;
+                    let mut default_idx: Option<usize> = None;
+
+                    // First pass: try non-blocking operations
+                    for (i, case) in case_data.iter().enumerate() {
+                        match case.kind {
+                            CASE_RECV => {
+                                let ch_obj = case.channel.unwrap();
+                                let ch = unsafe { Channel::read(&ch_obj) };
+                                if let Ok(val) = ch.receiver.try_recv() {
+                                    if let Some(ref ack_tx) = ch.ack_sender {
+                                        let _ = ack_tx.try_send(());
+                                    }
+                                    selected = Some(i);
+                                    recv_val = Some(val);
+                                    break;
+                                }
+                            }
+                            CASE_SEND => {
+                                let ch_obj = case.channel.unwrap();
+                                let ch = unsafe { Channel::read(&ch_obj) };
+                                let value = case.send_value.unwrap();
+                                if ch.sender.try_send(value).is_ok() {
+                                    selected = Some(i);
+                                    break;
+                                }
+                            }
+                            CASE_DEFAULT => {
+                                default_idx = Some(i);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // If none ready and we have a default, use it
+                    if selected.is_none() {
+                        if let Some(def_idx) = default_idx {
+                            selected = Some(def_idx);
+                        }
+                    }
+
+                    // If still none ready, block until one is available
+                    if selected.is_none() {
+                        loop {
+                            for (i, case) in case_data.iter().enumerate() {
+                                match case.kind {
+                                    CASE_RECV => {
+                                        let ch_obj = case.channel.unwrap();
+                                        let ch = unsafe { Channel::read(&ch_obj) };
+                                        if let Ok(val) = ch.receiver.try_recv() {
+                                            if let Some(ref ack_tx) = ch.ack_sender {
+                                                let _ = ack_tx.try_send(());
+                                            }
+                                            selected = Some(i);
+                                            recv_val = Some(val);
+                                            break;
+                                        }
+                                    }
+                                    CASE_SEND => {
+                                        let ch_obj = case.channel.unwrap();
+                                        let ch = unsafe { Channel::read(&ch_obj) };
+                                        let value = case.send_value.unwrap();
+                                        if ch.sender.try_send(value).is_ok() {
+                                            selected = Some(i);
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if selected.is_some() {
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    }
+
+                    let sel = selected.unwrap();
+                    if let Some(val) = recv_val {
+                        self.push(val);
+                    }
+                    self.ip = case_data[sel].body_ip as usize;
+                }
             }
+        }
+        }) // Box::pin(async move { ... })
+    }
+}
+
+pub struct VM {
+    ip: usize,
+    source_map: SourceMap,
+}
+
+impl VM {
+    pub fn new() -> Self {
+        Self {
+            ip: 0,
+            source_map: SourceMap::default(),
+        }
+    }
+
+    pub async fn run(&mut self, code: Bytecode) -> Result<Object, Error> {
+        self.source_map = code.source_map.clone();
+
+        let shared = Arc::new(SharedState {
+            instructions: code.instructions,
+            constants: code.constants,
+            globals: RwLock::new(Vec::with_capacity(8)),
+            source_map: code.source_map,
+            tracker: GoroutineTracker::new(),
+        });
+
+        let mut main_goroutine = Goroutine::new(Arc::clone(&shared));
+        main_goroutine.assert_stdout = code.assert_stdout;
+        self.ip = 0;
+
+        let result = main_goroutine.execute_loop().await;
+        self.ip = main_goroutine.ip;
+        result
+    }
+
+    pub fn error_with_location(&self, err: &Error) -> String {
+        if let Some(span) = self.source_map.lookup(self.ip) {
+            format!("{}: {}", span, err)
+        } else {
+            format!("{}", err)
         }
     }
 }
@@ -1183,7 +1364,6 @@ fn index_get(left: Object, index: Object) -> Result<(Object, Option<bool>), Erro
                     index.tag()
                 )));
             }
-
             Ok((index_get_string(let_obj, index.as_isize())?, None))
         }
         Type::Map => index_get_map(let_obj, index),
@@ -1198,18 +1378,14 @@ fn index_get(left: Object, index: Object) -> Result<(Object, Option<bool>), Erro
 fn index_get_struct(obj: Object, key: Object) -> Result<Object, Error> {
     let strct = obj.as_struct();
     let i = key.as_isize();
-
     if i < 0 {
         panic!("impossible");
     }
-
     Ok(strct.values[i as usize].clone())
 }
 
 fn index_get_map(obj: Object, key: Object) -> Result<(Object, Option<bool>), Error> {
     let map = obj.as_map();
-    //todo create default value if not found
-    //let map_obj = unsafe{Map::read(&obj)};
     let r = match map.get(&key).cloned() {
         Some(v) => (v, Some(true)),
         None => (Object::null(), Some(false)),
@@ -1219,22 +1395,22 @@ fn index_get_map(obj: Object, key: Object) -> Result<(Object, Option<bool>), Err
 
 fn index_set_map(mut left: Object, index: Object, value: Object) -> Result<(), Error> {
     let map = left.as_map_mut();
-    //isert returns the old value
-    // later for the gc
     map.insert(index, value);
-
     Ok(())
 }
 
 fn index_get_array(array: &Vec<Object>, mut index: isize) -> Result<Object, Error> {
     if index < 0 {
-        index += array.len() as isize;
+        let len = array.len() as isize;
+        if index.checked_add(len).is_none() || index + len < 0 {
+            return Err(Error::IndexError("out of bounds".to_string()));
+        }
+        index += len;
     }
     let index = index as usize;
     if index >= array.len() {
         return Err(Error::IndexError("out of bounds".to_string()));
     }
-
     Ok(array[index])
 }
 
@@ -1243,13 +1419,13 @@ fn index_get_string(obj: Object, index: isize) -> Result<Object, Error> {
     if index < 0 {
         return Err(Error::IndexError("i: out of bounds".to_string()));
     }
-
     let i = index as usize + 1;
     if i >= str.len() - 1 {
         return Err(Error::IndexError("out of bounds".to_string()));
     }
-
-    let ch = str.chars().nth(i).unwrap();
+    let ch = str.chars().nth(i).ok_or_else(|| {
+        Error::IndexError("string index out of bounds".to_string())
+    })?;
     let result = Object::string(ch.to_string());
     Ok(result)
 }
@@ -1277,13 +1453,11 @@ fn index_set(mut left: Object, index: Object, value: Object) -> Result<(), Error
             )))
         }
     }
-
     Ok(())
 }
 
 fn index_set_struct(mut left: Object, index: usize, value: Object) -> Result<(), Error> {
     let strct = left.as_struct_mut();
-
     strct.values[index] = value;
     Ok(())
 }
@@ -1311,20 +1485,17 @@ fn index_set_string(string: &mut String, mut index: isize, value: Object) -> Res
     if index >= strlen {
         return Err(Error::IndexError("out of bounds".to_string()));
     }
-
     if value.tag() != Type::String {
         return Err(Error::TypeError("expected string".to_string()));
     }
-
     string.replace_range(
         string
             .char_indices()
             .nth(index)
-            .map(|(pos, ch)| (pos..pos + ch.len_utf8()))
+            .map(|(pos, ch)| pos..pos + ch.len_utf8())
             .unwrap(),
         value.as_str(),
     );
-
     Ok(())
 }
 
@@ -1336,20 +1507,21 @@ pub enum Error {
     IndexError(String),
     ArgumentError(String),
     InternalError(String),
+    RuntimeError(String),
+    GoPanic(Object),
 }
 
-// #[derive(Default, Debug)]
-// pub struct Opts {
-//     // percantage of the heap increasing
-//     // to trigger a garbage collection cycle
-//     pub gogc: f64,
-//     // min heap size in bytes to trigger a
-//     // garbage collection cycle
-//     pub min_gc: usize,
-// }
-
-// #[derive(Default, Debug)]
-// struct Stats {
-//     allocs: usize,
-//     prev_allocs: usize,
-// }
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::TypeError(s) => write!(f, "TypeError: {}", s),
+            Error::SyntaxError(s) => write!(f, "SyntaxError: {}", s),
+            Error::ReferenceError(s) => write!(f, "ReferenceError: {}", s),
+            Error::IndexError(s) => write!(f, "IndexError: {}", s),
+            Error::ArgumentError(s) => write!(f, "ArgumentError: {}", s),
+            Error::InternalError(s) => write!(f, "InternalError: {}", s),
+            Error::RuntimeError(s) => write!(f, "RuntimeError: {}", s),
+            Error::GoPanic(obj) => write!(f, "panic: {}", obj),
+        }
+    }
+}

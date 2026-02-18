@@ -1,5 +1,5 @@
 use crate::parser::ast::{
-    ConstSpec, Decl, Declaration, Expression, FuncDecl, Ident, InterfaceType, Statement,
+    ConstSpec, Decl, Declaration, Expression, FuncDecl, InterfaceType, Statement,
     StructType, TypeSpec, VarSpec,
 };
 use crate::parser::Parser;
@@ -7,7 +7,7 @@ use crate::vm::compiler::compiler::Compiler;
 use crate::vm::compiler::{make_method_name, FuncContext, OpCode, JUMP_PLACEHOLDER};
 use crate::vm::object::structure::{Alias, Interface, Struct};
 use crate::vm::object::{Object, Type};
-use crate::vm::symbols::{ContextType, DefineType, Scope};
+use crate::vm::symbols::{ContextType, DefineType, Qualifier, Scope};
 use crate::vm::Error;
 
 pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
@@ -19,7 +19,7 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                     .as_ref()
                     .expect("no declared values requires a declared type"),
             )
-            .unwrap();
+            .ok_or_else(|| Error::TypeError("failed to resolve declared type".to_string()))?;
 
         let mut value_is_default = false;
         let values = if spec.values.is_empty() {
@@ -45,14 +45,14 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                         if constant.tag() == Type::Closure {
                             let closure = constant.as_closure();
                             if closure.is_null {
-                                c.emit_u16(ind.try_into().unwrap());
+                                c.emit_u16(ind.try_into().map_err(|_| Error::InternalError("constant index overflow".to_string()))?);
                                 found_closure = true;
                                 break;
                             }
                         }
                     }
                     if !found_closure {
-                        panic!("could not find closure constant");
+                        return Err(Error::InternalError("could not find closure constant".to_string()));
                     }
                 } else if declared_tp.is_slice() {
                     let cid = c.add_constant(declared_tp.clone().to_object());
@@ -73,7 +73,7 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
 
             if rt != declared_tp {
                 if value.is_int_lit() {
-                    let i = value.as_int_lit().unwrap();
+                    let i = value.as_int_lit().map_err(|e| Error::TypeError(e))?;
                     if i >= u8::MIN as isize && i <= u8::MAX as isize {
                         rt = declared_tp.clone();
                     }
@@ -81,7 +81,7 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                     rt = declared_tp.clone();
                     should_upcast = true;
                 } else if declared_tp.is_spec() {
-                    let spec = declared_tp.as_spec().unwrap();
+                    let spec = declared_tp.as_spec()?;
 
                     if spec.1 == rt {
                         rt = declared_tp.clone();
@@ -94,33 +94,39 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                 let updated = c.symbols.update_dt(
                     pkg,
                     name.name.as_str(),
-                    DefineType::Var(Box::new(rt.clone())),
+                    DefineType::Qualified(Qualifier::Var, Box::new(rt.clone())),
                 );
 
-                assert!(updated, "{}", name.name);
+                if !updated {
+                    return Err(Error::InternalError(format!("failed to update symbol: {}", name.name)));
+                }
 
                 c.symbols
                     .resolve(pkg, name.name.as_str())
-                    .unwrap()
+                    .ok_or_else(|| Error::ReferenceError(format!("undefined variable: {}", name.name)))?
                     .get_symbol()
             } else {
                 c.symbols.define(
                     pkg,
                     name.name.as_str(),
-                    DefineType::Var(Box::new(rt.clone())),
+                    DefineType::Qualified(Qualifier::Var, Box::new(rt.clone())),
                     rt.is_invar(),
                 )
             };
 
             if should_upcast {
                 let (name, _) = declared_tp.as_interface();
-                let (s, _, _) = c.symbols.resolve(pkg, &name).unwrap().as_local();
+                let (s, _, _) = c.symbols.resolve(pkg, &name)
+                    .ok_or_else(|| Error::ReferenceError(format!("undefined interface: {}", name)))?
+                    .as_local();
 
                 c.emit_opcode(OpCode::Upcast);
                 c.emit_u16(s.index);
             } else if should_cast_alias {
-                let (name, _, _, _) = declared_tp.as_spec().unwrap();
-                let (s, _, _) = c.symbols.resolve(pkg, &name).unwrap().as_local();
+                let (name, _, _, _) = declared_tp.as_spec()?;
+                let (s, _, _) = c.symbols.resolve(pkg, &name)
+                    .ok_or_else(|| Error::ReferenceError(format!("undefined type: {}", name)))?
+                    .as_local();
 
                 c.emit_opcode(OpCode::CastToAlias);
                 c.emit_u16(s.index);
@@ -147,8 +153,10 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.emit_u16(JUMP_PLACEHOLDER);
 
     let (f_name, recv, recv_t) = if let Some(recv) = f.recv.as_ref() {
-        let recv = recv.list.first().unwrap();
-        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
+        let recv = recv.list.first()
+            .ok_or_else(|| Error::SyntaxError("receiver field list is empty".to_string()))?;
+        let t = c.expression_to_define_type(pkg, &recv.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve receiver type".to_string()))?;
 
         let ret = (
             make_method_name(pkg, t.strip_ref(), &f.name.name),
@@ -174,7 +182,9 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                 },
             );
 
-            assert!(updated, "function not updated: {}", f_name);
+            if !updated {
+                return Err(Error::InternalError(format!("function not updated: {}", f_name)));
+            }
             s.get_symbol()
         }
         None => c.symbols.define(
@@ -194,7 +204,8 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.symbols.new_context(false);
 
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &recv.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve receiver type".to_string()))?;
 
         //check if there is a field with the same name
         if let DefineType::Struct { fields, .. } = &t.strip_ref() {
@@ -205,15 +216,16 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                     _ => unimplemented!(),
                 };
                 if field_name == f.name.name {
-                    panic!("field and method with the same name {}", field_name);
+                    return Err(Error::TypeError(format!("field and method with the same name: {}", field_name)));
                 }
             }
         }
 
         c.symbols.define(
             pkg,
-            &recv.name.first().unwrap().name,
-            DefineType::Var(Box::new(t.clone())),
+            &recv.name.first()
+                .ok_or_else(|| Error::SyntaxError("receiver name is empty".to_string()))?.name,
+            DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
             t.is_invar(),
         );
     }
@@ -221,14 +233,15 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
 
     for p in &f.typ.params.list {
-        let t = c.expression_to_define_type(pkg, &p.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &p.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve parameter type".to_string()))?;
         for name in &p.name {
             decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
 
             c.symbols.define(
                 pkg,
                 &name.name,
-                DefineType::Var(Box::new(t.clone())),
+                DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
                 t.is_invar(),
             );
         }
@@ -237,7 +250,8 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
 
     for el in &f.typ.result.list {
-        let t = c.expression_to_define_type(pkg, &el.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &el.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve return type".to_string()))?;
         decl_r_types.push(t);
     }
 
@@ -256,23 +270,33 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
         rt: Box::new(r_t.clone()),
     };
     let updated = c.symbols.update_dt(pkg, &f_name, func_def.clone());
-    assert!(updated);
+    if !updated {
+        return Err(Error::InternalError(format!("failed to update function definition: {}", f_name)));
+    }
 
-    c.func_contexts.last_mut().unwrap().expected_ret = r_t;
+    c.func_contexts.last_mut()
+        .ok_or_else(|| Error::InternalError("no active function context".to_string()))?
+        .expected_ret = if r_t == DefineType::Null {
+        None
+    } else {
+        Some(r_t)
+    };
 
     //add method to struct symbol
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(pkg, &recv.typ).unwrap();
+        let t = c.expression_to_define_type(pkg, &recv.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve receiver type".to_string()))?;
 
+        let type_name = t.get_type_name();
         let tt = c
             .symbols
-            .resolve(pkg, &t.get_type_name())
-            .unwrap()
+            .resolve(pkg, &type_name)
+            .ok_or_else(|| Error::ReferenceError(format!("undefined type: {}", type_name)))?
             .get_type()
             .0;
 
         if tt.is_struct() {
-            let (r_name, r_fields, mut r_methods) = tt.as_struct().unwrap();
+            let (r_name, r_fields, mut r_methods) = tt.as_struct()?;
 
             r_methods.push(func_def.clone());
             let updated = c.symbols.update_dt(
@@ -284,10 +308,14 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                     methods: r_methods,
                 },
             );
-            assert!(updated);
+            if !updated {
+                return Err(Error::InternalError(format!("failed to update struct: {}", r_name)));
+            }
         } else if tt.is_spec() {
-            let (name, inner, mut methods, is_transparent) = tt.as_spec().unwrap();
-            assert!(!is_transparent);
+            let (name, inner, mut methods, is_transparent) = tt.as_spec()?;
+            if is_transparent {
+                return Err(Error::TypeError(format!("cannot add method to transparent type: {}", name)));
+            }
 
             methods.push(func_def.clone());
 
@@ -301,7 +329,9 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                     is_transparent,
                 },
             );
-            assert!(updated);
+            if !updated {
+                return Err(Error::InternalError(format!("failed to update spec: {}", name)));
+            }
         }
     }
 
@@ -326,7 +356,8 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
         // assert if the function is void but there is a return
         //assert_eq!(rts.is_none());
     }
-    let ctx = c.func_contexts.pop().unwrap();
+    let ctx = c.func_contexts.pop()
+        .ok_or_else(|| Error::InternalError("no active function context to pop".to_string()))?;
 
     if !decl_r_types.is_empty() {
         let sorted_decl_r_types: Vec<DefineType> = decl_r_types
@@ -354,7 +385,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
         if (!terminates.unwrap_or_default() && expected_t != DefineType::Null && !has_top_return)
             || (expected_t != DefineType::Null && ctx.ret_types.is_empty())
         {
-            panic!("expected return");
+            return Err(Error::TypeError(format!("missing return in function: {}", f.name.name)));
         }
 
         for (mut ret_type, is_type_assert) in ctx.ret_types {
@@ -383,27 +414,35 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
                 if is_type_assert && !expected_t.is_tuple() && ret_type.is_tuple() {
                     let tuple = ret_type.as_tuple();
-                    assert_eq!(expected_t, tuple[0]);
-                } else {
-                    assert_eq!(
-                        expected_t.strip_type(),
-                        ret_type.strip_type().strip_const(),
-                        "{:#?}",
-                        f.name.name
-                    );
+                    if expected_t != tuple[0] {
+                        return Err(Error::TypeError(format!(
+                            "return type mismatch: expected {:?}, got {:?}", expected_t, tuple[0]
+                        )));
+                    }
+                } else if expected_t.unwrap_to_base_type() != ret_type.unwrap_to_base_type() {
+                    return Err(Error::TypeError(format!(
+                        "return type mismatch in '{}': expected {:?}, got {:?}",
+                        f.name.name, expected_t.unwrap_to_base_type(), ret_type.unwrap_to_base_type()
+                    )));
                 }
             }
         }
     } else {
         for (ret_type, _) in &ctx.ret_types {
-            assert_eq!(ret_type, &DefineType::Null);
+            if ret_type != &DefineType::Null {
+                return Err(Error::TypeError(format!(
+                    "unexpected return value in void function '{}': got {:?}", f.name.name, ret_type
+                )));
+            }
         }
     }
     // end type checking on return types
 
     if c.last_instruction_is(OpCode::Pop) && !decl_r_types.is_empty() {
         c.remove_last_instruction();
-        assert!(decl_r_types.len() < u16::MAX as usize);
+        if decl_r_types.len() >= u16::MAX as usize {
+            return Err(Error::InternalError("too many return types".to_string()));
+        }
         let num_r_types = decl_r_types.len() as u16;
 
         c.emit_opcode(OpCode::ReturnValue);
@@ -415,14 +454,16 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
         c.emit_opcode(OpCode::Return);
     }
 
-    c.change_jump_operand_at(pos_jump, c.instructions.len().try_into().unwrap());
+    c.change_jump_operand_at(pos_jump, c.instructions.len().try_into()
+        .map_err(|_| Error::InternalError("jump offset overflow".to_string()))?);
 
     // Switch back to previous scope again
     let ctx = c.symbols.leave_context();
 
     //add method start position for dynamic dispatch
     if let Some(recv) = recv {
-        let t = c.expression_to_define_type(&pkg, &recv.typ).unwrap();
+        let t = c.expression_to_define_type(&pkg, &recv.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve receiver type".to_string()))?;
         let mut added = false;
 
         if let DefineType::Struct { name, .. } = &t.strip_ref() {
@@ -441,7 +482,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             }
 
             if !added {
-                panic!("internal error: could not added method to struct");
+                return Err(Error::InternalError("could not add method to struct".to_string()));
             }
         } else if let DefineType::Spec { name, .. } = &t.strip_ref() {
             for constant in &mut c.constants {
@@ -459,7 +500,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             }
 
             if !added {
-                panic!("internal error: could not added method to spec");
+                return Err(Error::InternalError("could not add method to spec".to_string()));
             }
         } else {
             unimplemented!("{:#?}", t.strip_ref());
@@ -468,8 +509,10 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
 
     // Create function object and store as constant
     let obj = Object::function(
-        pos_start_function.try_into().unwrap(),
-        ctx.max_size().try_into().unwrap(),
+        pos_start_function.try_into()
+            .map_err(|_| Error::InternalError("function start position overflow".to_string()))?,
+        ctx.max_size().try_into()
+            .map_err(|_| Error::InternalError("function context size overflow".to_string()))?,
     );
     let idx = c.add_constant(obj);
     c.emit_opcode(OpCode::Const);
@@ -544,7 +587,7 @@ pub fn compile_const(pkg: &str, c: &Decl<ConstSpec>, compiler: &mut Compiler) ->
                 let symbol = compiler.symbols.define(
                     pkg,
                     name.name.as_str(),
-                    DefineType::Const(Box::new(rt.clone())),
+                    DefineType::Qualified(Qualifier::Const, Box::new(rt.clone())),
                     false,
                 );
 
@@ -563,15 +606,16 @@ pub fn compile_const(pkg: &str, c: &Decl<ConstSpec>, compiler: &mut Compiler) ->
     Ok(())
 }
 
-pub fn type_interface(pkg: &str, spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) {
+pub fn type_interface(pkg: &str, spec: &TypeSpec, it: &InterfaceType, c: &mut Compiler) -> Result<(), Error> {
     let mut funcs = Vec::with_capacity(it.methods.list.len());
     let mut func_names = Vec::with_capacity(it.methods.list.len());
 
     for field in &it.methods.list {
-        let func_name = field.name.first().unwrap();
+        let func_name = field.name.first()
+            .ok_or_else(|| Error::SyntaxError("interface method has no name".to_string()))?;
         let (_, _, args, rt) = c
             .expression_to_define_type(pkg, &field.typ)
-            .unwrap()
+            .ok_or_else(|| Error::TypeError(format!("failed to resolve interface method type: {}", func_name.name)))?
             .as_func();
 
         funcs.push(DefineType::Func {
@@ -594,7 +638,9 @@ pub fn type_interface(pkg: &str, spec: &TypeSpec, it: &InterfaceType, c: &mut Co
                 },
             );
 
-            assert!(updated);
+            if !updated {
+                return Err(Error::InternalError(format!("failed to update interface: {}", spec.name.name)));
+            }
             s.get_symbol()
         }
         None => c.symbols.define(
@@ -623,11 +669,14 @@ pub fn type_interface(pkg: &str, spec: &TypeSpec, it: &InterfaceType, c: &mut Co
 
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
+
+    Ok(())
 }
 
-pub fn type_spec(pkg: &str, spec: &TypeSpec, c: &mut Compiler) {
+pub fn type_spec(pkg: &str, spec: &TypeSpec, c: &mut Compiler) -> Result<(), Error> {
     let t = spec.name.clone();
-    let inner_t = c.expression_to_define_type(pkg, &spec.typ).unwrap();
+    let inner_t = c.expression_to_define_type(pkg, &spec.typ)
+        .ok_or_else(|| Error::TypeError(format!("failed to resolve type spec: {}", t.name)))?;
 
     let symbol = match c.symbols.resolve(pkg, &t.name) {
         Some(s) => {
@@ -642,7 +691,9 @@ pub fn type_spec(pkg: &str, spec: &TypeSpec, c: &mut Compiler) {
                     is_transparent: spec.alias,
                 },
             );
-            assert!(updated);
+            if !updated {
+                return Err(Error::InternalError(format!("failed to update type spec: {}", t.name)));
+            }
 
             s
         }
@@ -675,24 +726,31 @@ pub fn type_spec(pkg: &str, spec: &TypeSpec, c: &mut Compiler) {
 
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
+
+    Ok(())
 }
 
-pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler) {
+pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler) -> Result<(), Error> {
     let t = spec.name.clone();
     let mut field_types = vec![];
 
-    //todo tags
+    let mut tags: Vec<Option<String>> = vec![];
+
     for field in &ta.fields {
         let (inner_t, is_ref) = match &field.typ {
-            Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
-            _ => (field.typ.as_ident().unwrap(), false),
+            Expression::TypePointer(p) => (p.typ.as_ident()
+                .map_err(|e| Error::TypeError(e))?, true),
+            _ => (field.typ.as_ident()
+                .map_err(|e| Error::TypeError(e))?, false),
         };
 
         if !is_ref && t.name == inner_t.name {
-            panic!("recursive definition");
+            return Err(Error::TypeError(format!("recursive type definition: {}", t.name)));
         }
 
-        let r = c.symbols.resolve(pkg, &inner_t.name).unwrap().get_type().0;
+        let r = c.symbols.resolve(pkg, &inner_t.name)
+            .ok_or_else(|| Error::ReferenceError(format!("undefined type: {}", inner_t.name)))?
+            .get_type().0;
 
         let dt = if is_ref {
             DefineType::Ref(Box::new(r.strip_type()))
@@ -700,14 +758,18 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
             r.strip_type()
         };
 
+        let tag_str = field.tag.as_ref().map(|t| t.value.clone());
+
         if field.name.is_empty() {
             field_types.push(ContextType::Embedded(inner_t.name.clone(), dt.clone()));
+            tags.push(tag_str);
         } else {
             for name in &field.name {
                 field_types.push(ContextType::Named(
                     name.name.as_str().to_string(),
                     dt.clone(),
                 ));
+                tags.push(tag_str.clone());
             }
         }
     }
@@ -762,9 +824,11 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
         .symbols
         .update_struct_fields(pkg, name, field_types.clone());
 
-    assert!(updated);
+    if !updated {
+        return Err(Error::InternalError(format!("failed to update struct fields: {}", name)));
+    }
 
-    let obj = Struct::object(name.to_string(), field_values, vec![], false);
+    let obj = Struct::object(name.to_string(), field_values, vec![], tags, false);
     let idx = c.add_constant(obj);
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
@@ -781,12 +845,14 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
     c.emit_opcode(OpCode::Const);
     c.emit_u16(idx);
 
-    let strct = c.symbols.resolve(pkg, name).unwrap().get_type().0;
+    let strct = c.symbols.resolve(pkg, name)
+        .ok_or_else(|| Error::ReferenceError(format!("undefined struct: {}", name)))?
+        .get_type().0;
 
     for field_type in &mut field_types {
         if let ContextType::Embedded(s, dt) = field_type {
             if dt.is_struct() {
-                let (_, _, methods) = dt.as_struct().unwrap();
+                let (_, _, methods) = dt.as_struct()?;
                 let r = if dt.is_ref() { "*" } else { "" };
 
                 for method in methods {
@@ -824,13 +890,15 @@ pub fn type_struct(pkg: &str, spec: &TypeSpec, ta: &StructType, c: &mut Compiler
                         println!("gen_m_str: {}", gen_m_str);
                         let mut p = Parser::from(gen_m_str);
 
-                        let gen_m = p.parse_func_decl().unwrap();
+                        let gen_m = p.parse_func_decl()
+                            .map_err(|e| Error::SyntaxError(format!("failed to parse generated method '{}': {}", f_name, e)))?;
 
-                        c.compile_declaration(pkg, &Declaration::Function(gen_m))
-                            .unwrap();
+                        c.compile_declaration(pkg, &Declaration::Function(gen_m))?;
                     }
                 }
             }
         }
     }
+
+    Ok(())
 }
