@@ -796,7 +796,7 @@ impl Parser {
                         let typ = if name.len() == 1 && self.current_is(Operator::BarackLeft) {
                             let typ = self.array_or_typeargs()?;
                             if let ast::Expression::Index(mut typ) = typ {
-                                let name = name.pop().unwrap(); // FIXME: avoid this
+                                let name = name.pop().ok_or_else(|| self.else_error("expected at least one identifier"))?;
                                 typ.left = Box::new(ast::Expression::Ident(name));
                                 let tag = self.string_literal_or_none()?;
                                 let typ = ast::Expression::Index(typ);
@@ -1137,7 +1137,11 @@ impl Parser {
 
                     x = match op {
                         None => {
-                            let index = Box::new(index.pop().unwrap().unwrap()); // FIXME: avoid unwrap
+                            let index = Box::new(
+                                index.pop()
+                                    .ok_or_else(|| self.else_error("expected index expression"))?
+                                    .ok_or_else(|| self.else_error("expected non-empty index expression"))?
+                            );
                             ast::Expression::Index(ast::Index { pos, left, index })
                         }
                         Some(Operator::Comma) => {
@@ -1500,7 +1504,7 @@ impl Parser {
                     match self.array_or_typeargs()? {
                         ast::Expression::Index(mut typ) => {
                             // Type1, Type2[Args]
-                            let id = id_list.pop().unwrap(); // FIXME: avoid unwrap
+                            let id = id_list.pop().ok_or_else(|| self.else_error("expected at least one type identifier"))?;
                             typ.left = Box::new(ast::Expression::Ident(id));
                             let typ = ast::Expression::Index(typ);
 
