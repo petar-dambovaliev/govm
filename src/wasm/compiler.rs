@@ -214,14 +214,23 @@ pub struct WasmCompiler {
     current_iota: Option<i64>,
     named_returns: Vec<(String, ValType)>,
 
-    // Named type definitions: type MyInt int → "MyInt" → "int"
-    type_aliases: HashMap<String, String>,
+    // Named type definitions: type MyInt int → "MyInt" → ("int", is_alias)
+    type_aliases: HashMap<String, (String, bool)>,
 
     // Interface support
     type_registry: HashMap<String, u32>,
     next_type_id: u32,
     iface_defs: HashMap<String, Vec<String>>,
     iface_var_type_ids: HashMap<String, u32>,
+
+    // init() function support
+    init_func_indices: Vec<u32>,
+    start_func_idx: Option<u32>,
+
+    // Generics support: store uncompiled generic function declarations
+    generic_funcs: HashMap<String, ast::FuncDecl>,
+    // Track monomorphized specializations: "FuncName<int,string>" -> func_idx
+    monomorphized: HashMap<String, u32>,
 }
 
 impl WasmCompiler {
@@ -266,6 +275,12 @@ impl WasmCompiler {
             next_type_id: 1, // 0 = nil
             iface_defs: HashMap::new(),
             iface_var_type_ids: HashMap::new(),
+
+            init_func_indices: Vec::new(),
+            start_func_idx: None,
+
+            generic_funcs: HashMap::new(),
+            monomorphized: HashMap::new(),
         }
     }
 
@@ -356,6 +371,8 @@ impl WasmCompiler {
         for decl in &file.decl {
             self.compile_declaration(decl)?;
         }
+
+        self.emit_init_function();
 
         self.build_manifest(file)?;
 
@@ -457,6 +474,15 @@ impl WasmCompiler {
         func.instruction(&Instruction::I32Add);
         func.instruction(&Instruction::GlobalSet(self.heap_ptr_global));
 
+        // Overflow check: if new_ptr < old_ptr, the add wrapped around
+        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
+        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::I32LtU);
+        func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&Instruction::Call(self.oom_func_idx));
+        func.instruction(&Instruction::Unreachable);
+        func.instruction(&Instruction::End);
+
         // Bounds check: if new heap_ptr >= memory size in bytes, grow
         func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
         func.instruction(&Instruction::MemorySize(0));
@@ -535,6 +561,29 @@ impl WasmCompiler {
         });
     }
 
+    fn emit_init_function(&mut self) {
+        if self.init_func_indices.is_empty() {
+            return;
+        }
+
+        let type_idx = self.next_type_idx;
+        self.type_section.ty().function(vec![], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.function_section.function(type_idx);
+        self.next_func_idx += 1;
+
+        let mut func = Function::new(vec![]);
+        for &init_idx in &self.init_func_indices.clone() {
+            func.instruction(&Instruction::Call(init_idx));
+        }
+        func.instruction(&Instruction::End);
+
+        self.code_section.function(&func);
+        self.start_func_idx = Some(func_idx);
+    }
+
     fn alloc_func_idx(&self) -> Result<u32, Error> {
         self.functions
             .iter()
@@ -578,7 +627,7 @@ impl WasmCompiler {
 
     fn compile_declaration(&mut self, decl: &ast::Declaration) -> Result<(), Error> {
         match decl {
-            ast::Declaration::Function(func_decl) => self.compile_func_decl(func_decl),
+            ast::Declaration::Function(func_decl) => self.compile_func_decl(func_decl, false),
             ast::Declaration::Variable(var_decl) => {
                 for spec in &var_decl.specs {
                     self.compile_global_var(spec)?;
@@ -602,8 +651,10 @@ impl WasmCompiler {
                         self.struct_defs
                             .insert(spec.name.name.clone(), struct_def);
                     } else if let ast::Expression::Ident(base_type) = &spec.typ {
-                        // Named type: type MyInt int
-                        self.type_aliases.insert(spec.name.name.clone(), base_type.name.clone());
+                        self.type_aliases.insert(
+                            spec.name.name.clone(),
+                            (base_type.name.clone(), spec.alias),
+                        );
                     }
                     // Interface types are handled during prescan
                 }
@@ -923,8 +974,15 @@ impl WasmCompiler {
         })
     }
 
-    fn compile_func_decl(&mut self, decl: &ast::FuncDecl) -> Result<(), Error> {
+    fn compile_func_decl(&mut self, decl: &ast::FuncDecl, defer_code: bool) -> Result<(), Error> {
         let name = &decl.name.name;
+
+        // Generic functions: store for later monomorphization instead of compiling now
+        if !decl.typ.typ_params.list.is_empty() {
+            self.generic_funcs.insert(name.clone(), decl.clone());
+            return Ok(());
+        }
+
         let is_method = decl.recv.is_some();
 
         let recv_type_name = if let Some(recv) = &decl.recv {
@@ -1032,6 +1090,15 @@ impl WasmCompiler {
         let func_idx = self.next_func_idx;
         self.function_section.function(type_idx);
         self.next_func_idx += 1;
+
+        let is_init = name == "init"
+            && !is_method
+            && decl.typ.params.list.is_empty()
+            && decl.typ.result.list.is_empty();
+
+        if is_init {
+            self.init_func_indices.push(func_idx);
+        }
 
         if is_exported {
             self.export_section
@@ -1231,10 +1298,13 @@ impl WasmCompiler {
             func.instruction(instr);
         }
 
-        self.code_section.function(&func);
-
-        for closure_func in self.pending_closures.drain(..) {
-            self.code_section.function(&closure_func);
+        if defer_code {
+            self.pending_closures.push(func);
+        } else {
+            self.code_section.function(&func);
+            for closure_func in self.pending_closures.drain(..) {
+                self.code_section.function(&closure_func);
+            }
         }
 
         Ok(())
@@ -2363,19 +2433,34 @@ impl WasmCompiler {
                 out.push(Instruction::I32Eq);
                 out.push(Instruction::If(BlockType::Empty));
                 {
+                    // Boundary check: need idx + 2 <= len
+                    out.push(Instruction::LocalGet(idx_local));
                     out.push(Instruction::I32Const(2));
-                    out.push(Instruction::LocalSet(rw));
-                    out.push(Instruction::LocalGet(byte0));
-                    out.push(Instruction::I32Const(0x1F));
-                    out.push(Instruction::I32And);
-                    out.push(Instruction::I32Const(6));
-                    out.push(Instruction::I32Shl);
-                    out.push(Instruction::LocalGet(addr));
-                    out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                    out.push(Instruction::I32Const(0x3F));
-                    out.push(Instruction::I32And);
-                    out.push(Instruction::I32Or);
-                    out.push(Instruction::LocalSet(rv));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::LocalGet(len_local));
+                    out.push(Instruction::I32LeU);
+                    out.push(Instruction::If(BlockType::Empty));
+                    {
+                        out.push(Instruction::I32Const(2));
+                        out.push(Instruction::LocalSet(rw));
+                        out.push(Instruction::LocalGet(byte0));
+                        out.push(Instruction::I32Const(0x1F));
+                        out.push(Instruction::I32And);
+                        out.push(Instruction::I32Const(6));
+                        out.push(Instruction::I32Shl);
+                        out.push(Instruction::LocalGet(addr));
+                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                        out.push(Instruction::I32Const(0x3F));
+                        out.push(Instruction::I32And);
+                        out.push(Instruction::I32Or);
+                        out.push(Instruction::LocalSet(rv));
+                    }
+                    out.push(Instruction::Else);
+                    {
+                        out.push(Instruction::I32Const(0xFFFD));
+                        out.push(Instruction::LocalSet(rv));
+                    }
+                    out.push(Instruction::End);
                 }
                 out.push(Instruction::Else);
                 {
@@ -2387,26 +2472,41 @@ impl WasmCompiler {
                     out.push(Instruction::I32Eq);
                     out.push(Instruction::If(BlockType::Empty));
                     {
+                        // Boundary check: need idx + 3 <= len
+                        out.push(Instruction::LocalGet(idx_local));
                         out.push(Instruction::I32Const(3));
-                        out.push(Instruction::LocalSet(rw));
-                        out.push(Instruction::LocalGet(byte0));
-                        out.push(Instruction::I32Const(0x0F));
-                        out.push(Instruction::I32And);
-                        out.push(Instruction::I32Const(12));
-                        out.push(Instruction::I32Shl);
-                        out.push(Instruction::LocalGet(addr));
-                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                        out.push(Instruction::I32Const(0x3F));
-                        out.push(Instruction::I32And);
-                        out.push(Instruction::I32Const(6));
-                        out.push(Instruction::I32Shl);
-                        out.push(Instruction::I32Or);
-                        out.push(Instruction::LocalGet(addr));
-                        out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
-                        out.push(Instruction::I32Const(0x3F));
-                        out.push(Instruction::I32And);
-                        out.push(Instruction::I32Or);
-                        out.push(Instruction::LocalSet(rv));
+                        out.push(Instruction::I32Add);
+                        out.push(Instruction::LocalGet(len_local));
+                        out.push(Instruction::I32LeU);
+                        out.push(Instruction::If(BlockType::Empty));
+                        {
+                            out.push(Instruction::I32Const(3));
+                            out.push(Instruction::LocalSet(rw));
+                            out.push(Instruction::LocalGet(byte0));
+                            out.push(Instruction::I32Const(0x0F));
+                            out.push(Instruction::I32And);
+                            out.push(Instruction::I32Const(12));
+                            out.push(Instruction::I32Shl);
+                            out.push(Instruction::LocalGet(addr));
+                            out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                            out.push(Instruction::I32Const(0x3F));
+                            out.push(Instruction::I32And);
+                            out.push(Instruction::I32Const(6));
+                            out.push(Instruction::I32Shl);
+                            out.push(Instruction::I32Or);
+                            out.push(Instruction::LocalGet(addr));
+                            out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                            out.push(Instruction::I32Const(0x3F));
+                            out.push(Instruction::I32And);
+                            out.push(Instruction::I32Or);
+                            out.push(Instruction::LocalSet(rv));
+                        }
+                        out.push(Instruction::Else);
+                        {
+                            out.push(Instruction::I32Const(0xFFFD));
+                            out.push(Instruction::LocalSet(rv));
+                        }
+                        out.push(Instruction::End);
                     }
                     out.push(Instruction::Else);
                     {
@@ -2418,33 +2518,48 @@ impl WasmCompiler {
                         out.push(Instruction::I32Eq);
                         out.push(Instruction::If(BlockType::Empty));
                         {
+                            // Boundary check: need idx + 4 <= len
+                            out.push(Instruction::LocalGet(idx_local));
                             out.push(Instruction::I32Const(4));
-                            out.push(Instruction::LocalSet(rw));
-                            out.push(Instruction::LocalGet(byte0));
-                            out.push(Instruction::I32Const(0x07));
-                            out.push(Instruction::I32And);
-                            out.push(Instruction::I32Const(18));
-                            out.push(Instruction::I32Shl);
-                            out.push(Instruction::LocalGet(addr));
-                            out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                            out.push(Instruction::I32Const(0x3F));
-                            out.push(Instruction::I32And);
-                            out.push(Instruction::I32Const(12));
-                            out.push(Instruction::I32Shl);
-                            out.push(Instruction::I32Or);
-                            out.push(Instruction::LocalGet(addr));
-                            out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
-                            out.push(Instruction::I32Const(0x3F));
-                            out.push(Instruction::I32And);
-                            out.push(Instruction::I32Const(6));
-                            out.push(Instruction::I32Shl);
-                            out.push(Instruction::I32Or);
-                            out.push(Instruction::LocalGet(addr));
-                            out.push(Instruction::I32Load8U(MemArg { offset: 3, align: 0, memory_index: 0 }));
-                            out.push(Instruction::I32Const(0x3F));
-                            out.push(Instruction::I32And);
-                            out.push(Instruction::I32Or);
-                            out.push(Instruction::LocalSet(rv));
+                            out.push(Instruction::I32Add);
+                            out.push(Instruction::LocalGet(len_local));
+                            out.push(Instruction::I32LeU);
+                            out.push(Instruction::If(BlockType::Empty));
+                            {
+                                out.push(Instruction::I32Const(4));
+                                out.push(Instruction::LocalSet(rw));
+                                out.push(Instruction::LocalGet(byte0));
+                                out.push(Instruction::I32Const(0x07));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Const(18));
+                                out.push(Instruction::I32Shl);
+                                out.push(Instruction::LocalGet(addr));
+                                out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Const(12));
+                                out.push(Instruction::I32Shl);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::LocalGet(addr));
+                                out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Const(6));
+                                out.push(Instruction::I32Shl);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::LocalGet(addr));
+                                out.push(Instruction::I32Load8U(MemArg { offset: 3, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::LocalSet(rv));
+                            }
+                            out.push(Instruction::Else);
+                            {
+                                out.push(Instruction::I32Const(0xFFFD));
+                                out.push(Instruction::LocalSet(rv));
+                            }
+                            out.push(Instruction::End);
                         }
                         out.push(Instruction::Else);
                         {
@@ -3682,6 +3797,16 @@ impl WasmCompiler {
                                         &ident.name,
                                         "__string",
                                     );
+                                } else if type_ident.name == "complex64" {
+                                    locals.set_var_struct_type(
+                                        &ident.name,
+                                        "__complex64",
+                                    );
+                                } else if type_ident.name == "complex128" {
+                                    locals.set_var_struct_type(
+                                        &ident.name,
+                                        "__complex128",
+                                    );
                                 } else if self.iface_defs.contains_key(&type_ident.name)
                                     || type_ident.name == "error"
                                     || type_ident.name == "any"
@@ -3853,6 +3978,17 @@ impl WasmCompiler {
             ast::Expression::Index(idx) => self.compile_index(idx, out, locals),
             ast::Expression::Star(star) => {
                 self.compile_expression(&star.right, out, locals)?;
+                let ptr_local = locals.add_local(
+                    &format!("__deref_ptr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalTee(ptr_local));
+                out.push(Instruction::I32Eqz);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::Unreachable);
+                out.push(Instruction::End);
+                out.push(Instruction::LocalGet(ptr_local));
+
                 let deref_vt = self.infer_deref_type(&star.right, locals);
                 let (_size, mem_idx) = Self::elem_size_and_align(deref_vt);
                 let mem_arg = MemArg {
@@ -4205,6 +4341,23 @@ impl WasmCompiler {
         )
     }
 
+    fn is_complex64_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
+        if let ast::Expression::Ident(ident) = expr {
+            locals.get_var_struct_type(&ident.name) == Some("__complex64")
+        } else if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                if ident.name == "complex" {
+                    if let Some(arg) = call.args.first() {
+                        return self.infer_val_type(arg, locals) == ValType::F32;
+                    }
+                }
+            }
+            false
+        } else {
+            false
+        }
+    }
+
     fn is_string_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         match expr {
             ast::Expression::BasicLit(lit) => lit.kind == LitKind::String,
@@ -4462,6 +4615,17 @@ impl WasmCompiler {
             }
             Operator::Star => {
                 self.compile_expression(&op.x, out, locals)?;
+                let ptr_local = locals.add_local(
+                    &format!("__deref_optr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalTee(ptr_local));
+                out.push(Instruction::I32Eqz);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::Unreachable);
+                out.push(Instruction::End);
+                out.push(Instruction::LocalGet(ptr_local));
+
                 let deref_vt = self.infer_deref_type(&op.x, locals);
                 let (_size, align) = Self::elem_size_and_align(deref_vt);
                 let mem_arg = MemArg {
@@ -5691,6 +5855,35 @@ impl WasmCompiler {
                         return self.compile_builtin_copy(call, out, locals);
                     }
                     "panic" => {
+                        if let Some(arg) = call.args.first() {
+                            if self.is_string_expr(arg, locals) {
+                                self.compile_expression(arg, out, locals)?;
+                            } else {
+                                let vt = self.infer_val_type(arg, locals);
+                                self.compile_expression(arg, out, locals)?;
+                                match vt {
+                                    ValType::I64 | ValType::I32 => {
+                                        if vt == ValType::I32 {
+                                            out.push(Instruction::I64ExtendI32S);
+                                        }
+                                        self.emit_i64_to_string(out, locals)?;
+                                    }
+                                    ValType::F64 => {
+                                        self.emit_f64_to_string(out, locals)?;
+                                    }
+                                    ValType::F32 => {
+                                        out.push(Instruction::F64PromoteF32);
+                                        self.emit_f64_to_string(out, locals)?;
+                                    }
+                                    _ => {
+                                        out.push(Instruction::Drop);
+                                        out.push(Instruction::I32Const(0));
+                                        out.push(Instruction::I32Const(0));
+                                    }
+                                }
+                            }
+                            out.push(Instruction::Call(0)); // ctx_log
+                        }
                         out.push(Instruction::Unreachable);
                         return Ok(());
                     }
@@ -6102,6 +6295,93 @@ impl WasmCompiler {
                             out.push(Instruction::I32Const(alloc_aligned as i32));
                             out.push(Instruction::MemoryFill(0));
                             out.push(Instruction::LocalGet(ptr_local));
+                        }
+                        return Ok(());
+                    }
+                    "complex" => {
+                        if call.args.len() < 2 {
+                            return Err(Error::InternalError(
+                                "complex() requires two arguments".to_string(),
+                            ));
+                        }
+                        let r_vt = self.infer_val_type(&call.args[0], locals);
+                        let is_64 = r_vt == ValType::F32;
+                        let total_size: i32 = if is_64 { 8 } else { 16 };
+                        let float_align: u32 = if is_64 { 2 } else { 3 };
+
+                        self.compile_expression(&call.args[0], out, locals)?;
+                        if !is_64 && r_vt == ValType::F32 {
+                            out.push(Instruction::F64PromoteF32);
+                        }
+                        let real_local = locals.add_local(
+                            &format!("__cplx_r_{}", locals.locals.len()),
+                            if is_64 { ValType::F32 } else { ValType::F64 },
+                        );
+                        out.push(Instruction::LocalSet(real_local));
+
+                        self.compile_expression(&call.args[1], out, locals)?;
+                        if !is_64 && self.infer_val_type(&call.args[1], locals) == ValType::F32 {
+                            out.push(Instruction::F64PromoteF32);
+                        }
+                        let imag_local = locals.add_local(
+                            &format!("__cplx_i_{}", locals.locals.len()),
+                            if is_64 { ValType::F32 } else { ValType::F64 },
+                        );
+                        out.push(Instruction::LocalSet(imag_local));
+
+                        out.push(Instruction::I32Const(total_size));
+                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                        let ptr = locals.add_local(
+                            &format!("__cplx_ptr_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(ptr));
+
+                        // Store real part
+                        out.push(Instruction::LocalGet(ptr));
+                        out.push(Instruction::LocalGet(real_local));
+                        if is_64 {
+                            out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        } else {
+                            out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        }
+
+                        // Store imag part
+                        out.push(Instruction::LocalGet(ptr));
+                        out.push(Instruction::LocalGet(imag_local));
+                        let imag_offset = if is_64 { 4u64 } else { 8u64 };
+                        if is_64 {
+                            out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        } else {
+                            out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        }
+
+                        out.push(Instruction::LocalGet(ptr));
+                        return Ok(());
+                    }
+                    "real" => {
+                        if let Some(arg) = call.args.first() {
+                            self.compile_expression(arg, out, locals)?;
+                            let is_64 = self.is_complex64_expr(arg, locals);
+                            let align = if is_64 { 2u32 } else { 3u32 };
+                            if is_64 {
+                                out.push(Instruction::F32Load(MemArg { offset: 0, align, memory_index: 0 }));
+                            } else {
+                                out.push(Instruction::F64Load(MemArg { offset: 0, align, memory_index: 0 }));
+                            }
+                        }
+                        return Ok(());
+                    }
+                    "imag" => {
+                        if let Some(arg) = call.args.first() {
+                            self.compile_expression(arg, out, locals)?;
+                            let is_64 = self.is_complex64_expr(arg, locals);
+                            let (imag_offset, align) = if is_64 { (4u64, 2u32) } else { (8u64, 3u32) };
+                            if is_64 {
+                                out.push(Instruction::F32Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                            } else {
+                                out.push(Instruction::F64Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                            }
                         }
                         return Ok(());
                     }
@@ -6943,6 +7223,135 @@ impl WasmCompiler {
                     call.func
                 )));
             }
+            ast::Expression::Index(idx_expr)
+                if idx_expr.left.as_ref().map_or(false, |l| {
+                    if let ast::Expression::Ident(id) = l.as_ref() {
+                        self.generic_funcs.contains_key(&id.name)
+                    } else {
+                        false
+                    }
+                }) =>
+            {
+                // Generic function call with single type arg: F[T](args)
+                let func_ident = if let Some(ast::Expression::Ident(id)) = idx_expr.left.as_deref() {
+                    id
+                } else {
+                    unreachable!()
+                };
+                let type_arg = if let ast::Expression::Ident(ti) = idx_expr.index.as_ref() {
+                    ti.name.clone()
+                } else {
+                    format!("{:?}", idx_expr.index)
+                };
+                let type_args = vec![type_arg];
+                let mono_name = format!("{}__mono_{}", func_ident.name, type_args.join("_"));
+
+                if let Some(&func_idx) = self.monomorphized.get(&mono_name) {
+                    for arg in &call.args {
+                        self.compile_expression(arg, out, locals)?;
+                    }
+                    out.push(Instruction::Call(func_idx));
+                    return Ok(());
+                }
+
+                let generic_decl = self.generic_funcs.get(&func_ident.name).cloned();
+                if let Some(template) = generic_decl {
+                    let mut subst: HashMap<String, String> = HashMap::new();
+                    for (i, field) in template.typ.typ_params.list.iter().enumerate() {
+                        for name_ident in &field.name {
+                            if i < type_args.len() {
+                                subst.insert(name_ident.name.clone(), type_args[i].clone());
+                            }
+                        }
+                    }
+                    let specialized = self.monomorphize_func_decl(&template, &mono_name, &subst);
+                    let saved_generic_funcs = self.generic_funcs.clone();
+                    self.compile_func_decl(&specialized, true)?;
+                    self.generic_funcs = saved_generic_funcs;
+
+                    let func_idx = self.functions.iter()
+                        .find(|f| f.name == mono_name)
+                        .map(|f| f.wasm_func_idx);
+                    if let Some(idx) = func_idx {
+                        self.monomorphized.insert(mono_name.clone(), idx);
+                        for arg in &call.args {
+                            self.compile_expression(arg, out, locals)?;
+                        }
+                        out.push(Instruction::Call(idx));
+                    }
+                    return Ok(());
+                }
+
+                return Err(Error::InternalError(format!(
+                    "undefined generic function: {}",
+                    func_ident.name
+                )));
+            }
+            ast::Expression::IndexList(idx_list) => {
+                // Generic function call: F[T1, T2, ...](args)
+                if let ast::Expression::Ident(func_ident) = idx_list.left.as_ref() {
+                    let type_args: Vec<String> = idx_list.indices.iter().map(|idx| {
+                        if let ast::Expression::Ident(ti) = idx {
+                            ti.name.clone()
+                        } else {
+                            format!("{:?}", idx)
+                        }
+                    }).collect();
+
+                    let mono_name = format!("{}__mono_{}", func_ident.name, type_args.join("_"));
+
+                    // Check if already monomorphized
+                    if let Some(&func_idx) = self.monomorphized.get(&mono_name) {
+                        for arg in &call.args {
+                            self.compile_expression(arg, out, locals)?;
+                        }
+                        out.push(Instruction::Call(func_idx));
+                        return Ok(());
+                    }
+
+                    // Look up the generic function template
+                    let generic_decl = self.generic_funcs.get(&func_ident.name).cloned();
+                    if let Some(template) = generic_decl {
+                        // Build type parameter substitution map
+                        let mut subst: HashMap<String, String> = HashMap::new();
+                        for (i, field) in template.typ.typ_params.list.iter().enumerate() {
+                            for name_ident in &field.name {
+                                if i < type_args.len() {
+                                    subst.insert(name_ident.name.clone(), type_args[i].clone());
+                                }
+                            }
+                        }
+
+                        // Create a specialized declaration by rewriting the template
+                        let specialized = self.monomorphize_func_decl(&template, &mono_name, &subst);
+                        let saved_generic_funcs = self.generic_funcs.clone();
+                        self.compile_func_decl(&specialized, true)?;
+                        self.generic_funcs = saved_generic_funcs;
+
+                        // Record the monomorphized func_idx
+                        let func_idx = self.functions.iter()
+                            .find(|f| f.name == mono_name)
+                            .map(|f| f.wasm_func_idx);
+                        if let Some(idx) = func_idx {
+                            self.monomorphized.insert(mono_name.clone(), idx);
+                            for arg in &call.args {
+                                self.compile_expression(arg, out, locals)?;
+                            }
+                            out.push(Instruction::Call(idx));
+                        }
+                        return Ok(());
+                    }
+
+                    return Err(Error::InternalError(format!(
+                        "undefined generic function: {}",
+                        func_ident.name
+                    )));
+                }
+                return Err(Error::InternalError(format!(
+                    "unsupported generic call expression: {:?}",
+                    call.func
+                )));
+            }
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported call expression: {:?}",
@@ -7223,7 +7632,12 @@ impl WasmCompiler {
 
         let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
         let (elem_size, align) = Self::elem_size_and_align(elem_vt);
-        let total_bytes = arr_len as i32 * elem_size;
+        let total_bytes = (arr_len as i32).checked_mul(elem_size).ok_or_else(|| {
+            Error::InternalError(format!(
+                "array too large: [{}]T with element size {} bytes overflows",
+                arr_len, elem_size
+            ))
+        })?;
 
         out.push(Instruction::I32Const(total_bytes));
         out.push(Instruction::Call(self.alloc_func_idx()?));
@@ -8839,14 +9253,28 @@ impl WasmCompiler {
 
         // Array element store
         if let ast::Expression::Ident(ident) = left {
-            if let Some(&(arr_elem_vt, _arr_len)) = locals.array_info.get(&ident.name) {
+            if let Some(&(arr_elem_vt, arr_len)) = locals.array_info.get(&ident.name) {
                 let (arr_elem_size, arr_align) = Self::elem_size_and_align(arr_elem_vt);
                 self.compile_expression(left, out, locals)?;
+                let base = locals.add_local(&format!("__arrs_b_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalSet(base));
+
                 self.compile_expression(&idx.index, out, locals)?;
                 let idx_vt = self.infer_val_type(&idx.index, locals);
                 if idx_vt == ValType::I64 {
                     out.push(Instruction::I32WrapI64);
                 }
+                let idx_local = locals.add_local(&format!("__arrs_i_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalTee(idx_local));
+
+                out.push(Instruction::I32Const(arr_len as i32));
+                out.push(Instruction::I32GeU);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::Unreachable);
+                out.push(Instruction::End);
+
+                out.push(Instruction::LocalGet(base));
+                out.push(Instruction::LocalGet(idx_local));
                 out.push(Instruction::I32Const(arr_elem_size));
                 out.push(Instruction::I32Mul);
                 out.push(Instruction::I32Add);
@@ -8874,25 +9302,54 @@ impl WasmCompiler {
 
         if is_slice_header {
             self.compile_expression(left, out, locals)?;
+            let hdr = locals.add_local(&format!("__slis_hdr_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalTee(hdr));
             out.push(Instruction::I32Load(MemArg {
                 offset: 0,
                 align: 2,
                 memory_index: 0,
             }));
+            let data_local = locals.add_local(&format!("__slis_dp_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalSet(data_local));
+
+            let slice_len = locals.add_local(&format!("__slis_len_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalGet(hdr));
+            out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(slice_len));
+
+            self.compile_expression(&idx.index, out, locals)?;
+            let idx_vt = self.infer_val_type(&idx.index, locals);
+            if idx_vt == ValType::I64 {
+                out.push(Instruction::I32WrapI64);
+            }
+            let idx_local = locals.add_local(&format!("__slis_i_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalTee(idx_local));
+
+            out.push(Instruction::LocalGet(slice_len));
+            out.push(Instruction::I32GeU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+
+            out.push(Instruction::LocalGet(data_local));
+            out.push(Instruction::LocalGet(idx_local));
+            out.push(Instruction::I32Const(elem_size));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::I32Add);
         } else {
             self.compile_expression(left, out, locals)?;
+
+            self.compile_expression(&idx.index, out, locals)?;
+
+            let idx_vt = self.infer_val_type(&idx.index, locals);
+            if idx_vt == ValType::I64 {
+                out.push(Instruction::I32WrapI64);
+            }
+
+            out.push(Instruction::I32Const(elem_size));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::I32Add);
         }
-
-        self.compile_expression(&idx.index, out, locals)?;
-
-        let idx_vt = self.infer_val_type(&idx.index, locals);
-        if idx_vt == ValType::I64 {
-            out.push(Instruction::I32WrapI64);
-        }
-
-        out.push(Instruction::I32Const(elem_size));
-        out.push(Instruction::I32Mul);
-        out.push(Instruction::I32Add);
 
         Ok((elem_vt, align))
     }
@@ -9102,16 +9559,220 @@ impl WasmCompiler {
         }
     }
 
+    fn monomorphize_func_decl(
+        &self,
+        template: &ast::FuncDecl,
+        mono_name: &str,
+        subst: &HashMap<String, String>,
+    ) -> ast::FuncDecl {
+        let mut decl = template.clone();
+        decl.name = ast::Ident {
+            name: mono_name.to_string(),
+            pos: template.name.pos,
+        };
+        // Clear type params so the specialized function is not treated as generic
+        decl.typ.typ_params = ast::FieldList { pos: None, list: vec![] };
+
+        // Substitute type parameters in function parameter types
+        for field in &mut decl.typ.params.list {
+            Self::subst_type_in_expr(&mut field.typ, subst);
+        }
+        // Substitute in return types
+        for field in &mut decl.typ.result.list {
+            Self::subst_type_in_expr(&mut field.typ, subst);
+        }
+        // Substitute in body
+        if let Some(ref mut body) = decl.body {
+            Self::subst_type_in_block(body, subst);
+        }
+
+        decl
+    }
+
+    fn subst_type_in_expr(expr: &mut ast::Expression, subst: &HashMap<String, String>) {
+        match expr {
+            ast::Expression::Ident(ident) => {
+                if let Some(replacement) = subst.get(&ident.name) {
+                    ident.name = replacement.clone();
+                }
+            }
+            ast::Expression::Call(call) => {
+                Self::subst_type_in_expr(&mut call.func, subst);
+                for arg in &mut call.args {
+                    Self::subst_type_in_expr(arg, subst);
+                }
+            }
+            ast::Expression::Operation(op) => {
+                Self::subst_type_in_expr(&mut op.x, subst);
+                if let Some(ref mut y) = op.y {
+                    Self::subst_type_in_expr(y, subst);
+                }
+            }
+            ast::Expression::Paren(p) => {
+                Self::subst_type_in_expr(&mut p.expr, subst);
+            }
+            ast::Expression::Index(idx) => {
+                if let Some(ref mut left) = idx.left {
+                    Self::subst_type_in_expr(left, subst);
+                }
+                Self::subst_type_in_expr(&mut idx.index, subst);
+            }
+            ast::Expression::Selector(sel) => {
+                Self::subst_type_in_expr(&mut sel.x, subst);
+            }
+            ast::Expression::Star(star) => {
+                Self::subst_type_in_expr(&mut star.right, subst);
+            }
+            ast::Expression::TypeSlice(sl) => {
+                Self::subst_type_in_expr(&mut sl.typ, subst);
+            }
+            ast::Expression::TypeArray(arr) => {
+                Self::subst_type_in_expr(&mut arr.typ, subst);
+                Self::subst_type_in_expr(&mut arr.len, subst);
+            }
+            ast::Expression::TypeMap(m) => {
+                Self::subst_type_in_expr(&mut m.key, subst);
+                Self::subst_type_in_expr(&mut m.val, subst);
+            }
+            ast::Expression::TypePointer(p) => {
+                Self::subst_type_in_expr(&mut p.typ, subst);
+            }
+            ast::Expression::CompositeLit(cl) => {
+                Self::subst_type_in_expr(&mut cl.typ, subst);
+            }
+            ast::Expression::TypeAssert(ta) => {
+                Self::subst_type_in_expr(&mut ta.left, subst);
+                if let Some(ref mut right) = ta.right {
+                    Self::subst_type_in_expr(right, subst);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn subst_type_in_stmt(stmt: &mut ast::Statement, subst: &HashMap<String, String>) {
+        match stmt {
+            ast::Statement::Expr(es) => Self::subst_type_in_expr(&mut es.expr, subst),
+            ast::Statement::Assign(a) => {
+                for e in &mut a.left {
+                    Self::subst_type_in_expr(e, subst);
+                }
+                for e in &mut a.right {
+                    Self::subst_type_in_expr(e, subst);
+                }
+            }
+            ast::Statement::Return(r) => {
+                for e in &mut r.ret {
+                    Self::subst_type_in_expr(e, subst);
+                }
+            }
+            ast::Statement::If(i) => {
+                if let Some(ref mut init) = i.init {
+                    Self::subst_type_in_stmt(init, subst);
+                }
+                Self::subst_type_in_expr(&mut i.cond, subst);
+                Self::subst_type_in_block(&mut i.body, subst);
+                if let Some(ref mut els) = i.else_ {
+                    Self::subst_type_in_stmt(els, subst);
+                }
+            }
+            ast::Statement::For(f) => {
+                if let Some(ref mut init) = f.init {
+                    Self::subst_type_in_stmt(init, subst);
+                }
+                if let Some(ref mut cond) = f.cond {
+                    Self::subst_type_in_stmt(cond, subst);
+                }
+                if let Some(ref mut post) = f.post {
+                    Self::subst_type_in_stmt(post, subst);
+                }
+                Self::subst_type_in_block(&mut f.body, subst);
+            }
+            ast::Statement::Range(r) => {
+                if let Some(ref mut key) = r.key {
+                    Self::subst_type_in_expr(key, subst);
+                }
+                if let Some(ref mut val) = r.value {
+                    Self::subst_type_in_expr(val, subst);
+                }
+                Self::subst_type_in_expr(&mut r.expr, subst);
+                Self::subst_type_in_block(&mut r.body, subst);
+            }
+            ast::Statement::Block(b) => Self::subst_type_in_block(b, subst),
+            ast::Statement::Switch(sw) => {
+                if let Some(ref mut init) = sw.init {
+                    Self::subst_type_in_stmt(init, subst);
+                }
+                if let Some(ref mut tag) = sw.tag {
+                    Self::subst_type_in_expr(tag, subst);
+                }
+                for case in &mut sw.block.body {
+                    for e in &mut case.list {
+                        Self::subst_type_in_expr(e, subst);
+                    }
+                    for s in case.body.as_mut().iter_mut() {
+                        Self::subst_type_in_stmt(s, subst);
+                    }
+                }
+            }
+            ast::Statement::IncDec(id) => Self::subst_type_in_expr(&mut id.expr, subst),
+            ast::Statement::Declaration(d) => {
+                match d {
+                    ast::DeclStmt::Variable(v) => {
+                        for spec in &mut v.specs {
+                            if let Some(ref mut typ) = spec.typ {
+                                Self::subst_type_in_expr(typ, subst);
+                            }
+                            for val in &mut spec.values {
+                                Self::subst_type_in_expr(val, subst);
+                            }
+                        }
+                    }
+                    ast::DeclStmt::Const(c) => {
+                        for spec in &mut c.specs {
+                            if let Some(ref mut typ) = spec.typ {
+                                Self::subst_type_in_expr(typ, subst);
+                            }
+                            for val in &mut spec.values {
+                                Self::subst_type_in_expr(val, subst);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ast::Statement::Defer(d) => {
+                Self::subst_type_in_expr(&mut d.call.func, subst);
+                for arg in &mut d.call.args {
+                    Self::subst_type_in_expr(arg, subst);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn subst_type_in_block(block: &mut ast::BlockStmt, subst: &HashMap<String, String>) {
+        for stmt in &mut block.list {
+            Self::subst_type_in_stmt(stmt, subst);
+        }
+    }
+
     fn resolve_type_name<'a>(&'a self, name: &'a str) -> &'a str {
         let mut resolved = name;
         for _ in 0..10 {
-            if let Some(base) = self.type_aliases.get(resolved) {
+            if let Some((base, _is_alias)) = self.type_aliases.get(resolved) {
                 resolved = base;
             } else {
                 break;
             }
         }
         resolved
+    }
+
+    fn is_type_alias(&self, name: &str) -> bool {
+        self.type_aliases
+            .get(name)
+            .map_or(false, |(_base, is_alias)| *is_alias)
     }
 
     fn field_to_wasm_types(&self, field: &ast::Field) -> Vec<WasmType> {
@@ -9221,9 +9882,23 @@ impl WasmCompiler {
                         "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32" | "bool" => ValType::I32,
                         "len" | "cap" => ValType::I64,
-                        "make" | "append" | "new" => ValType::I32,
+                        "make" | "append" | "new" | "complex" => ValType::I32,
                         "copy" => ValType::I64,
                         "string" => ValType::I32,
+                        "real" => {
+                            if let Some(arg) = call.args.first() {
+                                if self.is_complex64_expr(arg, locals) { ValType::F32 } else { ValType::F64 }
+                            } else {
+                                ValType::F64
+                            }
+                        }
+                        "imag" => {
+                            if let Some(arg) = call.args.first() {
+                                if self.is_complex64_expr(arg, locals) { ValType::F32 } else { ValType::F64 }
+                            } else {
+                                ValType::F64
+                            }
+                        }
                         "min" | "max" => {
                             if let Some(first_arg) = call.args.first() {
                                 self.infer_val_type(first_arg, locals)
@@ -9426,7 +10101,8 @@ impl WasmCompiler {
                         | "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32"
                         | "string" | "bool"
-                        | "new" | "min" | "max" => 1,
+                        | "new" | "min" | "max"
+                        | "complex" | "real" | "imag" => 1,
                         _ => {
                             if let Some(fi) =
                                 self.functions.iter().find(|f| f.name == ident.name)
@@ -9766,6 +10442,10 @@ impl WasmCompiler {
         module.section(&self.memory_section);
         module.section(&self.global_section);
         module.section(&self.export_section);
+        if let Some(start_idx) = self.start_func_idx {
+            let start_section = wasm_encoder::StartSection { function_index: start_idx };
+            module.section(&start_section);
+        }
         if !self.element_section.is_empty() {
             module.section(&self.element_section);
         }
