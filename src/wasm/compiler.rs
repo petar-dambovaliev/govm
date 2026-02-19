@@ -172,10 +172,11 @@ pub struct WasmCompiler {
     next_global_idx: u32,
     import_func_count: u32,
     heap_ptr_global: u32,
+    oom_func_idx: u32,
 
     functions: Vec<FuncInfo>,
     deferred_calls: Vec<Vec<DeferredCall>>,
-    loop_depth: Vec<u32>,
+    loop_depth: Vec<(Option<String>, u32)>,
     manifest: Manifest,
     struct_defs: HashMap<String, StructDef>,
     closure_captures: Option<ClosureCaptureState>,
@@ -205,6 +206,7 @@ impl WasmCompiler {
             next_global_idx: 0,
             import_func_count: 0,
             heap_ptr_global: 0,
+            oom_func_idx: 0,
 
             functions: Vec::new(),
             deferred_calls: Vec::new(),
@@ -281,6 +283,7 @@ impl WasmCompiler {
                 &[ValType::I32, ValType::I32, ValType::I32],
                 &[ValType::I32],
             ),
+            ("ctx_oom", &[], &[]),
         ];
 
         for (name, params, results) in pairs {
@@ -290,6 +293,10 @@ impl WasmCompiler {
                 results.iter().copied().collect::<Vec<_>>(),
             );
             self.next_type_idx += 1;
+
+            if *name == "ctx_oom" {
+                self.oom_func_idx = self.next_func_idx;
+            }
 
             self.import_section.import(
                 "env",
@@ -353,6 +360,7 @@ impl WasmCompiler {
         func.instruction(&Instruction::I32Const(-1));
         func.instruction(&Instruction::I32Eq);
         func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&Instruction::Call(self.oom_func_idx));
         func.instruction(&Instruction::Unreachable);
         func.instruction(&Instruction::End);
         func.instruction(&Instruction::End);
@@ -1043,7 +1051,21 @@ impl WasmCompiler {
             }
             ast::Statement::Empty(_) => Ok(()),
             ast::Statement::Label(labeled) => {
-                self.compile_statement(&labeled.stmt, out, locals, result_types)
+                match labeled.stmt.as_ref() {
+                    ast::Statement::For(for_stmt) => {
+                        self.compile_for_labeled(
+                            for_stmt, out, locals, result_types,
+                            Some(labeled.name.name.clone()),
+                        )
+                    }
+                    ast::Statement::Range(range) => {
+                        self.compile_range_labeled(
+                            range, out, locals, result_types,
+                            Some(labeled.name.name.clone()),
+                        )
+                    }
+                    _ => self.compile_statement(&labeled.stmt, out, locals, result_types),
+                }
             }
             ast::Statement::Go(_) => Err(Error::InternalError(
                 "goroutines not supported in WASM UDFs".to_string(),
@@ -1055,7 +1077,9 @@ impl WasmCompiler {
                 "select not supported in WASM UDFs".to_string(),
             )),
             ast::Statement::TypeSwitch(_) => Err(Error::InternalError(
-                "type switch not yet supported".to_string(),
+                "type switch statements are not supported in WASM UDFs; \
+                 use a regular switch or if/else chain on concrete types instead"
+                    .to_string(),
             )),
         }
     }
@@ -1472,7 +1496,7 @@ impl WasmCompiler {
         self.compile_expression(&if_stmt.cond, out, locals)?;
 
         out.push(Instruction::If(BlockType::Empty));
-        if let Some(depth) = self.loop_depth.last_mut() {
+        if let Some((_, depth)) = self.loop_depth.last_mut() {
             *depth += 1;
         }
         self.compile_block(&if_stmt.body, out, locals, result_types)?;
@@ -1482,7 +1506,7 @@ impl WasmCompiler {
             self.compile_statement(else_, out, locals, result_types)?;
         }
 
-        if let Some(depth) = self.loop_depth.last_mut() {
+        if let Some((_, depth)) = self.loop_depth.last_mut() {
             *depth -= 1;
         }
         out.push(Instruction::End);
@@ -1496,6 +1520,17 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        self.compile_for_labeled(for_stmt, out, locals, result_types, None)
+    }
+
+    fn compile_for_labeled(
+        &mut self,
+        for_stmt: &ast::ForStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        label: Option<String>,
+    ) -> Result<(), Error> {
         if let Some(init) = &for_stmt.init {
             self.compile_statement(init, out, locals, result_types)?;
         }
@@ -1503,7 +1538,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push(0);
+        self.loop_depth.push((label, 0));
 
         if let Some(cond) = &for_stmt.cond {
             if let ast::Statement::Expr(expr_stmt) = cond.as_ref() {
@@ -1539,6 +1574,17 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
         result_types: &[ValType],
+    ) -> Result<(), Error> {
+        self.compile_range_labeled(range, out, locals, result_types, None)
+    }
+
+    fn compile_range_labeled(
+        &mut self,
+        range: &ast::RangeStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        label: Option<String>,
     ) -> Result<(), Error> {
         let idx_local = locals.add_local("__range_idx", ValType::I32);
         let len_local = locals.add_local("__range_len", ValType::I32);
@@ -1600,7 +1646,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push(0);
+        self.loop_depth.push((label, 0));
 
         out.push(Instruction::LocalGet(idx_local));
         out.push(Instruction::LocalGet(len_local));
@@ -1776,7 +1822,7 @@ impl WasmCompiler {
             }
 
             out.push(Instruction::If(BlockType::Empty));
-            if let Some(depth) = self.loop_depth.last_mut() {
+            if let Some((_, depth)) = self.loop_depth.last_mut() {
                 *depth += 1;
             }
 
@@ -1788,7 +1834,7 @@ impl WasmCompiler {
             if !is_last || default_case.is_some() {
                 out.push(Instruction::Else);
             } else {
-                if let Some(depth) = self.loop_depth.last_mut() {
+                if let Some((_, depth)) = self.loop_depth.last_mut() {
                     *depth -= 1;
                 }
                 out.push(Instruction::End);
@@ -1808,7 +1854,7 @@ impl WasmCompiler {
         };
 
         for _ in 0..blocks_to_close {
-            if let Some(depth) = self.loop_depth.last_mut() {
+            if let Some((_, depth)) = self.loop_depth.last_mut() {
                 *depth -= 1;
             }
             out.push(Instruction::End);
@@ -1822,7 +1868,11 @@ impl WasmCompiler {
         branch: &ast::BranchStmt,
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
-        let extra = self.loop_depth.last().copied().unwrap_or(0);
+        if let Some(ref label_ident) = branch.ident {
+            return self.compile_labeled_branch(branch.key, &label_ident.name, out);
+        }
+
+        let extra = self.loop_depth.last().map(|(_, d)| *d).unwrap_or(0);
         match branch.key {
             Keyword::Break => {
                 out.push(Instruction::Br(1 + extra));
@@ -1834,6 +1884,50 @@ impl WasmCompiler {
                 return Err(Error::InternalError(format!(
                     "unsupported branch keyword: {:?}",
                     branch.key
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_labeled_branch(
+        &mut self,
+        key: Keyword,
+        label: &str,
+        out: &mut Vec<Instruction<'static>>,
+    ) -> Result<(), Error> {
+        let target_idx = self
+            .loop_depth
+            .iter()
+            .rposition(|(lbl, _)| lbl.as_deref() == Some(label))
+            .ok_or_else(|| {
+                Error::InternalError(format!("undefined label: {}", label))
+            })?;
+
+        // Each loop entry is Block { Loop { ... } }. From the innermost loop,
+        // we accumulate the extra block depth of the current (innermost) loop,
+        // then +2 per intermediate loop (Block + Loop), then reach the target.
+        let innermost = self.loop_depth.len() - 1;
+        let inner_extra = self.loop_depth[innermost].1;
+        let loops_between = (innermost - target_idx) as u32;
+
+        match key {
+            Keyword::Break => {
+                // Target the Block of the labeled loop.
+                // From current position: inner_extra + 2 * loops_between + 1
+                let depth = inner_extra + 2 * loops_between + 1;
+                out.push(Instruction::Br(depth));
+            }
+            Keyword::Continue => {
+                // Target the Loop of the labeled loop.
+                // From current position: inner_extra + 2 * loops_between
+                let depth = inner_extra + 2 * loops_between;
+                out.push(Instruction::Br(depth));
+            }
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported branch keyword: {:?}",
+                    key
                 )));
             }
         }
@@ -2944,6 +3038,12 @@ impl WasmCompiler {
             Operator::LessEqual => out.push(Instruction::F64Le),
             Operator::Greater => out.push(Instruction::F64Gt),
             Operator::GreaterEqual => out.push(Instruction::F64Ge),
+            Operator::Rem => {
+                return Err(Error::InternalError(
+                    "the modulo operator (%) is not valid on floating-point types"
+                        .to_string(),
+                ))
+            }
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported operator {:?} for f64 type",
@@ -2970,6 +3070,12 @@ impl WasmCompiler {
             Operator::LessEqual => out.push(Instruction::F32Le),
             Operator::Greater => out.push(Instruction::F32Gt),
             Operator::GreaterEqual => out.push(Instruction::F32Ge),
+            Operator::Rem => {
+                return Err(Error::InternalError(
+                    "the modulo operator (%) is not valid on floating-point types"
+                        .to_string(),
+                ))
+            }
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported operator {:?} for f32 type",
@@ -3454,21 +3560,158 @@ impl WasmCompiler {
                     "string" => {
                         if let Some(arg) = call.args.first() {
                             let vt = self.infer_val_type(arg, locals);
+                            if vt == ValType::I32
+                                && self.is_string_expr(arg, locals)
+                            {
+                                self.compile_expression(arg, out, locals)?;
+                                return Ok(());
+                            }
+                            self.compile_expression(arg, out, locals)?;
+                            let rune_local = locals.add_local(
+                                &format!("__rune_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
                             match vt {
-                                ValType::I32 => {
-                                    self.compile_expression(arg, out, locals)?;
-                                    return Ok(());
-                                }
+                                ValType::I64 => out.push(Instruction::I32WrapI64),
+                                ValType::I32 => {}
                                 _ => {
                                     return Err(Error::InternalError(format!(
-                                        "string() conversion from {:?} is not supported; \
-                                         only []byte (which maps to i32 pointer) is supported. \
-                                         Integer-to-rune conversion (e.g. string(65) -> \"A\") \
-                                         is not yet implemented",
+                                        "string() conversion from {:?} is not supported",
                                         vt
                                     )));
                                 }
                             }
+                            out.push(Instruction::LocalSet(rune_local));
+
+                            let buf_local = locals.add_local(
+                                &format!("__rune_buf_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            let len_local = locals.add_local(
+                                &format!("__rune_len_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+
+                            out.push(Instruction::I32Const(4));
+                            out.push(Instruction::Call(self.alloc_func_idx()?));
+                            out.push(Instruction::LocalSet(buf_local));
+
+                            // UTF-8 encode: 1-byte (0..0x80), 2-byte (0x80..0x800),
+                            // 3-byte (0x800..0x10000), 4-byte (0x10000..0x110000)
+                            out.push(Instruction::LocalGet(rune_local));
+                            out.push(Instruction::I32Const(0x80));
+                            out.push(Instruction::I32LtU);
+                            out.push(Instruction::If(BlockType::Empty));
+                            {
+                                // 1-byte: buf[0] = rune
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(1));
+                                out.push(Instruction::LocalSet(len_local));
+                            }
+                            out.push(Instruction::Else);
+                            out.push(Instruction::LocalGet(rune_local));
+                            out.push(Instruction::I32Const(0x800));
+                            out.push(Instruction::I32LtU);
+                            out.push(Instruction::If(BlockType::Empty));
+                            {
+                                // 2-byte: buf[0] = 0xC0 | (rune >> 6), buf[1] = 0x80 | (rune & 0x3F)
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0xC0));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(6));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(2));
+                                out.push(Instruction::LocalSet(len_local));
+                            }
+                            out.push(Instruction::Else);
+                            out.push(Instruction::LocalGet(rune_local));
+                            out.push(Instruction::I32Const(0x10000));
+                            out.push(Instruction::I32LtU);
+                            out.push(Instruction::If(BlockType::Empty));
+                            {
+                                // 3-byte
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0xE0));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(12));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(6));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(3));
+                                out.push(Instruction::LocalSet(len_local));
+                            }
+                            out.push(Instruction::Else);
+                            {
+                                // 4-byte
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0xF0));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(18));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(12));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(6));
+                                out.push(Instruction::I32ShrU);
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::I32Const(0x80));
+                                out.push(Instruction::LocalGet(rune_local));
+                                out.push(Instruction::I32Const(0x3F));
+                                out.push(Instruction::I32And);
+                                out.push(Instruction::I32Or);
+                                out.push(Instruction::I32Store8(MemArg { offset: 3, align: 0, memory_index: 0 }));
+                                out.push(Instruction::I32Const(4));
+                                out.push(Instruction::LocalSet(len_local));
+                            }
+                            out.push(Instruction::End); // closes if/else (3-byte vs 4-byte)
+                            out.push(Instruction::End); // closes if/else (2-byte vs rest)
+                            out.push(Instruction::End); // closes if/else (1-byte vs rest)
+
+                            out.push(Instruction::LocalGet(buf_local));
+                            out.push(Instruction::LocalGet(len_local));
+                            return Ok(());
                         }
                         return Ok(());
                     }
@@ -4535,6 +4778,7 @@ impl WasmCompiler {
                         "int" | "int64" => ValType::I64,
                         "int32" | "byte" | "bool" => ValType::I32,
                         "len" | "make" | "append" => ValType::I32,
+                        "string" => ValType::I32,
                         _ => {
                             if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
                                 fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())

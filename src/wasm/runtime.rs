@@ -120,7 +120,7 @@ impl UdfRuntime {
                 let data = memory.data(&caller);
                 let msg =
                     std::str::from_utf8(&data[ptr as usize..(ptr + len) as usize])
-                        .unwrap_or("<invalid utf8>")
+                        .map_err(|_| wasmtime::Error::msg("invalid UTF-8 in ctx_log message"))?
                         .to_string();
                 caller.data_mut().logs.push(msg);
                 Ok(())
@@ -216,7 +216,7 @@ impl UdfRuntime {
                 let key = std::str::from_utf8(
                     &data[key_ptr as usize..(key_ptr + key_len) as usize],
                 )
-                .unwrap_or("")
+                .map_err(|_| wasmtime::Error::msg("invalid UTF-8 in config key"))?
                 .to_string();
                 let value =
                     caller.data().config.get(&key).cloned().unwrap_or_default();
@@ -226,6 +226,16 @@ impl UdfRuntime {
                     [out_ptr as usize..out_ptr as usize + bytes.len()]
                     .copy_from_slice(bytes);
                 Ok(bytes.len() as i32)
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "ctx_oom",
+            |_caller: wasmtime::Caller<'_, HostState>| -> Result<(), wasmtime::Error> {
+                Err(wasmtime::Error::msg(
+                    "out of memory: WASM linear memory could not be grown",
+                ))
             },
         )?;
 

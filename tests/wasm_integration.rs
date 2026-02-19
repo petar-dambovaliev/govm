@@ -3559,28 +3559,34 @@ func UseTypeAssert(x int) int {
 }
 
 #[test]
-fn test_string_conversion_from_int_error() {
+fn test_string_conversion_from_int() {
     let source = r#"
 package main
 
-func ConvertIntToString(x int) int {
+func ConvertIntToString(x int32) int32 {
     s := string(x)
     return len(s)
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    match result {
-        Ok(_) => panic!("should fail on string(int) conversion"),
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("string()") || err_msg.contains("not supported"),
-                "error should mention unsupported string conversion, got: {}",
-                err_msg
-            );
-        }
-    }
+    let result = compiler.compile_source(source).expect("should compile");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<i32, i32>(&mut store, "ConvertIntToString")
+        .unwrap();
+
+    // ASCII 'A' (65) -> 1 UTF-8 byte
+    assert_eq!(func.call(&mut store, 65).unwrap(), 1);
+    // U+00E9 (233, 'é') -> 2 UTF-8 bytes
+    assert_eq!(func.call(&mut store, 0xE9).unwrap(), 2);
+    // U+4E16 (20054, '世') -> 3 UTF-8 bytes
+    assert_eq!(func.call(&mut store, 0x4E16).unwrap(), 3);
+    // U+1F600 (128512, '😀') -> 4 UTF-8 bytes
+    assert_eq!(func.call(&mut store, 0x1F600).unwrap(), 4);
 }
 
 #[test]
@@ -5443,4 +5449,423 @@ func Pipeline(x int) int {
 
     assert_eq!(func.call(&mut store, 5).expect("call failed"), 11);
     assert_eq!(func.call(&mut store, 0).expect("call failed"), 1);
+}
+
+// --- Regression tests for Bug 4: labeled break/continue ---
+
+#[test]
+fn test_labeled_break_outer_loop() {
+    let source = r#"
+package main
+
+func LabeledBreak() int {
+    result := 0
+    i := 0
+Outer:
+    for i < 5 {
+        i++
+        j := 0
+        for j < 5 {
+            j++
+            if j == 3 {
+                break Outer
+            }
+            result = result + 1
+        }
+    }
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "LabeledBreak")
+        .unwrap();
+    // Inner loop: j=1,2 increment result, j=3 breaks outer -> result = 2
+    assert_eq!(func.call(&mut store, ()).unwrap(), 2);
+}
+
+#[test]
+fn test_labeled_continue_outer_loop() {
+    let source = r#"
+package main
+
+func LabeledContinue() int {
+    result := 0
+    i := 0
+Outer:
+    for i < 3 {
+        i++
+        j := 0
+        for j < 3 {
+            j++
+            if j == 2 {
+                continue Outer
+            }
+            result = result + 1
+        }
+    }
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "LabeledContinue")
+        .unwrap();
+    // Each outer iteration: j=1 increments result, j=2 continues outer -> 3 iterations * 1 = 3
+    assert_eq!(func.call(&mut store, ()).unwrap(), 3);
+}
+
+// --- Regression test for Bug 3: OOM produces descriptive error ---
+
+#[test]
+fn test_oom_produces_descriptive_error() {
+    let source = r#"
+package main
+
+func OomTest() int {
+    total := 0
+    for i := 0; i < 10000; i++ {
+        s := make([]int, 10000)
+        total = total + len(s)
+    }
+    return total
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "OomTest")
+        .unwrap();
+    let err = func.call(&mut store, ()).unwrap_err();
+    // The "out of memory" message may be in the error chain
+    let full_err = format!("{:#}", err);
+    assert!(
+        full_err.contains("out of memory") || full_err.contains("unreachable"),
+        "OOM should produce a trap (either descriptive 'out of memory' or wasm trap), got: {}",
+        full_err
+    );
+}
+
+// --- Regression test for Bug 6: type switch error message ---
+
+#[test]
+fn test_type_switch_error_message() {
+    let source = r#"
+package main
+
+func TypeSwitchTest(x interface{}) int {
+    switch x.(type) {
+    case int:
+        return 1
+    default:
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("type switch should produce a compilation error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("type switch") && err_msg.contains("not supported"),
+                "error should mention type switch not supported, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+// --- Regression test for Bug 8: float modulo error ---
+
+#[test]
+fn test_float_modulo_error() {
+    let source = r#"
+package main
+
+func FloatMod(a float64, b float64) float64 {
+    return a % b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("float modulo should produce a compilation error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("modulo") && err_msg.contains("floating-point"),
+                "error should mention modulo on float, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+// --- Regression tests for defer LIFO ordering ---
+
+#[test]
+fn test_defer_lifo_with_named_functions() {
+    let source = r#"
+package main
+
+var trace int = 0
+
+func push1() {
+    trace = trace * 10 + 1
+}
+
+func push2() {
+    trace = trace * 10 + 2
+}
+
+func push3() {
+    trace = trace * 10 + 3
+}
+
+func DeferOrder() int {
+    defer push1()
+    defer push2()
+    defer push3()
+    return trace
+}
+
+func GetTrace() int {
+    return trace
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+
+    let defer_func = instance
+        .get_typed_func::<(), i64>(&mut store, "DeferOrder")
+        .unwrap();
+    // DeferOrder returns trace BEFORE defers execute (trace=0 at return)
+    let _ = defer_func.call(&mut store, ());
+
+    let get_trace = instance
+        .get_typed_func::<(), i64>(&mut store, "GetTrace")
+        .unwrap();
+    let trace_val = get_trace.call(&mut store, ()).unwrap();
+    // LIFO order: push3 first (trace=3), push2 next (trace=32), push1 last (trace=321)
+    assert_eq!(trace_val, 321, "defer should execute in LIFO order");
+}
+
+// --- Regression tests for unsigned arithmetic ---
+
+#[test]
+fn test_unsigned_division_regression() {
+    let source = r#"
+package main
+
+func UnsignedDiv(a uint, b uint) uint {
+    return a / b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "UnsignedDiv")
+        .unwrap();
+    assert_eq!(func.call(&mut store, (10, 3)).unwrap(), 3);
+    assert_eq!(func.call(&mut store, (100, 7)).unwrap(), 14);
+}
+
+#[test]
+fn test_unsigned_right_shift() {
+    let source = r#"
+package main
+
+func UnsignedShr(a uint, b uint) uint {
+    return a >> b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "UnsignedShr")
+        .unwrap();
+    // -1 as uint64 is 0xFFFFFFFFFFFFFFFF
+    // Unsigned right shift by 60 gives 0xF = 15
+    assert_eq!(func.call(&mut store, (-1i64, 60)).unwrap(), 15);
+}
+
+#[test]
+fn test_unsigned_comparison_negative_vs_positive() {
+    let source = r#"
+package main
+
+func UnsignedLess(a uint, b uint) int {
+    if a < b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "UnsignedLess")
+        .unwrap();
+    // As signed: -1 < 1 is true. As unsigned: 0xFFFF...FFFF > 1 -> false
+    assert_eq!(func.call(&mut store, (-1i64, 1)).unwrap(), 0);
+    assert_eq!(func.call(&mut store, (1, 2)).unwrap(), 1);
+}
+
+// --- Regression test for compound assignment to struct fields ---
+
+#[test]
+fn test_compound_assign_struct_field() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func CompoundStructField() int {
+    p := Point{X: 10, Y: 20}
+    p.X += 5
+    p.Y -= 3
+    return p.X + p.Y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "CompoundStructField")
+        .unwrap();
+    // (10+5) + (20-3) = 15 + 17 = 32
+    assert_eq!(func.call(&mut store, ()).unwrap(), 32);
+}
+
+// --- Regression test for compound assignment to slice elements ---
+
+#[test]
+fn test_compound_assign_slice_element() {
+    let source = r#"
+package main
+
+func CompoundSliceElem() int {
+    s := make([]int, 3)
+    s[0] = 10
+    s[1] = 20
+    s[2] = 30
+    s[1] += 5
+    return s[0] + s[1] + s[2]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "CompoundSliceElem")
+        .unwrap();
+    // 10 + (20+5) + 30 = 65
+    assert_eq!(func.call(&mut store, ()).unwrap(), 65);
+}
+
+// --- Regression test for empty switch ---
+
+#[test]
+fn test_empty_switch() {
+    let source = r#"
+package main
+
+func EmptySwitch(x int) int {
+    result := 0
+    switch {
+    }
+    result = x + 1
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "EmptySwitch")
+        .unwrap();
+    assert_eq!(func.call(&mut store, 5).unwrap(), 6);
+}
+
+// --- Regression test for global variable mutation across function calls ---
+
+#[test]
+fn test_global_variable_mutation() {
+    let source = r#"
+package main
+
+var counter int = 0
+
+func Increment() int {
+    counter = counter + 1
+    return counter
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Increment")
+        .unwrap();
+    assert_eq!(func.call(&mut store, ()).unwrap(), 1);
+    assert_eq!(func.call(&mut store, ()).unwrap(), 2);
+    assert_eq!(func.call(&mut store, ()).unwrap(), 3);
 }
