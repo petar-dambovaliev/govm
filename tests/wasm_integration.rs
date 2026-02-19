@@ -9291,16 +9291,16 @@ package main
 
 var result int
 
-func Run() int {
-    result = 0
-    doWork()
-    return result
-}
-
 func doWork() {
     defer func() { result = result + 1 }()
     defer func() { result = result + 10 }()
     result = 100
+}
+
+func Run() int {
+    result = 0
+    doWork()
+    return result
 }
 "#;
     let mut compiler = WasmCompiler::new();
@@ -9493,10 +9493,14 @@ func Run() int {
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let err = compiler.compile_source(source).expect_err("should fail");
-    let msg = format!("{:?}", err);
-    assert!(msg.contains("recover") && msg.contains("not supported"),
-        "expected recover error, got: {}", msg);
+    match compiler.compile_source(source) {
+        Ok(_) => panic!("recover() should fail to compile"),
+        Err(e) => {
+            let msg = format!("{}", e);
+            assert!(msg.contains("recover") && msg.contains("not supported"),
+                "expected recover error, got: {}", msg);
+        }
+    }
 }
 
 #[test]

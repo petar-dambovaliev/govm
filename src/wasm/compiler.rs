@@ -1670,7 +1670,7 @@ impl WasmCompiler {
                             }
                         }
 
-                        // Track array literal assignments: a := [N]T{...}
+                        // Track composite literal assignments
                         if let ast::Expression::CompositeLit(comp) = &assign.right[i] {
                             if let ast::Expression::TypeArray(arr_type) = comp.typ.as_ref() {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
@@ -1679,6 +1679,17 @@ impl WasmCompiler {
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
                                 locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                            } else if let ast::Expression::TypeSlice(slice_type) = comp.typ.as_ref() {
+                                locals.set_var_struct_type(&ident.name, "__slice");
+                                let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                                locals.slice_elem_types.insert(ident.name.clone(), elem_vt);
+                            } else if let ast::Expression::TypeMap(map_type) = comp.typ.as_ref() {
+                                locals.set_var_struct_type(&ident.name, "__map");
+                                let (kv, ks, vv, vs, sk, sv) = self.map_key_val_types(map_type);
+                                locals.map_types.insert(
+                                    ident.name.clone(),
+                                    MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv },
+                                );
                             }
                         }
 
@@ -9146,6 +9157,14 @@ impl WasmCompiler {
                     if let Some(vt) = locals.find_type(&ident.name) {
                         return vt;
                     }
+                    if let Some(ref cc) = self.closure_captures {
+                        if let Some(cap) = cc.captures.iter().find(|c| c.name == ident.name) {
+                            return cap.val_type;
+                        }
+                        if let Some((_, vt)) = cc.outer_locals.iter().find(|(n, _)| n == &ident.name) {
+                            return *vt;
+                        }
+                    }
                     if let Some(cv) = self.constants.get(&ident.name) {
                         return match cv {
                             ConstValue::I64(_) => ValType::I64,
@@ -9199,7 +9218,8 @@ impl WasmCompiler {
                         "float64" => ValType::F64,
                         "float32" => ValType::F32,
                         "int" | "int64" | "uint" | "uint64" => ValType::I64,
-                        "int32" | "byte" | "uint8" | "uint16" | "uint32" | "bool" => ValType::I32,
+                        "int8" | "int16" | "int32" | "rune"
+                        | "byte" | "uint8" | "uint16" | "uint32" | "bool" => ValType::I32,
                         "len" | "cap" => ValType::I64,
                         "make" | "append" | "new" => ValType::I32,
                         "copy" => ValType::I64,
