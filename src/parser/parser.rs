@@ -534,7 +534,7 @@ impl Parser {
 
         if spec.typ.is_none() && spec.values.is_empty() {
             let pos = self.current_pos();
-            Err(self.else_error_at(pos, "mission variable type or initialization"))
+            Err(self.else_error_at(pos, "missing variable type or initialization"))
         } else {
             Ok(spec)
         }
@@ -560,7 +560,7 @@ impl Parser {
 
         if spec.values.is_empty() && (spec.typ.is_some() || index == 0) {
             let pos = self.current_pos();
-            Err(self.else_error_at(pos, "mission constant value"))
+            Err(self.else_error_at(pos, "missing constant value"))
         } else {
             Ok(spec)
         }
@@ -1972,7 +1972,7 @@ impl Parser {
 
     fn parse_if_header(&mut self) -> Result<(Option<Box<ast::Statement>>, ast::Expression)> {
         if self.current_is(Operator::BraceLeft) {
-            return Err(self.else_error("mission condition in if statement"));
+            return Err(self.else_error("missing condition in if statement"));
         }
 
         let prev_level = self.expr_level;
@@ -1998,7 +1998,7 @@ impl Parser {
             (Some(init), Some(cond)) => (Some(init), cond),
             (Some(init), None) => (None, init),
             (None, Some(cond)) => (None, cond),
-            (None, None) => return Err(self.else_error("mission cond in if statement")),
+            (None, None) => return Err(self.else_error("missing condition in if statement")),
         };
 
         let cond = match cond {
@@ -2346,7 +2346,7 @@ fn extract(expr: ast::Expression, force: bool) -> (Option<ast::Ident>, Option<as
                     (opt.x, opt.y) = (optx, opty);
                     (None, Some(ast::Expression::Operation(opt)))
                 }
-                _ => panic!("extract lost"),
+                _ => unreachable!("extract returned (None, None)"),
             },
             _ => (None, Some(ast::Expression::Operation(opt))),
         },

@@ -6374,3 +6374,107 @@ func (a *SumAgg) Finalize() int {
     );
     assert_eq!(result.manifest.aggregates[0].name, "SumAgg");
 }
+
+#[test]
+fn test_aggregate_runtime_accumulate_finalize() {
+    let source = r#"
+package main
+
+type SumAgg struct {
+    Total int
+}
+
+func (a *SumAgg) Accumulate(val int) {
+    a.Total = a.Total + val
+}
+
+func (a *SumAgg) Finalize() int {
+    return a.Total
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let init_func = instance
+        .get_typed_func::<(), i32>(&mut store, "SumAgg_init")
+        .expect("SumAgg_init not found");
+    let ptr = init_func.call(&mut store, ()).expect("init call failed");
+
+    let accumulate = instance
+        .get_typed_func::<(i32, i64), ()>(&mut store, "SumAgg_accumulate")
+        .expect("SumAgg_accumulate not found");
+    accumulate.call(&mut store, (ptr, 10)).expect("accumulate 10 failed");
+    accumulate.call(&mut store, (ptr, 20)).expect("accumulate 20 failed");
+    accumulate.call(&mut store, (ptr, 30)).expect("accumulate 30 failed");
+
+    let finalize = instance
+        .get_typed_func::<i32, i64>(&mut store, "SumAgg_finalize")
+        .expect("SumAgg_finalize not found");
+    let total = finalize.call(&mut store, ptr).expect("finalize call failed");
+    assert_eq!(total, 60);
+}
+
+#[test]
+fn test_multi_return_count_mismatch_error() {
+    let source = r#"
+package main
+
+func triple(x int) (int, int, int) {
+    return x, x * 2, x * 3
+}
+
+func Run(x int) int {
+    a, b := triple(x)
+    return a + b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    match compiler.compile_source(source) {
+        Err(err) => {
+            let msg = format!("{}", err);
+            assert!(
+                msg.contains("assignment mismatch"),
+                "expected assignment mismatch error, got: {}",
+                msg
+            );
+        }
+        Ok(_) => panic!("expected compilation to fail with assignment mismatch error"),
+    }
+}
+
+#[test]
+fn test_closure_with_return_value() {
+    let source = r#"
+package main
+
+func Run(x int) int {
+    double := func(n int) int {
+        return n * 2
+    }
+    return double(x)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    assert_eq!(func.call(&mut store, 5).expect("call failed"), 10);
+    assert_eq!(func.call(&mut store, 21).expect("call failed"), 42);
+}

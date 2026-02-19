@@ -1130,7 +1130,14 @@ impl WasmCompiler {
             if assign.right.len() == 1 && assign.left.len() > 1 {
                 if let ast::Expression::Call(_) = &assign.right[0] {
                     let ret_types = self.call_return_val_types(&assign.right[0], locals);
-                    if ret_types.len() >= assign.left.len() {
+                    if !ret_types.is_empty() && ret_types.len() != assign.left.len() {
+                        return Err(Error::InternalError(format!(
+                            "assignment mismatch: {} variables but function returns {} values",
+                            assign.left.len(),
+                            ret_types.len()
+                        )));
+                    }
+                    if ret_types.len() == assign.left.len() {
                         return self.compile_multi_return_define(assign, &ret_types, out, locals);
                     }
                 }
@@ -4122,12 +4129,38 @@ impl WasmCompiler {
         self.next_func_idx += 1;
 
         let closure_name = format!("__closure_{}", func_idx);
+        let wasm_params: Vec<(String, WasmType)> = go_param_names
+            .iter()
+            .zip(go_param_types.iter())
+            .map(|(n, vt)| {
+                (
+                    n.clone(),
+                    match vt {
+                        ValType::I32 => WasmType::I32,
+                        ValType::I64 => WasmType::I64,
+                        ValType::F32 => WasmType::F32,
+                        ValType::F64 => WasmType::F64,
+                        _ => WasmType::I32,
+                    },
+                )
+            })
+            .collect();
+        let wasm_results: Vec<WasmType> = result_types
+            .iter()
+            .map(|vt| match vt {
+                ValType::I32 => WasmType::I32,
+                ValType::I64 => WasmType::I64,
+                ValType::F32 => WasmType::F32,
+                ValType::F64 => WasmType::F64,
+                _ => WasmType::I32,
+            })
+            .collect();
         self.functions.push(FuncInfo {
             wasm_func_idx: func_idx,
             type_idx,
             name: closure_name,
-            params: vec![],
-            results: vec![],
+            params: wasm_params,
+            results: wasm_results,
             is_exported: false,
             recv_type: None,
         });

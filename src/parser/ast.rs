@@ -588,7 +588,7 @@ impl FieldList {
             return field.typ.pos();
         }
 
-        panic!("call pos on empty FieldList");
+        0
     }
 }
 
