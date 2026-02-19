@@ -1096,9 +1096,106 @@ impl WasmCompiler {
                             }
                         }
                     }
+                    ast::Expression::Index(idx_expr) => {
+                        let rhs_vt = if i < assign.right.len() {
+                            self.infer_val_type(&assign.right[i], locals)
+                        } else {
+                            ValType::I64
+                        };
+                        let rhs_tmp = locals.add_local(
+                            &format!("__idx_rhs_{}", locals.locals.len()),
+                            rhs_vt,
+                        );
+                        out.push(Instruction::LocalSet(rhs_tmp));
+
+                        let (elem_vt, align) =
+                            self.compile_index_store_addr(idx_expr, out, locals)?;
+
+                        let addr_tmp = locals.add_local(
+                            &format!("__idx_addr_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(addr_tmp));
+
+                        match assign.op {
+                            Operator::Assign => {
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(rhs_tmp));
+                                Self::emit_typed_coerce(rhs_vt, elem_vt, out);
+                                Self::emit_typed_store(elem_vt, 0, align, out);
+                            }
+                            _ => {
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                Self::emit_typed_load(elem_vt, 0, align, out);
+
+                                out.push(Instruction::LocalGet(rhs_tmp));
+                                Self::emit_typed_coerce(rhs_vt, elem_vt, out);
+
+                                self.emit_compound_op(&assign.op, elem_vt, out)?;
+
+                                let result_tmp = locals.add_local(
+                                    &format!("__idx_res_{}", locals.locals.len()),
+                                    elem_vt,
+                                );
+                                out.push(Instruction::LocalSet(result_tmp));
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(result_tmp));
+                                Self::emit_typed_store(elem_vt, 0, align, out);
+                            }
+                        }
+                    }
+                    ast::Expression::Selector(sel) => {
+                        let rhs_vt = if i < assign.right.len() {
+                            self.infer_val_type(&assign.right[i], locals)
+                        } else {
+                            ValType::I64
+                        };
+                        let rhs_tmp = locals.add_local(
+                            &format!("__sel_rhs_{}", locals.locals.len()),
+                            rhs_vt,
+                        );
+                        out.push(Instruction::LocalSet(rhs_tmp));
+
+                        let (offset, field_vt) =
+                            self.compile_selector_store_addr(sel, out, locals)?;
+                        let (_, align) = Self::elem_size_and_align(field_vt);
+
+                        let addr_tmp = locals.add_local(
+                            &format!("__sel_addr_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(addr_tmp));
+
+                        match assign.op {
+                            Operator::Assign => {
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(rhs_tmp));
+                                Self::emit_typed_coerce(rhs_vt, field_vt, out);
+                                Self::emit_typed_store(field_vt, offset, align, out);
+                            }
+                            _ => {
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                Self::emit_typed_load(field_vt, offset, align, out);
+
+                                out.push(Instruction::LocalGet(rhs_tmp));
+                                Self::emit_typed_coerce(rhs_vt, field_vt, out);
+
+                                self.emit_compound_op(&assign.op, field_vt, out)?;
+
+                                let result_tmp = locals.add_local(
+                                    &format!("__sel_res_{}", locals.locals.len()),
+                                    field_vt,
+                                );
+                                out.push(Instruction::LocalSet(result_tmp));
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(result_tmp));
+                                Self::emit_typed_store(field_vt, offset, align, out);
+                            }
+                        }
+                    }
                     _ => {
                         return Err(Error::InternalError(
-                            "compound assignment to non-identifier targets not supported"
+                            "assignment to unsupported target expression"
                                 .to_string(),
                         ));
                     }
@@ -1534,58 +1631,113 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn emit_incdec_op(op: Operator, vt: ValType, out: &mut Vec<Instruction<'static>>) -> Result<(), Error> {
+        match (op, vt) {
+            (Operator::Inc, ValType::I64) => {
+                out.push(Instruction::I64Const(1));
+                out.push(Instruction::I64Add);
+            }
+            (Operator::Dec, ValType::I64) => {
+                out.push(Instruction::I64Const(1));
+                out.push(Instruction::I64Sub);
+            }
+            (Operator::Inc, ValType::I32) => {
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::I32Add);
+            }
+            (Operator::Dec, ValType::I32) => {
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::I32Sub);
+            }
+            (Operator::Inc, ValType::F64) => {
+                out.push(Instruction::F64Const(1.0));
+                out.push(Instruction::F64Add);
+            }
+            (Operator::Dec, ValType::F64) => {
+                out.push(Instruction::F64Const(1.0));
+                out.push(Instruction::F64Sub);
+            }
+            (Operator::Inc, _) => {
+                out.push(Instruction::I64Const(1));
+                out.push(Instruction::I64Add);
+            }
+            (Operator::Dec, _) => {
+                out.push(Instruction::I64Const(1));
+                out.push(Instruction::I64Sub);
+            }
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported inc/dec operator: {:?}",
+                    op
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn compile_incdec(
         &mut self,
         incdec: &ast::IncDecStmt,
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        if let ast::Expression::Ident(ident) = &incdec.expr {
-            if let Some(idx) = locals.find(&ident.name) {
-                out.push(Instruction::LocalGet(idx));
-                let vt = self.infer_val_type(&incdec.expr, locals);
-                match (incdec.op, vt) {
-                    (Operator::Inc, ValType::I64) => {
-                        out.push(Instruction::I64Const(1));
-                        out.push(Instruction::I64Add);
-                    }
-                    (Operator::Dec, ValType::I64) => {
-                        out.push(Instruction::I64Const(1));
-                        out.push(Instruction::I64Sub);
-                    }
-                    (Operator::Inc, ValType::I32) => {
-                        out.push(Instruction::I32Const(1));
-                        out.push(Instruction::I32Add);
-                    }
-                    (Operator::Dec, ValType::I32) => {
-                        out.push(Instruction::I32Const(1));
-                        out.push(Instruction::I32Sub);
-                    }
-                    (Operator::Inc, ValType::F64) => {
-                        out.push(Instruction::F64Const(1.0));
-                        out.push(Instruction::F64Add);
-                    }
-                    (Operator::Dec, ValType::F64) => {
-                        out.push(Instruction::F64Const(1.0));
-                        out.push(Instruction::F64Sub);
-                    }
-                    (Operator::Inc, _) => {
-                        out.push(Instruction::I64Const(1));
-                        out.push(Instruction::I64Add);
-                    }
-                    (Operator::Dec, _) => {
-                        out.push(Instruction::I64Const(1));
-                        out.push(Instruction::I64Sub);
-                    }
-                    _ => {
-                        return Err(Error::InternalError(format!(
-                            "unsupported inc/dec operator: {:?}",
-                            incdec.op
-                        )));
-                    }
+        match &incdec.expr {
+            ast::Expression::Ident(ident) => {
+                if let Some(idx) = locals.find(&ident.name) {
+                    out.push(Instruction::LocalGet(idx));
+                    let vt = self.infer_val_type(&incdec.expr, locals);
+                    Self::emit_incdec_op(incdec.op, vt, out)?;
+                    out.push(Instruction::LocalSet(idx));
                 }
-                out.push(Instruction::LocalSet(idx));
             }
+            ast::Expression::Index(idx_expr) => {
+                let (elem_vt, align) =
+                    self.compile_index_store_addr(idx_expr, out, locals)?;
+                let addr_tmp = locals.add_local(
+                    &format!("__incdec_addr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalSet(addr_tmp));
+
+                out.push(Instruction::LocalGet(addr_tmp));
+                Self::emit_typed_load(elem_vt, 0, align, out);
+
+                Self::emit_incdec_op(incdec.op, elem_vt, out)?;
+
+                let result_tmp = locals.add_local(
+                    &format!("__incdec_res_{}", locals.locals.len()),
+                    elem_vt,
+                );
+                out.push(Instruction::LocalSet(result_tmp));
+                out.push(Instruction::LocalGet(addr_tmp));
+                out.push(Instruction::LocalGet(result_tmp));
+                Self::emit_typed_store(elem_vt, 0, align, out);
+            }
+            ast::Expression::Selector(sel) => {
+                let (offset, field_vt) =
+                    self.compile_selector_store_addr(sel, out, locals)?;
+                let (_, align) = Self::elem_size_and_align(field_vt);
+                let addr_tmp = locals.add_local(
+                    &format!("__incdec_addr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalSet(addr_tmp));
+
+                out.push(Instruction::LocalGet(addr_tmp));
+                Self::emit_typed_load(field_vt, offset, align, out);
+
+                Self::emit_incdec_op(incdec.op, field_vt, out)?;
+
+                let result_tmp = locals.add_local(
+                    &format!("__incdec_res_{}", locals.locals.len()),
+                    field_vt,
+                );
+                out.push(Instruction::LocalSet(result_tmp));
+                out.push(Instruction::LocalGet(addr_tmp));
+                out.push(Instruction::LocalGet(result_tmp));
+                Self::emit_typed_store(field_vt, offset, align, out);
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -3500,6 +3652,200 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn compile_index_store_addr(
+        &mut self,
+        idx: &ast::Index,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(ValType, u32), Error> {
+        let is_slice_header = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+            locals.get_var_struct_type(&ident.name) == Some("__slice")
+        } else {
+            false
+        };
+
+        let elem_vt = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+            locals
+                .slice_elem_types
+                .get(&ident.name)
+                .copied()
+                .unwrap_or(ValType::I64)
+        } else {
+            ValType::I64
+        };
+
+        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
+
+        if is_slice_header {
+            self.compile_expression(&idx.left, out, locals)?;
+            out.push(Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+        } else {
+            self.compile_expression(&idx.left, out, locals)?;
+        }
+
+        self.compile_expression(&idx.index, out, locals)?;
+
+        let idx_vt = self.infer_val_type(&idx.index, locals);
+        if idx_vt == ValType::I64 {
+            out.push(Instruction::I32WrapI64);
+        }
+
+        out.push(Instruction::I32Const(elem_size));
+        out.push(Instruction::I32Mul);
+        out.push(Instruction::I32Add);
+
+        Ok((elem_vt, align))
+    }
+
+    fn compile_selector_store_addr(
+        &mut self,
+        sel: &ast::Selector,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(u64, ValType), Error> {
+        self.compile_expression(&sel.x, out, locals)?;
+
+        let struct_type_name = if let ast::Expression::Ident(ident) = sel.x.as_ref() {
+            locals
+                .get_var_struct_type(&ident.name)
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        if let Some(type_name) = struct_type_name {
+            if let Some(struct_def) = self.struct_defs.get(&type_name) {
+                if let Some(field) = struct_def.find_field(&sel.sel.name) {
+                    let offset = field.offset as u64;
+                    let vt = field.wasm_type.to_val_type();
+                    return Ok((offset, vt));
+                }
+            }
+        }
+
+        let sel_name = if let ast::Expression::Ident(ident) = sel.x.as_ref() {
+            format!("{}.{}", ident.name, sel.sel.name)
+        } else {
+            format!("<expr>.{}", sel.sel.name)
+        };
+        Err(Error::InternalError(format!(
+            "unresolved selector for store: {}",
+            sel_name
+        )))
+    }
+
+    fn emit_typed_store(vt: ValType, offset: u64, align: u32, out: &mut Vec<Instruction<'static>>) {
+        match vt {
+            ValType::I32 => out.push(Instruction::I32Store(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            ValType::F32 => out.push(Instruction::F32Store(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            ValType::F64 => out.push(Instruction::F64Store(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            _ => out.push(Instruction::I64Store(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+        }
+    }
+
+    fn emit_typed_load(vt: ValType, offset: u64, align: u32, out: &mut Vec<Instruction<'static>>) {
+        match vt {
+            ValType::I32 => out.push(Instruction::I32Load(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            ValType::F32 => out.push(Instruction::F32Load(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            ValType::F64 => out.push(Instruction::F64Load(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+            _ => out.push(Instruction::I64Load(MemArg {
+                offset,
+                align,
+                memory_index: 0,
+            })),
+        }
+    }
+
+    fn emit_typed_coerce(from: ValType, to: ValType, out: &mut Vec<Instruction<'static>>) {
+        if from == to {
+            return;
+        }
+        match (from, to) {
+            (ValType::I64, ValType::I32) => out.push(Instruction::I32WrapI64),
+            (ValType::I32, ValType::I64) => out.push(Instruction::I64ExtendI32S),
+            (ValType::F64, ValType::F32) => out.push(Instruction::F32DemoteF64),
+            (ValType::F32, ValType::F64) => out.push(Instruction::F64PromoteF32),
+            _ => {}
+        }
+    }
+
+    fn emit_compound_op(
+        &self,
+        op: &Operator,
+        vt: ValType,
+        out: &mut Vec<Instruction<'static>>,
+    ) -> Result<(), Error> {
+        match op {
+            Operator::AddAssign => out.push(Self::typed_add(vt)),
+            Operator::SubAssign => out.push(Self::typed_sub(vt)),
+            Operator::MulAssign => out.push(Self::typed_mul(vt)),
+            Operator::QuoAssign => out.push(Self::typed_div(vt)),
+            Operator::RemAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32RemS),
+                _ => out.push(Instruction::I64RemS),
+            },
+            Operator::AndAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32And),
+                _ => out.push(Instruction::I64And),
+            },
+            Operator::OrAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32Or),
+                _ => out.push(Instruction::I64Or),
+            },
+            Operator::XorAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32Xor),
+                _ => out.push(Instruction::I64Xor),
+            },
+            Operator::ShlAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32Shl),
+                _ => out.push(Instruction::I64Shl),
+            },
+            Operator::ShrAssign => match vt {
+                ValType::I32 => out.push(Instruction::I32ShrS),
+                _ => out.push(Instruction::I64ShrS),
+            },
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported compound operator: {:?}",
+                    op
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn emit_deferred_calls(&self, out: &mut Vec<Instruction<'static>>) {
         if let Some(deferred) = self.deferred_calls.last() {
             for call in deferred.iter().rev() {
@@ -3615,7 +3961,17 @@ impl WasmCompiler {
                 ValType::I32
             }
             ast::Expression::CompositeLit(_) => ValType::I32,
-            ast::Expression::Index(_) => ValType::I64,
+            ast::Expression::Index(idx) => {
+                if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+                    locals
+                        .slice_elem_types
+                        .get(&ident.name)
+                        .copied()
+                        .unwrap_or(ValType::I64)
+                } else {
+                    ValType::I64
+                }
+            }
             ast::Expression::FuncLit(_) => ValType::I32,
             _ => ValType::I64,
         }

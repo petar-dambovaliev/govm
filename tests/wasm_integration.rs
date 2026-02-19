@@ -2589,7 +2589,7 @@ func F32ToInt(x float32) int {
 }
 
 #[test]
-fn test_compound_assign_error_on_non_ident() {
+fn test_compound_assign_to_struct_field() {
     let source = r#"
 package main
 
@@ -2598,26 +2598,28 @@ type Point struct {
     Y int
 }
 
-func MoveX(p Point) int {
+func MoveX() int {
+    p := Point{X: 5, Y: 3}
     p.X += 10
     return p.X
 }
 "#;
 
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    match result {
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("compound assignment")
-                    || err_msg.contains("not supported"),
-                "error should mention compound assignment limitation, got: {}",
-                err_msg
-            );
-        }
-        Ok(_) => panic!("expected error for compound assignment to struct field"),
-    }
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "MoveX")
+        .expect("MoveX not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 15, "5 + 10 should be 15");
 }
 
 #[test]
@@ -3169,4 +3171,229 @@ func SwitchInLoop(n int) int {
     // i=0..5: 0+1+2+3+4+100 = 110, i=6..9: 6+7+8+9 = 30. total = 140
     let result_val = func.call(&mut store, 10).expect("call failed");
     assert_eq!(result_val, 140, "0+1+2+3+4+100+6+7+8+9 should be 140");
+}
+
+#[test]
+fn test_index_assign_plain() {
+    let source = r#"
+package main
+
+func IndexAssign() int {
+    s := make([]int, 3)
+    s[0] = 10
+    s[1] = 20
+    s[2] = 30
+    return s[0] + s[1] + s[2]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "IndexAssign")
+        .expect("IndexAssign not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 60, "10 + 20 + 30 should be 60");
+}
+
+#[test]
+fn test_index_assign_compound() {
+    let source = r#"
+package main
+
+func IndexCompound() int {
+    s := make([]int, 3)
+    s[0] = 5
+    s[1] = 10
+    s[2] = 15
+    s[0] += 100
+    s[1] -= 3
+    s[2] *= 2
+    return s[0] + s[1] + s[2]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "IndexCompound")
+        .expect("IndexCompound not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 142, "(5+100) + (10-3) + (15*2) = 105 + 7 + 30 = 142");
+}
+
+#[test]
+fn test_field_assign_plain() {
+    let source = r#"
+package main
+
+type Rect struct {
+    W int
+    H int
+}
+
+func FieldAssign() int {
+    r := Rect{W: 0, H: 0}
+    r.W = 10
+    r.H = 20
+    return r.W * r.H
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "FieldAssign")
+        .expect("FieldAssign not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 200, "10 * 20 should be 200");
+}
+
+#[test]
+fn test_field_assign_compound() {
+    let source = r#"
+package main
+
+type Counter struct {
+    Val int
+}
+
+func FieldCompound() int {
+    c := Counter{Val: 10}
+    c.Val += 5
+    c.Val *= 3
+    return c.Val
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "FieldCompound")
+        .expect("FieldCompound not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 45, "(10 + 5) * 3 = 45");
+}
+
+#[test]
+fn test_index_incdec() {
+    let source = r#"
+package main
+
+func IndexIncDec() int {
+    s := make([]int, 2)
+    s[0] = 10
+    s[1] = 20
+    s[0]++
+    s[1]--
+    return s[0] + s[1]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "IndexIncDec")
+        .expect("IndexIncDec not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 30, "11 + 19 = 30");
+}
+
+#[test]
+fn test_field_incdec() {
+    let source = r#"
+package main
+
+type Pair struct {
+    A int
+    B int
+}
+
+func FieldIncDec() int {
+    p := Pair{A: 100, B: 200}
+    p.A++
+    p.B--
+    return p.A + p.B
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "FieldIncDec")
+        .expect("FieldIncDec not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 300, "101 + 199 = 300");
+}
+
+#[test]
+fn test_index_assign_int32_slice() {
+    let source = r#"
+package main
+
+func IndexAssignI32() int {
+    s := make([]int32, 3)
+    s[0] = 10
+    s[1] = 20
+    s[2] = 30
+    return int(s[0]) + int(s[1]) + int(s[2])
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "IndexAssignI32")
+        .expect("IndexAssignI32 not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 60, "10 + 20 + 30 should be 60");
 }
