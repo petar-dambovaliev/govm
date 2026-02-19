@@ -2455,7 +2455,7 @@ func Classify(x int) int {
 }
 
 #[test]
-fn test_unsupported_operator_error() {
+fn test_andnot_operator_i64() {
     let source = r#"
 package main
 
@@ -2465,18 +2465,27 @@ func BitClear(a int, b int) int {
 "#;
 
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    match result {
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("unsupported operator"),
-                "error should mention unsupported operator, got: {}",
-                err_msg
-            );
-        }
-        Ok(_) => panic!("expected error for unsupported &^ operator"),
-    }
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "BitClear")
+        .expect("BitClear not found");
+
+    // 0b1111 &^ 0b1010 = 0b0101 = 5
+    assert_eq!(func.call(&mut store, (0b1111, 0b1010)).expect("call failed"), 5);
+    // 0xFF &^ 0x0F = 0xF0 = 240
+    assert_eq!(func.call(&mut store, (0xFF, 0x0F)).expect("call failed"), 0xF0);
+    // a &^ 0 = a
+    assert_eq!(func.call(&mut store, (42, 0)).expect("call failed"), 42);
+    // a &^ a = 0
+    assert_eq!(func.call(&mut store, (42, 42)).expect("call failed"), 0);
 }
 
 #[test]
@@ -4215,4 +4224,415 @@ func UintRem(a uint64, b uint64) uint64 {
     // -1 as uint64 = 18446744073709551615, % 10 = 5
     let result_val = func.call(&mut store, (-1i64, 10i64)).expect("call failed");
     assert_eq!(result_val, 5, "max uint64 % 10 should be 5, got {}", result_val);
+}
+
+// ========== Regression tests for bug fixes ==========
+
+#[test]
+fn test_string_equality_same_content() {
+    let source = r#"
+package main
+
+func StrEq() int {
+    a := "hello"
+    b := "hello"
+    if a == b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "StrEq")
+        .expect("StrEq not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 1, "identical strings should be equal");
+}
+
+#[test]
+fn test_string_equality_different_content() {
+    let source = r#"
+package main
+
+func StrNeq() int {
+    a := "hello"
+    b := "world"
+    if a == b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "StrNeq")
+        .expect("StrNeq not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 0, "different strings should not be equal");
+}
+
+#[test]
+fn test_string_equality_different_lengths() {
+    let source = r#"
+package main
+
+func StrLenDiff() int {
+    a := "hello"
+    b := "hello!"
+    if a == b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "StrLenDiff")
+        .expect("StrLenDiff not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 0, "strings of different lengths should not be equal");
+}
+
+#[test]
+fn test_string_equality_empty_strings() {
+    let source = r#"
+package main
+
+func EmptyEq() int {
+    a := ""
+    b := ""
+    if a == b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "EmptyEq")
+        .expect("EmptyEq not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 1, "two empty strings should be equal");
+}
+
+#[test]
+fn test_string_not_equal_operator() {
+    let source = r#"
+package main
+
+func StrNotEq() int {
+    a := "foo"
+    b := "bar"
+    if a != b {
+        return 1
+    }
+    return 0
+}
+
+func StrNotEqSame() int {
+    a := "same"
+    b := "same"
+    if a != b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "StrNotEq")
+        .expect("StrNotEq not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 1, "different strings should be != ");
+
+    let func2 = instance
+        .get_typed_func::<(), i64>(&mut store, "StrNotEqSame")
+        .expect("StrNotEqSame not found");
+    let result_val2 = func2.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val2, 0, "identical strings should not be !=");
+}
+
+#[test]
+fn test_string_equality_with_concat() {
+    let source = r#"
+package main
+
+func ConcatEq() int {
+    a := "hello" + " world"
+    b := "hello world"
+    if a == b {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "ConcatEq")
+        .expect("ConcatEq not found");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result_val, 1, "concatenated string should equal the literal equivalent");
+}
+
+#[test]
+fn test_global_var_increment() {
+    let source = r#"
+package main
+
+var counter int
+
+func Bump() int {
+    counter++
+    return counter
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Bump")
+        .expect("Bump not found");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 1, "first call should return 1");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 2, "second call should return 2");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 3, "third call should return 3");
+}
+
+#[test]
+fn test_global_var_decrement() {
+    let source = r#"
+package main
+
+var counter int = 10
+
+func Shrink() int {
+    counter--
+    return counter
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Shrink")
+        .expect("Shrink not found");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 9, "first decrement from 10");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 8, "second decrement");
+    assert_eq!(func.call(&mut store, ()).unwrap(), 7, "third decrement");
+}
+
+#[test]
+fn test_defer_scope_isolation_with_closure() {
+    let source = r#"
+package main
+
+var outerDeferRan int
+var closureDeferRan int
+
+func markOuter(x int) {
+    outerDeferRan = outerDeferRan + x
+}
+
+func markClosure(x int) {
+    closureDeferRan = closureDeferRan + x
+}
+
+func RunScopeTest() int {
+    outerDeferRan = 0
+    closureDeferRan = 0
+
+    defer markOuter(100)
+
+    f := func() int {
+        defer markClosure(10)
+        return 1
+    }
+
+    return f()
+}
+
+func GetOuterDefer() int {
+    return outerDeferRan
+}
+
+func GetClosureDefer() int {
+    return closureDeferRan
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let run = instance
+        .get_typed_func::<(), i64>(&mut store, "RunScopeTest")
+        .expect("RunScopeTest not found");
+    run.call(&mut store, ()).expect("call failed");
+
+    let get_outer = instance
+        .get_typed_func::<(), i64>(&mut store, "GetOuterDefer")
+        .expect("GetOuterDefer not found");
+    let outer = get_outer.call(&mut store, ()).expect("call failed");
+    assert_eq!(outer, 100, "outer defer should have run exactly once with value 100, got {}", outer);
+
+    let get_closure = instance
+        .get_typed_func::<(), i64>(&mut store, "GetClosureDefer")
+        .expect("GetClosureDefer not found");
+    let closure = get_closure.call(&mut store, ()).expect("call failed");
+    assert_eq!(closure, 10, "closure defer should have run exactly once with value 10, got {}", closure);
+}
+
+#[test]
+fn test_defer_unresolved_function_error() {
+    let source = r#"
+package main
+
+func Test() int {
+    defer unknownFunc()
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("could not resolve function"),
+                "error should mention unresolved function, got: {}",
+                err_msg
+            );
+        }
+        Ok(_) => panic!("expected error for defer of unknown function"),
+    }
+}
+
+#[test]
+fn test_andnot_operator_i32() {
+    let source = r#"
+package main
+
+func BitClear32(a int32, b int32) int32 {
+    return a &^ b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "BitClear32")
+        .expect("BitClear32 not found");
+
+    assert_eq!(func.call(&mut store, (0b1111, 0b1010)).expect("call failed"), 0b0101);
+    assert_eq!(func.call(&mut store, (0xFF, 0x0F)).expect("call failed"), 0xF0_u8 as i32);
+    assert_eq!(func.call(&mut store, (42, 0)).expect("call failed"), 42);
+    assert_eq!(func.call(&mut store, (42, 42)).expect("call failed"), 0);
+}
+
+#[test]
+fn test_andnot_assign_operator() {
+    let source = r#"
+package main
+
+func BitClearAssign(a int, b int) int {
+    a &^= b
+    return a
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "BitClearAssign")
+        .expect("BitClearAssign not found");
+
+    assert_eq!(func.call(&mut store, (0b1111, 0b1010)).expect("call failed"), 0b0101);
+    assert_eq!(func.call(&mut store, (0xFF, 0x0F)).expect("call failed"), 0xF0);
 }

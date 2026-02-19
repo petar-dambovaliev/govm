@@ -609,7 +609,7 @@ impl Expression {
             Expression::TypeAssert(x) => x.left.pos(),
             Expression::CompositeLit(x) => x.typ.pos(),
             Expression::IndexList(x) => x.left.pos(),
-            Expression::List(_) => unimplemented!("list may empty"),
+            Expression::List(exprs) => exprs.first().map_or(0, |e| e.pos()),
             Expression::Operation(x) => x.x.pos(),
             Expression::TypeMap(x) => x.pos.0,
             Expression::TypeArray(x) => x.pos.0,

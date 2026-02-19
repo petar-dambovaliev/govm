@@ -237,7 +237,7 @@ impl WasmCompiler {
             self.compile_declaration(decl)?;
         }
 
-        self.build_manifest(file);
+        self.build_manifest(file)?;
 
         Ok(CompileResult {
             wasm_bytes: self.build_module(),
@@ -405,12 +405,16 @@ impl WasmCompiler {
         });
     }
 
-    fn alloc_func_idx(&self) -> u32 {
+    fn alloc_func_idx(&self) -> Result<u32, Error> {
         self.functions
             .iter()
             .find(|f| f.name == "alloc")
-            .expect("internal error: alloc function not registered; emit_alloc_function must be called before compilation")
-            .wasm_func_idx
+            .map(|f| f.wasm_func_idx)
+            .ok_or_else(|| {
+                Error::InternalError(
+                    "alloc function not registered; emit_alloc_function must be called before compilation".to_string(),
+                )
+            })
     }
 
     fn compile_declaration(&mut self, decl: &ast::Declaration) -> Result<(), Error> {
@@ -996,15 +1000,20 @@ impl WasmCompiler {
                         None
                     };
 
-                if let Some(idx) = func_idx {
-                    if let Some(deferred) = self.deferred_calls.last_mut() {
-                        deferred.push(DeferredCall {
-                            func_idx: idx,
-                            arg_locals,
-                        });
+                match func_idx {
+                    Some(idx) => {
+                        if let Some(deferred) = self.deferred_calls.last_mut() {
+                            deferred.push(DeferredCall {
+                                func_idx: idx,
+                                arg_locals,
+                            });
+                        }
+                        Ok(())
                     }
+                    None => Err(Error::InternalError(
+                        "defer: could not resolve function".to_string(),
+                    )),
                 }
-                Ok(())
             }
             ast::Statement::Range(range) => {
                 self.compile_range(range, out, locals, result_types)
@@ -1236,7 +1245,8 @@ impl WasmCompiler {
                                 | Operator::OrAssign
                                 | Operator::XorAssign
                                 | Operator::ShlAssign
-                                | Operator::ShrAssign => {
+                                | Operator::ShrAssign
+                                | Operator::AndNotAssign => {
                                     let tmp = locals.add_local(
                                         &format!("__ca_tmp_{}", locals.locals.len()),
                                         vt,
@@ -1295,7 +1305,7 @@ impl WasmCompiler {
                             Operator::Assign => {
                                 out.push(Instruction::LocalGet(addr_tmp));
                                 out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, elem_vt, out);
+                                Self::emit_typed_coerce(rhs_vt, elem_vt, out)?;
                                 Self::emit_typed_store(elem_vt, 0, align, out);
                             }
                             _ => {
@@ -1303,7 +1313,7 @@ impl WasmCompiler {
                                 Self::emit_typed_load(elem_vt, 0, align, out);
 
                                 out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, elem_vt, out);
+                                Self::emit_typed_coerce(rhs_vt, elem_vt, out)?;
 
                                 self.emit_compound_op(&assign.op, elem_vt, out)?;
 
@@ -1344,7 +1354,7 @@ impl WasmCompiler {
                             Operator::Assign => {
                                 out.push(Instruction::LocalGet(addr_tmp));
                                 out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, field_vt, out);
+                                Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
                                 Self::emit_typed_store(field_vt, offset, align, out);
                             }
                             _ => {
@@ -1352,7 +1362,7 @@ impl WasmCompiler {
                                 Self::emit_typed_load(field_vt, offset, align, out);
 
                                 out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, field_vt, out);
+                                Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
 
                                 self.emit_compound_op(&assign.op, field_vt, out)?;
 
@@ -1719,47 +1729,7 @@ impl WasmCompiler {
                     out.push(Instruction::LocalGet(tag_l));
                     self.compile_expression(expr, out, locals)?;
                     let case_vt = self.infer_val_type(expr, locals);
-                    if case_vt != tag_vt {
-                        match (case_vt, tag_vt) {
-                            (ValType::I64, ValType::I32) => {
-                                out.push(Instruction::I32WrapI64);
-                            }
-                            (ValType::I32, ValType::I64) => {
-                                out.push(Instruction::I64ExtendI32S);
-                            }
-                            (ValType::F64, ValType::I64) => {
-                                out.push(Instruction::I64TruncF64S);
-                            }
-                            (ValType::F32, ValType::I32) => {
-                                out.push(Instruction::I32TruncF32S);
-                            }
-                            (ValType::I32, ValType::F32) => {
-                                out.push(Instruction::F32ConvertI32S);
-                            }
-                            (ValType::I64, ValType::F64) => {
-                                out.push(Instruction::F64ConvertI64S);
-                            }
-                            (ValType::F64, ValType::F32) => {
-                                out.push(Instruction::F32DemoteF64);
-                            }
-                            (ValType::F32, ValType::F64) => {
-                                out.push(Instruction::F64PromoteF32);
-                            }
-                            (ValType::I32, ValType::F64) => {
-                                out.push(Instruction::F64ConvertI32S);
-                            }
-                            (ValType::I64, ValType::F32) => {
-                                out.push(Instruction::F32ConvertI64S);
-                            }
-                            (ValType::F64, ValType::I32) => {
-                                out.push(Instruction::I32TruncF64S);
-                            }
-                            (ValType::F32, ValType::I64) => {
-                                out.push(Instruction::I64TruncF32S);
-                            }
-                            _ => {}
-                        }
-                    }
+                    Self::emit_typed_coerce(case_vt, tag_vt, out)?;
                     out.push(eq_instr.clone());
                 } else {
                     self.compile_expression(expr, out, locals)?;
@@ -1900,6 +1870,15 @@ impl WasmCompiler {
                     let vt = self.infer_val_type(&incdec.expr, locals);
                     Self::emit_incdec_op(incdec.op, vt, out)?;
                     out.push(Instruction::LocalSet(idx));
+                } else if let Some(&(global_idx, vt)) = self.global_vars.get(&ident.name) {
+                    out.push(Instruction::GlobalGet(global_idx));
+                    Self::emit_incdec_op(incdec.op, vt, out)?;
+                    out.push(Instruction::GlobalSet(global_idx));
+                } else {
+                    return Err(Error::InternalError(format!(
+                        "undefined variable '{}' in increment/decrement",
+                        ident.name
+                    )));
                 }
             }
             ast::Expression::Index(idx_expr) => {
@@ -2168,7 +2147,7 @@ impl WasmCompiler {
                 let len = bytes.len() as i32;
 
                 out.push(Instruction::I32Const(len));
-                out.push(Instruction::Call(self.alloc_func_idx()));
+                out.push(Instruction::Call(self.alloc_func_idx()?));
 
                 let ptr_local = locals.add_local(
                     &format!("__str_ptr_{}", locals.locals.len()),
@@ -2393,7 +2372,7 @@ impl WasmCompiler {
                         ValType::I32,
                     );
                     out.push(Instruction::I32Const(len));
-                    out.push(Instruction::Call(self.alloc_func_idx()));
+                    out.push(Instruction::Call(self.alloc_func_idx()?));
                     out.push(Instruction::LocalTee(ptr_local));
 
                     for (i, &byte) in bytes.iter().enumerate() {
@@ -2503,6 +2482,13 @@ impl WasmCompiler {
                 && self.is_string_expr(y, locals)
             {
                 return self.emit_string_concat(&op.x, y, out, locals);
+            }
+
+            if (op.op == Operator::Equal || op.op == Operator::NotEqual)
+                && self.is_string_expr(&op.x, locals)
+                && self.is_string_expr(y, locals)
+            {
+                return self.emit_string_compare(&op.x, y, op.op, out, locals);
             }
 
             if op.op == Operator::AndAnd {
@@ -2702,7 +2688,7 @@ impl WasmCompiler {
         out.push(Instruction::LocalTee(total_len));
 
         // Allocate buffer
-        out.push(Instruction::Call(self.alloc_func_idx()));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
         let new_ptr = locals.add_local("__scat_new", ValType::I32);
         out.push(Instruction::LocalSet(new_ptr));
 
@@ -2733,6 +2719,96 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn emit_string_compare(
+        &mut self,
+        lhs: &ast::Expression,
+        rhs: &ast::Expression,
+        op: Operator,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        self.compile_expression(lhs, out, locals)?;
+        self.compile_expression(rhs, out, locals)?;
+
+        let len2 = locals.add_local("__scmp_len2", ValType::I32);
+        let ptr2 = locals.add_local("__scmp_ptr2", ValType::I32);
+        let len1 = locals.add_local("__scmp_len1", ValType::I32);
+        let ptr1 = locals.add_local("__scmp_ptr1", ValType::I32);
+
+        out.push(Instruction::LocalSet(len2));
+        out.push(Instruction::LocalSet(ptr2));
+        out.push(Instruction::LocalSet(len1));
+        out.push(Instruction::LocalSet(ptr1));
+
+        let result = locals.add_local("__scmp_result", ValType::I32);
+        let idx = locals.add_local("__scmp_idx", ValType::I32);
+
+        // Assume equal (1), will set to 0 if mismatch found
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::LocalSet(result));
+
+        // First compare lengths
+        out.push(Instruction::LocalGet(len1));
+        out.push(Instruction::LocalGet(len2));
+        out.push(Instruction::I32Ne);
+        out.push(Instruction::If(BlockType::Empty));
+        // Lengths differ -> not equal
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(result));
+        out.push(Instruction::Else);
+        // Lengths match -> compare bytes
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Block(BlockType::Empty));
+        out.push(Instruction::Loop(BlockType::Empty));
+        // if idx >= len1, break (all bytes matched)
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::LocalGet(len1));
+        out.push(Instruction::I32GeU);
+        out.push(Instruction::BrIf(1));
+        // Compare byte at ptr1+idx vs ptr2+idx
+        out.push(Instruction::LocalGet(ptr1));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+        out.push(Instruction::LocalGet(ptr2));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+        out.push(Instruction::I32Ne);
+        out.push(Instruction::If(BlockType::Empty));
+        // Mismatch found
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(result));
+        out.push(Instruction::Br(2)); // break out of loop+block
+        out.push(Instruction::End);
+        // idx++
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Br(0)); // continue loop
+        out.push(Instruction::End); // end loop
+        out.push(Instruction::End); // end block
+        out.push(Instruction::End); // end else
+
+        out.push(Instruction::LocalGet(result));
+
+        if op == Operator::NotEqual {
+            out.push(Instruction::I32Eqz);
+        }
+
+        Ok(())
+    }
+
     fn emit_i64_op_signed(
         &self,
         op: Operator,
@@ -2750,6 +2826,11 @@ impl WasmCompiler {
             Operator::Xor => out.push(Instruction::I64Xor),
             Operator::Shl => out.push(Instruction::I64Shl),
             Operator::Shr => out.push(if signed { Instruction::I64ShrS } else { Instruction::I64ShrU }),
+            Operator::AndNot => {
+                out.push(Instruction::I64Const(-1));
+                out.push(Instruction::I64Xor);
+                out.push(Instruction::I64And);
+            }
             Operator::Equal => out.push(Instruction::I64Eq),
             Operator::NotEqual => out.push(Instruction::I64Ne),
             Operator::Less => out.push(if signed { Instruction::I64LtS } else { Instruction::I64LtU }),
@@ -2783,6 +2864,11 @@ impl WasmCompiler {
             Operator::Xor => out.push(Instruction::I32Xor),
             Operator::Shl => out.push(Instruction::I32Shl),
             Operator::Shr => out.push(if signed { Instruction::I32ShrS } else { Instruction::I32ShrU }),
+            Operator::AndNot => {
+                out.push(Instruction::I32Const(-1));
+                out.push(Instruction::I32Xor);
+                out.push(Instruction::I32And);
+            }
             Operator::Equal => out.push(Instruction::I32Eq),
             Operator::NotEqual => out.push(Instruction::I32Ne),
             Operator::Less => out.push(if signed { Instruction::I32LtS } else { Instruction::I32LtU }),
@@ -2950,7 +3036,7 @@ impl WasmCompiler {
 
         // Allocate header (12 bytes)
         out.push(Instruction::I32Const(HEADER_SIZE));
-        out.push(Instruction::Call(self.alloc_func_idx()));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
         let hdr_local = locals.add_local(
             &format!("__make_hdr_{}", locals.locals.len()),
             ValType::I32,
@@ -2961,7 +3047,7 @@ impl WasmCompiler {
         out.push(Instruction::LocalGet(len_local));
         out.push(Instruction::I32Const(elem_size));
         out.push(Instruction::I32Mul);
-        out.push(Instruction::Call(self.alloc_func_idx()));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
         let data_local = locals.add_local(
             &format!("__make_data_{}", locals.locals.len()),
             ValType::I32,
@@ -3102,7 +3188,7 @@ impl WasmCompiler {
             out.push(Instruction::LocalGet(new_cap));
             out.push(Instruction::I32Const(elem_size));
             out.push(Instruction::I32Mul);
-            out.push(Instruction::Call(self.alloc_func_idx()));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
             out.push(Instruction::LocalSet(new_data));
 
             // Copy old data: memory.copy(new_data, old_data_ptr, old_len * elem_size)
@@ -3415,7 +3501,7 @@ impl WasmCompiler {
 
                                 let buf_size = 256i32;
                                 out.push(Instruction::I32Const(buf_size));
-                                out.push(Instruction::Call(self.alloc_func_idx()));
+                                out.push(Instruction::Call(self.alloc_func_idx()?));
                                 let buf_local = locals.add_local(
                                     &format!("__cfg_buf_{}", locals.locals.len()),
                                     ValType::I32,
@@ -3438,7 +3524,7 @@ impl WasmCompiler {
                             } else {
                                 let buf_size = 256i32;
                                 out.push(Instruction::I32Const(buf_size));
-                                out.push(Instruction::Call(self.alloc_func_idx()));
+                                out.push(Instruction::Call(self.alloc_func_idx()?));
                                 let buf_local = locals.add_local(
                                     &format!("__ctx_buf_{}", locals.locals.len()),
                                     ValType::I32,
@@ -3737,7 +3823,7 @@ impl WasmCompiler {
         if !captures.is_empty() {
             let env_size = (captures.len() * 8) as i32;
             out.push(Instruction::I32Const(env_size));
-            out.push(Instruction::Call(self.alloc_func_idx()));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
             let env_local = outer_locals.add_local("__env_ptr_outer", ValType::I32);
             out.push(Instruction::LocalSet(env_local));
 
@@ -3824,7 +3910,7 @@ impl WasmCompiler {
         };
 
         out.push(Instruction::I32Const(total_size));
-        out.push(Instruction::Call(self.alloc_func_idx()));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
 
         let ptr_local = locals.add_local("__comp_ptr", ValType::I32);
         out.push(Instruction::LocalSet(ptr_local));
@@ -4198,9 +4284,9 @@ impl WasmCompiler {
         }
     }
 
-    fn emit_typed_coerce(from: ValType, to: ValType, out: &mut Vec<Instruction<'static>>) {
+    fn emit_typed_coerce(from: ValType, to: ValType, out: &mut Vec<Instruction<'static>>) -> Result<(), Error> {
         if from == to {
-            return;
+            return Ok(());
         }
         match (from, to) {
             (ValType::I64, ValType::I32) => out.push(Instruction::I32WrapI64),
@@ -4215,8 +4301,14 @@ impl WasmCompiler {
             (ValType::F64, ValType::I32) => out.push(Instruction::I32TruncF64S),
             (ValType::F32, ValType::I64) => out.push(Instruction::I64TruncF32S),
             (ValType::F32, ValType::I32) => out.push(Instruction::I32TruncF32S),
-            _ => {}
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported type coercion from {:?} to {:?}",
+                    from, to
+                )));
+            }
         }
+        Ok(())
     }
 
     fn emit_compound_op(
@@ -4236,6 +4328,7 @@ impl WasmCompiler {
             | Operator::XorAssign
             | Operator::ShlAssign
             | Operator::ShrAssign
+            | Operator::AndNotAssign
                 if matches!(vt, ValType::F32 | ValType::F64) =>
             {
                 return Err(Error::InternalError(format!(
@@ -4267,6 +4360,18 @@ impl WasmCompiler {
                 ValType::I32 => out.push(Instruction::I32ShrS),
                 _ => out.push(Instruction::I64ShrS),
             },
+            Operator::AndNotAssign => match vt {
+                ValType::I32 => {
+                    out.push(Instruction::I32Const(-1));
+                    out.push(Instruction::I32Xor);
+                    out.push(Instruction::I32And);
+                }
+                _ => {
+                    out.push(Instruction::I64Const(-1));
+                    out.push(Instruction::I64Xor);
+                    out.push(Instruction::I64And);
+                }
+            },
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported compound operator: {:?}",
@@ -4278,7 +4383,7 @@ impl WasmCompiler {
     }
 
     fn emit_deferred_calls(&self, out: &mut Vec<Instruction<'static>>) {
-        for scope in self.deferred_calls.iter().rev() {
+        if let Some(scope) = self.deferred_calls.last() {
             for call in scope.iter().rev() {
                 for (local_idx, _vt) in &call.arg_locals {
                     out.push(Instruction::LocalGet(*local_idx));
@@ -4489,7 +4594,7 @@ impl WasmCompiler {
         }
     }
 
-    fn build_manifest(&mut self, file: &ast::File) {
+    fn build_manifest(&mut self, file: &ast::File) -> Result<(), Error> {
         // Process free functions
         for decl in &file.decl {
             if let ast::Declaration::Function(func_decl) = decl {
@@ -4581,7 +4686,7 @@ impl WasmCompiler {
                     .get(type_name.as_str())
                     .map_or(64, |sd| sd.total_size);
                 let init_name = format!("{}_init", type_name);
-                self.emit_aggregate_init(&init_name, struct_size);
+                self.emit_aggregate_init(&init_name, struct_size)?;
 
                 self.manifest.aggregates.push(AggregateDescriptor {
                     name: type_name.clone(),
@@ -4593,9 +4698,10 @@ impl WasmCompiler {
                 });
             }
         }
+        Ok(())
     }
 
-    fn emit_aggregate_init(&mut self, name: &str, struct_size: u32) {
+    fn emit_aggregate_init(&mut self, name: &str, struct_size: u32) -> Result<(), Error> {
         let type_idx = self.next_type_idx;
         self.type_section
             .ty()
@@ -4608,7 +4714,7 @@ impl WasmCompiler {
 
         let mut func = Function::new(vec![]);
         func.instruction(&Instruction::I32Const(struct_size as i32));
-        func.instruction(&Instruction::Call(self.alloc_func_idx()));
+        func.instruction(&Instruction::Call(self.alloc_func_idx()?));
         func.instruction(&Instruction::End);
 
         self.code_section.function(&func);
@@ -4624,6 +4730,7 @@ impl WasmCompiler {
             is_exported: true,
             recv_type: None,
         });
+        Ok(())
     }
 
     fn extract_input_fields(
