@@ -463,8 +463,8 @@ impl Scanner {
             Some(_) => {
                 let next2 = String::from(self.next_nstr(2));
                 match next2.as_str() {
-                    "0b" | "oB" => (2, self.scan_digits(2, next2, is_binary_digit)),
-                    "0o" | "0O" => (8, self.scan_digits(2, next2, is_decimal_digit)),
+                    "0b" | "0B" => (2, self.scan_digits(2, next2, is_binary_digit)),
+                    "0o" | "0O" => (8, self.scan_digits(2, next2, is_octal_digit)),
                     "0x" | "0X" => (16, self.scan_digits(2, next2, is_hex_digit)),
                     _ => (10, self.scan_digits(0, String::new(), is_decimal_digit)),
                 }

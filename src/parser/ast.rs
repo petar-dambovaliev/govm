@@ -264,14 +264,20 @@ impl Expression {
 
     pub fn as_int_lit(&self) -> Result<isize, String> {
         match self {
-            Expression::BasicLit(lit) => Ok(lit.value.parse::<isize>().unwrap()),
+            Expression::BasicLit(lit) => lit
+                .value
+                .parse::<isize>()
+                .map_err(|e| format!("failed to parse '{}' as isize: {}", lit.value, e)),
             _ => Err(format!("{:#?} is not a BasicLit", self)),
         }
     }
 
     pub fn as_uint_lit(&self) -> Result<usize, String> {
         match self {
-            Expression::BasicLit(lit) => Ok(lit.value.parse::<usize>().unwrap()),
+            Expression::BasicLit(lit) => lit
+                .value
+                .parse::<usize>()
+                .map_err(|e| format!("failed to parse '{}' as usize: {}", lit.value, e)),
             _ => Err(format!("{:#?} is not a BasicLit", self)),
         }
     }
