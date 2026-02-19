@@ -202,7 +202,7 @@ pub struct WasmCompiler {
 
     functions: Vec<FuncInfo>,
     deferred_calls: Vec<Vec<DeferredCall>>,
-    loop_depth: Vec<(Option<String>, u32, bool)>,
+    loop_depth: Vec<(Option<String>, u32, bool, bool)>,
     manifest: Manifest,
     struct_defs: HashMap<String, StructDef>,
     closure_captures: Option<ClosureCaptureState>,
@@ -842,8 +842,13 @@ impl WasmCompiler {
                 LitKind::Integer => Self::parse_go_int(&lit.value).ok().map(ConstValue::I64),
                 LitKind::Float => lit.value.parse::<f64>().ok().map(ConstValue::F64),
                 LitKind::String => {
-                    let s = lit.value.trim_matches('"').to_string();
-                    Some(ConstValue::Str(s))
+                    let s = lit.value.trim_matches('"');
+                    let bytes = Self::unescape_go_string(s);
+                    String::from_utf8(bytes).ok().map(ConstValue::Str)
+                }
+                LitKind::Char => {
+                    let s = lit.value.trim_matches('\'');
+                    Self::unescape_go_char(s).ok().map(|c| ConstValue::I64(c as i64))
                 }
                 _ => None,
             },
@@ -878,57 +883,92 @@ impl WasmCompiler {
                 let rhs = self.try_eval_const_expr(op.y.as_ref().unwrap())?;
                 match (&lhs, &rhs) {
                     (ConstValue::I64(a), ConstValue::I64(b)) => {
-                        let result = match op.op {
-                            Operator::Add => a.checked_add(*b)?,
-                            Operator::Sub => a.checked_sub(*b)?,
-                            Operator::Star => a.checked_mul(*b)?,
-                            Operator::Quo => a.checked_div(*b)?,
-                            Operator::Rem => a.checked_rem(*b)?,
-                            Operator::Shl => a.checked_shl(*b as u32)?,
-                            Operator::Shr => a.checked_shr(*b as u32)?,
-                            Operator::And => a & b,
-                            Operator::Or => a | b,
-                            Operator::Xor => a ^ b,
-                            Operator::AndNot => a & !b,
-                            _ => return None,
-                        };
-                        Some(ConstValue::I64(result))
+                        match op.op {
+                            Operator::Add => Some(ConstValue::I64(a.checked_add(*b)?)),
+                            Operator::Sub => Some(ConstValue::I64(a.checked_sub(*b)?)),
+                            Operator::Star => Some(ConstValue::I64(a.checked_mul(*b)?)),
+                            Operator::Quo => Some(ConstValue::I64(a.checked_div(*b)?)),
+                            Operator::Rem => Some(ConstValue::I64(a.checked_rem(*b)?)),
+                            Operator::Shl => Some(ConstValue::I64(a.checked_shl(*b as u32)?)),
+                            Operator::Shr => Some(ConstValue::I64(a.checked_shr(*b as u32)?)),
+                            Operator::And => Some(ConstValue::I64(a & b)),
+                            Operator::Or => Some(ConstValue::I64(a | b)),
+                            Operator::Xor => Some(ConstValue::I64(a ^ b)),
+                            Operator::AndNot => Some(ConstValue::I64(a & !b)),
+                            Operator::Equal => Some(ConstValue::Bool(a == b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(a != b)),
+                            Operator::Less => Some(ConstValue::Bool(a < b)),
+                            Operator::Greater => Some(ConstValue::Bool(a > b)),
+                            Operator::LessEqual => Some(ConstValue::Bool(a <= b)),
+                            Operator::GreaterEqual => Some(ConstValue::Bool(a >= b)),
+                            _ => None,
+                        }
                     }
                     (ConstValue::F64(a), ConstValue::F64(b)) => {
-                        let result = match op.op {
-                            Operator::Add => a + b,
-                            Operator::Sub => a - b,
-                            Operator::Star => a * b,
-                            Operator::Quo => a / b,
-                            _ => return None,
-                        };
-                        Some(ConstValue::F64(result))
+                        match op.op {
+                            Operator::Add => Some(ConstValue::F64(a + b)),
+                            Operator::Sub => Some(ConstValue::F64(a - b)),
+                            Operator::Star => Some(ConstValue::F64(a * b)),
+                            Operator::Quo => Some(ConstValue::F64(a / b)),
+                            Operator::Equal => Some(ConstValue::Bool(a == b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(a != b)),
+                            Operator::Less => Some(ConstValue::Bool(a < b)),
+                            Operator::Greater => Some(ConstValue::Bool(a > b)),
+                            Operator::LessEqual => Some(ConstValue::Bool(a <= b)),
+                            Operator::GreaterEqual => Some(ConstValue::Bool(a >= b)),
+                            _ => None,
+                        }
                     }
                     (ConstValue::I64(a), ConstValue::F64(b)) => {
                         let a = *a as f64;
-                        let result = match op.op {
-                            Operator::Add => a + b,
-                            Operator::Sub => a - b,
-                            Operator::Star => a * b,
-                            Operator::Quo => a / b,
-                            _ => return None,
-                        };
-                        Some(ConstValue::F64(result))
+                        match op.op {
+                            Operator::Add => Some(ConstValue::F64(a + b)),
+                            Operator::Sub => Some(ConstValue::F64(a - b)),
+                            Operator::Star => Some(ConstValue::F64(a * b)),
+                            Operator::Quo => Some(ConstValue::F64(a / b)),
+                            Operator::Equal => Some(ConstValue::Bool(a == *b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(a != *b)),
+                            Operator::Less => Some(ConstValue::Bool(a < *b)),
+                            Operator::Greater => Some(ConstValue::Bool(a > *b)),
+                            Operator::LessEqual => Some(ConstValue::Bool(a <= *b)),
+                            Operator::GreaterEqual => Some(ConstValue::Bool(a >= *b)),
+                            _ => None,
+                        }
                     }
                     (ConstValue::F64(a), ConstValue::I64(b)) => {
                         let b = *b as f64;
-                        let result = match op.op {
-                            Operator::Add => a + b,
-                            Operator::Sub => a - b,
-                            Operator::Star => a * b,
-                            Operator::Quo => a / b,
-                            _ => return None,
-                        };
-                        Some(ConstValue::F64(result))
+                        match op.op {
+                            Operator::Add => Some(ConstValue::F64(a + b)),
+                            Operator::Sub => Some(ConstValue::F64(a - b)),
+                            Operator::Star => Some(ConstValue::F64(a * b)),
+                            Operator::Quo => Some(ConstValue::F64(a / b)),
+                            Operator::Equal => Some(ConstValue::Bool(*a == b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(*a != b)),
+                            Operator::Less => Some(ConstValue::Bool(*a < b)),
+                            Operator::Greater => Some(ConstValue::Bool(*a > b)),
+                            Operator::LessEqual => Some(ConstValue::Bool(*a <= b)),
+                            Operator::GreaterEqual => Some(ConstValue::Bool(*a >= b)),
+                            _ => None,
+                        }
                     }
                     (ConstValue::Str(a), ConstValue::Str(b)) => {
                         match op.op {
                             Operator::Add => Some(ConstValue::Str(format!("{}{}", a, b))),
+                            Operator::Equal => Some(ConstValue::Bool(a == b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(a != b)),
+                            Operator::Less => Some(ConstValue::Bool(a < b)),
+                            Operator::Greater => Some(ConstValue::Bool(a > b)),
+                            Operator::LessEqual => Some(ConstValue::Bool(a <= b)),
+                            Operator::GreaterEqual => Some(ConstValue::Bool(a >= b)),
+                            _ => None,
+                        }
+                    }
+                    (ConstValue::Bool(a), ConstValue::Bool(b)) => {
+                        match op.op {
+                            Operator::AndAnd => Some(ConstValue::Bool(*a && *b)),
+                            Operator::OrOr => Some(ConstValue::Bool(*a || *b)),
+                            Operator::Equal => Some(ConstValue::Bool(a == b)),
+                            Operator::NotEqual => Some(ConstValue::Bool(a != b)),
                             _ => None,
                         }
                     }
@@ -1296,16 +1336,11 @@ impl WasmCompiler {
                         func_body.push(Instruction::LocalGet(idx));
                     }
                 }
-            } else {
-                for vt in &result_types {
-                    match vt {
-                        ValType::I32 => func_body.push(Instruction::I32Const(0)),
-                        ValType::I64 => func_body.push(Instruction::I64Const(0)),
-                        ValType::F32 => func_body.push(Instruction::F32Const(0.0)),
-                        ValType::F64 => func_body.push(Instruction::F64Const(0.0)),
-                        _ => func_body.push(Instruction::I32Const(0)),
-                    }
-                }
+            } else if !result_types.is_empty() {
+                return Err(Error::SyntaxError(format!(
+                    "missing return at end of function '{}'",
+                    decl.name.name
+                )));
             }
         }
 
@@ -1351,6 +1386,19 @@ impl WasmCompiler {
         match stmt {
             ast::Statement::Return(ret) => self.compile_return(ret, out, locals, result_types),
             ast::Statement::Expr(expr_stmt) => {
+                if let ast::Expression::Call(call) = &expr_stmt.expr {
+                    if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                        match ident.name.as_str() {
+                            "append" | "cap" | "complex" | "imag" | "len" | "make" | "new" | "real" => {
+                                return Err(Error::SyntaxError(format!(
+                                    "{}() not used (value is discarded); not permitted in statement context",
+                                    ident.name
+                                )));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 self.compile_expression(&expr_stmt.expr, out, locals)?;
                 let wasm_types = self.expression_result_count(&expr_stmt.expr);
                 for _ in 0..wasm_types {
@@ -2264,7 +2312,7 @@ impl WasmCompiler {
         self.compile_expression(&if_stmt.cond, out, locals)?;
 
         out.push(Instruction::If(BlockType::Empty));
-        if let Some((_, depth, _)) = self.loop_depth.last_mut() {
+        if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
             *depth += 1;
         }
         self.compile_block(&if_stmt.body, out, locals, result_types)?;
@@ -2274,7 +2322,7 @@ impl WasmCompiler {
             self.compile_statement(else_, out, locals, result_types)?;
         }
 
-        if let Some((_, depth, _)) = self.loop_depth.last_mut() {
+        if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
             *depth -= 1;
         }
         out.push(Instruction::End);
@@ -2308,7 +2356,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push((label, 0, has_post));
+        self.loop_depth.push((label, 0, has_post, true));
 
         if let Some(cond) = &for_stmt.cond {
             if let ast::Statement::Expr(expr_stmt) = cond.as_ref() {
@@ -2466,7 +2514,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push((label, 0, false));
+        self.loop_depth.push((label, 0, false, true));
 
         out.push(Instruction::LocalGet(idx_local));
         out.push(Instruction::LocalGet(len_local));
@@ -3460,7 +3508,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push((label, 0, false));
+        self.loop_depth.push((label, 0, false, true));
 
         // Check idx < cap
         out.push(Instruction::LocalGet(idx_local));
@@ -3603,9 +3651,10 @@ impl WasmCompiler {
             })
         });
 
+        out.push(Instruction::Block(BlockType::Empty));
+        self.loop_depth.push((None, 0, false, false));
+
         if has_fallthrough {
-            // Sequential approach: use matched flag + fallthrough flag
-            // Each case is checked independently, break out of outer block when done
             let matched = locals.add_local("__sw_matched", ValType::I32);
             let ft = locals.add_local("__sw_ft", ValType::I32);
             out.push(Instruction::I32Const(0));
@@ -3613,13 +3662,7 @@ impl WasmCompiler {
             out.push(Instruction::I32Const(0));
             out.push(Instruction::LocalSet(ft));
 
-            out.push(Instruction::Block(BlockType::Empty)); // outer block for break
-            if let Some((_, depth, _)) = self.loop_depth.last_mut() {
-                *depth += 1;
-            }
-
             for case in non_default_cases.iter() {
-                // Condition: (tag matches any case value) OR (fallthrough set)
                 let mut first = true;
                 for expr in &case.list {
                     if let Some(tag_l) = tag_local {
@@ -3640,8 +3683,10 @@ impl WasmCompiler {
                 out.push(Instruction::I32Or);
 
                 out.push(Instruction::If(BlockType::Empty));
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
+                    *depth += 1;
+                }
 
-                // Reset fallthrough, set matched
                 out.push(Instruction::I32Const(0));
                 out.push(Instruction::LocalSet(ft));
                 out.push(Instruction::I32Const(1));
@@ -3658,28 +3703,30 @@ impl WasmCompiler {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
 
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
+                    *depth -= 1;
+                }
                 out.push(Instruction::End); // end if
             }
 
-            // Default case: runs if (no case matched) OR (fallthrough flag is set)
             if let Some(def) = default_case {
                 out.push(Instruction::LocalGet(matched));
                 out.push(Instruction::I32Eqz);
                 out.push(Instruction::LocalGet(ft));
                 out.push(Instruction::I32Or);
                 out.push(Instruction::If(BlockType::Empty));
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
+                    *depth += 1;
+                }
                 for stmt in def.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
+                    *depth -= 1;
+                }
                 out.push(Instruction::End);
             }
-
-            out.push(Instruction::End); // outer block
-            if let Some((_, depth, _)) = self.loop_depth.last_mut() {
-                *depth -= 1;
-            }
         } else {
-            // Original if/else chain (no fallthrough)
             for (i, case) in non_default_cases.iter().enumerate() {
                 let mut first = true;
                 for expr in &case.list {
@@ -3699,7 +3746,7 @@ impl WasmCompiler {
                 }
 
                 out.push(Instruction::If(BlockType::Empty));
-                if let Some((_, depth, _)) = self.loop_depth.last_mut() {
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
                     *depth += 1;
                 }
 
@@ -3711,7 +3758,7 @@ impl WasmCompiler {
                 if !is_last || default_case.is_some() {
                     out.push(Instruction::Else);
                 } else {
-                    if let Some((_, depth, _)) = self.loop_depth.last_mut() {
+                    if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
                         *depth -= 1;
                     }
                     out.push(Instruction::End);
@@ -3731,12 +3778,15 @@ impl WasmCompiler {
             };
 
             for _ in 0..blocks_to_close {
-                if let Some((_, depth, _)) = self.loop_depth.last_mut() {
+                if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
                     *depth -= 1;
                 }
                 out.push(Instruction::End);
             }
         }
+
+        self.loop_depth.pop();
+        out.push(Instruction::End);
 
         Ok(())
     }
@@ -3762,17 +3812,37 @@ impl WasmCompiler {
             return self.compile_labeled_branch(branch.key, &label_ident.name, out);
         }
 
-        let (extra, has_post) = self
-            .loop_depth
-            .last()
-            .map(|(_, d, hp)| (*d, *hp))
-            .unwrap_or((0, false));
         match branch.key {
             Keyword::Break => {
-                out.push(Instruction::Br(1 + extra + has_post as u32));
+                let (extra, has_post, is_loop) = self
+                    .loop_depth
+                    .last()
+                    .map(|(_, d, hp, il)| (*d, *hp, *il))
+                    .unwrap_or((0, false, true));
+                if is_loop {
+                    out.push(Instruction::Br(1 + extra + has_post as u32));
+                } else {
+                    out.push(Instruction::Br(extra));
+                }
             }
             Keyword::Continue => {
-                out.push(Instruction::Br(0 + extra));
+                let mut depth: u32 = 0;
+                let mut found = false;
+                for entry in self.loop_depth.iter().rev() {
+                    if entry.3 {
+                        depth += entry.1;
+                        out.push(Instruction::Br(depth));
+                        found = true;
+                        break;
+                    } else {
+                        depth += entry.1 + 1;
+                    }
+                }
+                if !found {
+                    return Err(Error::InternalError(
+                        "continue statement outside loop".to_string(),
+                    ));
+                }
             }
             _ => {
                 return Err(Error::InternalError(format!(
@@ -3793,27 +3863,35 @@ impl WasmCompiler {
         let target_idx = self
             .loop_depth
             .iter()
-            .rposition(|(lbl, _, _)| lbl.as_deref() == Some(label))
+            .rposition(|(lbl, _, _, _)| lbl.as_deref() == Some(label))
             .ok_or_else(|| {
                 Error::InternalError(format!("undefined label: {}", label))
             })?;
 
-        // Each loop entry is Block { Loop { [ContinueBlock]? ... } }.
-        // Loops with a post-statement have an extra ContinueBlock wrapping
-        // the body, so they contribute 3 WASM blocks instead of 2.
         let innermost = self.loop_depth.len() - 1;
         let inner_extra = self.loop_depth[innermost].1;
 
         let mut intermediate_depth: u32 = 0;
         for i in (target_idx + 1..=innermost).rev() {
-            intermediate_depth += 2 + self.loop_depth[i].2 as u32;
+            let entry = &self.loop_depth[i];
+            if entry.3 {
+                intermediate_depth += 2 + entry.2 as u32;
+            } else {
+                intermediate_depth += 1 + entry.1;
+            }
         }
 
         match key {
             Keyword::Break => {
-                let target_has_post = self.loop_depth[target_idx].2 as u32;
-                let depth = inner_extra + intermediate_depth + target_has_post + 1;
-                out.push(Instruction::Br(depth));
+                let target = &self.loop_depth[target_idx];
+                if target.3 {
+                    let target_has_post = target.2 as u32;
+                    let depth = inner_extra + intermediate_depth + target_has_post + 1;
+                    out.push(Instruction::Br(depth));
+                } else {
+                    let depth = inner_extra + intermediate_depth + target.1;
+                    out.push(Instruction::Br(depth));
+                }
             }
             Keyword::Continue => {
                 let depth = inner_extra + intermediate_depth;
@@ -10851,16 +10929,17 @@ impl WasmCompiler {
     }
 
     fn block_always_returns(stmts: &[ast::Statement]) -> bool {
-        if let Some(last) = stmts.last() {
-            Self::stmt_always_returns(last)
-        } else {
-            false
-        }
+        stmts
+            .iter()
+            .rev()
+            .find(|s| !matches!(s, ast::Statement::Empty(_)))
+            .map_or(false, |s| Self::stmt_always_returns(s))
     }
 
     fn stmt_always_returns(stmt: &ast::Statement) -> bool {
         match stmt {
             ast::Statement::Return(_) => true,
+            ast::Statement::Expr(expr_stmt) => Self::expr_is_panic_call(&expr_stmt.expr),
             ast::Statement::If(if_stmt) => {
                 let then_returns = Self::block_always_returns(&if_stmt.body.list);
                 let else_returns =
@@ -10876,19 +10955,82 @@ impl WasmCompiler {
                 then_returns && else_returns
             }
             ast::Statement::Block(block) => Self::block_always_returns(&block.list),
+            ast::Statement::For(for_stmt) => {
+                for_stmt.cond.is_none() && !Self::block_contains_break(&for_stmt.body.list)
+            }
             ast::Statement::Switch(sw) => {
                 let has_default = sw.block.body.iter().any(|c| c.tok == Keyword::Default);
                 if !has_default {
                     return false;
                 }
-                sw.block.body.iter().all(|c| Self::block_always_returns_stmts(&c.body))
+                sw.block.body.iter().all(|c| Self::case_body_terminates(&c.body))
             }
+            ast::Statement::TypeSwitch(ts) => {
+                let has_default = ts.block.body.iter().any(|c| c.list.is_empty());
+                if !has_default {
+                    return false;
+                }
+                ts.block.body.iter().all(|c| Self::case_body_terminates(&c.body))
+            }
+            ast::Statement::Label(labeled) => Self::stmt_always_returns(&labeled.stmt),
             _ => false,
         }
     }
 
-    fn block_always_returns_stmts(stmts: &[ast::Statement]) -> bool {
-        Self::block_always_returns(stmts)
+    fn expr_is_panic_call(expr: &ast::Expression) -> bool {
+        if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                return ident.name == "panic";
+            }
+        }
+        false
+    }
+
+    fn block_contains_break(stmts: &[ast::Statement]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                ast::Statement::Branch(b) if b.key == Keyword::Break && b.ident.is_none() => {
+                    return true;
+                }
+                ast::Statement::If(if_stmt) => {
+                    if Self::block_contains_break(&if_stmt.body.list) {
+                        return true;
+                    }
+                    if let Some(ref els) = if_stmt.else_ {
+                        if let ast::Statement::Block(block) = els.as_ref() {
+                            if Self::block_contains_break(&block.list) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                ast::Statement::Block(block) => {
+                    if Self::block_contains_break(&block.list) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn case_body_terminates(stmts: &[ast::Statement]) -> bool {
+        let last = stmts
+            .iter()
+            .rev()
+            .find(|s| !matches!(s, ast::Statement::Empty(_)));
+        if let Some(last) = last {
+            if Self::stmt_always_returns(last) {
+                return true;
+            }
+            if let ast::Statement::Branch(b) = last {
+                if b.key == Keyword::FallThrough {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn infer_deref_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
