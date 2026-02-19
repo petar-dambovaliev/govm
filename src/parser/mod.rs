@@ -32,11 +32,11 @@ pub fn parse_dir<P: AsRef<std::path::Path>>(dir_path: P) -> Result<HashMap<Strin
         let path = file?.path();
         if path.extension() == Some(go) {
             let file = parse_file(&path)?;
+            let dir = dir_path.as_ref();
             result
                 .entry(String::from(&file.pkg_name.name))
-                .or_insert(ast::Package {
-                    // FIXME: here will be executed in every loop
-                    path: dir_path.as_ref().into(),
+                .or_insert_with(|| ast::Package {
+                    path: dir.into(),
                     files: vec![],
                 })
                 .files
@@ -59,11 +59,11 @@ pub fn parse_dir_recursive<P: AsRef<std::path::Path>>(
         if path.is_file() {
             if path.extension() == Some(go) {
                 let file = parse_file(&path)?;
+                let dir = dir_path.as_ref();
                 result
                     .entry(String::from(&file.pkg_name.name))
-                    .or_insert(ast::Package {
-                        // FIXME: here will be executed in every loop
-                        path: dir_path.as_ref().into(),
+                    .or_insert_with(|| ast::Package {
+                        path: dir.into(),
                         files: vec![],
                     })
                     .files

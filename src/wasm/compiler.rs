@@ -176,7 +176,7 @@ pub struct WasmCompiler {
 
     functions: Vec<FuncInfo>,
     deferred_calls: Vec<Vec<DeferredCall>>,
-    loop_depth: Vec<(Option<String>, u32)>,
+    loop_depth: Vec<(Option<String>, u32, bool)>,
     manifest: Manifest,
     struct_defs: HashMap<String, StructDef>,
     closure_captures: Option<ClosureCaptureState>,
@@ -1521,7 +1521,7 @@ impl WasmCompiler {
         self.compile_expression(&if_stmt.cond, out, locals)?;
 
         out.push(Instruction::If(BlockType::Empty));
-        if let Some((_, depth)) = self.loop_depth.last_mut() {
+        if let Some((_, depth, _)) = self.loop_depth.last_mut() {
             *depth += 1;
         }
         self.compile_block(&if_stmt.body, out, locals, result_types)?;
@@ -1531,7 +1531,7 @@ impl WasmCompiler {
             self.compile_statement(else_, out, locals, result_types)?;
         }
 
-        if let Some((_, depth)) = self.loop_depth.last_mut() {
+        if let Some((_, depth, _)) = self.loop_depth.last_mut() {
             *depth -= 1;
         }
         out.push(Instruction::End);
@@ -1560,10 +1560,12 @@ impl WasmCompiler {
             self.compile_statement(init, out, locals, result_types)?;
         }
 
+        let has_post = for_stmt.post.is_some();
+
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push((label, 0));
+        self.loop_depth.push((label, 0, has_post));
 
         if let Some(cond) = &for_stmt.cond {
             if let ast::Statement::Expr(expr_stmt) = cond.as_ref() {
@@ -1578,7 +1580,15 @@ impl WasmCompiler {
             }
         }
 
+        if has_post {
+            out.push(Instruction::Block(BlockType::Empty));
+        }
+
         self.compile_block(&for_stmt.body, out, locals, result_types)?;
+
+        if has_post {
+            out.push(Instruction::End);
+        }
 
         if let Some(post) = &for_stmt.post {
             self.compile_statement(post, out, locals, result_types)?;
@@ -1671,7 +1681,7 @@ impl WasmCompiler {
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
-        self.loop_depth.push((label, 0));
+        self.loop_depth.push((label, 0, false));
 
         out.push(Instruction::LocalGet(idx_local));
         out.push(Instruction::LocalGet(len_local));
@@ -1847,7 +1857,7 @@ impl WasmCompiler {
             }
 
             out.push(Instruction::If(BlockType::Empty));
-            if let Some((_, depth)) = self.loop_depth.last_mut() {
+            if let Some((_, depth, _)) = self.loop_depth.last_mut() {
                 *depth += 1;
             }
 
@@ -1859,7 +1869,7 @@ impl WasmCompiler {
             if !is_last || default_case.is_some() {
                 out.push(Instruction::Else);
             } else {
-                if let Some((_, depth)) = self.loop_depth.last_mut() {
+                if let Some((_, depth, _)) = self.loop_depth.last_mut() {
                     *depth -= 1;
                 }
                 out.push(Instruction::End);
@@ -1879,7 +1889,7 @@ impl WasmCompiler {
         };
 
         for _ in 0..blocks_to_close {
-            if let Some((_, depth)) = self.loop_depth.last_mut() {
+            if let Some((_, depth, _)) = self.loop_depth.last_mut() {
                 *depth -= 1;
             }
             out.push(Instruction::End);
@@ -1907,10 +1917,14 @@ impl WasmCompiler {
             return self.compile_labeled_branch(branch.key, &label_ident.name, out);
         }
 
-        let extra = self.loop_depth.last().map(|(_, d)| *d).unwrap_or(0);
+        let (extra, has_post) = self
+            .loop_depth
+            .last()
+            .map(|(_, d, hp)| (*d, *hp))
+            .unwrap_or((0, false));
         match branch.key {
             Keyword::Break => {
-                out.push(Instruction::Br(1 + extra));
+                out.push(Instruction::Br(1 + extra + has_post as u32));
             }
             Keyword::Continue => {
                 out.push(Instruction::Br(0 + extra));
@@ -1944,29 +1958,30 @@ impl WasmCompiler {
         let target_idx = self
             .loop_depth
             .iter()
-            .rposition(|(lbl, _)| lbl.as_deref() == Some(label))
+            .rposition(|(lbl, _, _)| lbl.as_deref() == Some(label))
             .ok_or_else(|| {
                 Error::InternalError(format!("undefined label: {}", label))
             })?;
 
-        // Each loop entry is Block { Loop { ... } }. From the innermost loop,
-        // we accumulate the extra block depth of the current (innermost) loop,
-        // then +2 per intermediate loop (Block + Loop), then reach the target.
+        // Each loop entry is Block { Loop { [ContinueBlock]? ... } }.
+        // Loops with a post-statement have an extra ContinueBlock wrapping
+        // the body, so they contribute 3 WASM blocks instead of 2.
         let innermost = self.loop_depth.len() - 1;
         let inner_extra = self.loop_depth[innermost].1;
-        let loops_between = (innermost - target_idx) as u32;
+
+        let mut intermediate_depth: u32 = 0;
+        for i in (target_idx + 1..=innermost).rev() {
+            intermediate_depth += 2 + self.loop_depth[i].2 as u32;
+        }
 
         match key {
             Keyword::Break => {
-                // Target the Block of the labeled loop.
-                // From current position: inner_extra + 2 * loops_between + 1
-                let depth = inner_extra + 2 * loops_between + 1;
+                let target_has_post = self.loop_depth[target_idx].2 as u32;
+                let depth = inner_extra + intermediate_depth + target_has_post + 1;
                 out.push(Instruction::Br(depth));
             }
             Keyword::Continue => {
-                // Target the Loop of the labeled loop.
-                // From current position: inner_extra + 2 * loops_between
-                let depth = inner_extra + 2 * loops_between;
+                let depth = inner_extra + intermediate_depth;
                 out.push(Instruction::Br(depth));
             }
             _ => {
