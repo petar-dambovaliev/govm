@@ -47,6 +47,14 @@ struct StructFieldDef {
     offset: u32,
 }
 
+#[derive(Debug, Clone)]
+enum ConstValue {
+    I64(i64),
+    F64(f64),
+    Bool(bool),
+    Str(String),
+}
+
 impl StructDef {
     fn find_field(&self, name: &str) -> Option<&StructFieldDef> {
         self.fields.iter().find(|f| f.name == name)
@@ -72,6 +80,7 @@ struct LocalAlloc {
     closure_info: HashMap<String, (u32, u32)>,
     slice_elem_types: HashMap<String, ValType>,
     string_locals: HashMap<String, (u32, u32)>,
+    unsigned_vars: std::collections::HashSet<String>,
 }
 
 impl LocalAlloc {
@@ -83,6 +92,7 @@ impl LocalAlloc {
             closure_info: HashMap::new(),
             slice_elem_types: HashMap::new(),
             string_locals: HashMap::new(),
+            unsigned_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -172,6 +182,8 @@ pub struct WasmCompiler {
     last_closure_func_idx: Option<u32>,
     last_closure_env: Option<u32>,
     pending_closures: Vec<Function>,
+    constants: HashMap<String, ConstValue>,
+    global_vars: HashMap<String, (u32, ValType)>,
 }
 
 impl WasmCompiler {
@@ -203,6 +215,8 @@ impl WasmCompiler {
             last_closure_func_idx: None,
             last_closure_env: None,
             pending_closures: Vec::new(),
+            constants: HashMap::new(),
+            global_vars: HashMap::new(),
         }
     }
 
@@ -395,7 +409,7 @@ impl WasmCompiler {
         self.functions
             .iter()
             .find(|f| f.name == "alloc")
-            .unwrap()
+            .expect("internal error: alloc function not registered; emit_alloc_function must be called before compilation")
             .wasm_func_idx
     }
 
@@ -481,19 +495,191 @@ impl WasmCompiler {
     }
 
     fn compile_global_var(&mut self, spec: &ast::VarSpec) -> Result<(), Error> {
-        let names: Vec<&str> = spec.name.iter().map(|n| n.name.as_str()).collect();
-        Err(Error::InternalError(format!(
-            "global variables are not supported in WASM UDFs: {}",
-            names.join(", ")
-        )))
+        let vt = if let Some(type_expr) = &spec.typ {
+            self.expr_to_val_type(type_expr)
+        } else if let Some(val) = spec.values.first() {
+            self.infer_val_type_no_locals(val)
+        } else {
+            ValType::I64
+        };
+
+        let const_init = if let Some(val) = spec.values.first() {
+            self.try_eval_const_expr(val)
+        } else {
+            None
+        };
+
+        for name in &spec.name {
+            let global_idx = self.next_global_idx;
+            self.global_section.global(
+                GlobalType {
+                    val_type: vt,
+                    mutable: true,
+                    shared: false,
+                },
+                &match (&const_init, vt) {
+                    (Some(ConstValue::I64(v)), ValType::I64) => ConstExpr::i64_const(*v),
+                    (Some(ConstValue::I64(v)), ValType::I32) => ConstExpr::i32_const(*v as i32),
+                    (Some(ConstValue::F64(v)), ValType::F64) => ConstExpr::f64_const(*v),
+                    (Some(ConstValue::F64(v)), ValType::F32) => ConstExpr::f32_const(*v as f32),
+                    (Some(ConstValue::Bool(v)), _) => ConstExpr::i32_const(*v as i32),
+                    (_, ValType::I64) => ConstExpr::i64_const(0),
+                    (_, ValType::I32) => ConstExpr::i32_const(0),
+                    (_, ValType::F64) => ConstExpr::f64_const(0.0),
+                    (_, ValType::F32) => ConstExpr::f32_const(0.0),
+                    _ => ConstExpr::i64_const(0),
+                },
+            );
+            self.next_global_idx += 1;
+            self.global_vars.insert(name.name.clone(), (global_idx, vt));
+        }
+
+        Ok(())
     }
 
     fn compile_global_const(&mut self, spec: &ast::ConstSpec) -> Result<(), Error> {
-        let names: Vec<&str> = spec.name.iter().map(|n| n.name.as_str()).collect();
-        Err(Error::InternalError(format!(
-            "global constants are not supported in WASM UDFs: {}",
-            names.join(", ")
-        )))
+        for (i, name) in spec.name.iter().enumerate() {
+            let val_expr = spec.values.get(i).or(spec.values.first());
+
+            if let Some(expr) = val_expr {
+                if let Some(cv) = self.try_eval_const_expr(expr) {
+                    self.constants.insert(name.name.clone(), cv);
+                } else {
+                    return Err(Error::InternalError(format!(
+                        "constant '{}' has a non-constant initializer",
+                        name.name
+                    )));
+                }
+            } else {
+                return Err(Error::InternalError(format!(
+                    "constant '{}' must have a value",
+                    name.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn try_eval_const_expr(&self, expr: &ast::Expression) -> Option<ConstValue> {
+        match expr {
+            ast::Expression::BasicLit(lit) => match lit.kind {
+                LitKind::Integer => lit.value.parse::<i64>().ok().map(ConstValue::I64),
+                LitKind::Float => lit.value.parse::<f64>().ok().map(ConstValue::F64),
+                LitKind::String => {
+                    let s = lit.value.trim_matches('"').to_string();
+                    Some(ConstValue::Str(s))
+                }
+                _ => None,
+            },
+            ast::Expression::Ident(ident) => match ident.name.as_str() {
+                "true" => Some(ConstValue::Bool(true)),
+                "false" => Some(ConstValue::Bool(false)),
+                _ => self.constants.get(&ident.name).cloned(),
+            },
+            ast::Expression::Operation(op) => {
+                if op.y.is_none() {
+                    if op.op == Operator::Sub {
+                        let inner = self.try_eval_const_expr(&op.x)?;
+                        return match inner {
+                            ConstValue::I64(v) => Some(ConstValue::I64(-v)),
+                            ConstValue::F64(v) => Some(ConstValue::F64(-v)),
+                            _ => None,
+                        };
+                    }
+                    return None;
+                }
+                let lhs = self.try_eval_const_expr(&op.x)?;
+                let rhs = self.try_eval_const_expr(op.y.as_ref().unwrap())?;
+                match (&lhs, &rhs) {
+                    (ConstValue::I64(a), ConstValue::I64(b)) => {
+                        let result = match op.op {
+                            Operator::Add => a.checked_add(*b)?,
+                            Operator::Sub => a.checked_sub(*b)?,
+                            Operator::Star => a.checked_mul(*b)?,
+                            Operator::Quo => a.checked_div(*b)?,
+                            Operator::Rem => a.checked_rem(*b)?,
+                            Operator::Shl => a.checked_shl(*b as u32)?,
+                            Operator::Shr => a.checked_shr(*b as u32)?,
+                            Operator::And => a & b,
+                            Operator::Or => a | b,
+                            Operator::Xor => a ^ b,
+                            _ => return None,
+                        };
+                        Some(ConstValue::I64(result))
+                    }
+                    (ConstValue::F64(a), ConstValue::F64(b)) => {
+                        let result = match op.op {
+                            Operator::Add => a + b,
+                            Operator::Sub => a - b,
+                            Operator::Star => a * b,
+                            Operator::Quo => a / b,
+                            _ => return None,
+                        };
+                        Some(ConstValue::F64(result))
+                    }
+                    (ConstValue::I64(a), ConstValue::F64(b)) => {
+                        let a = *a as f64;
+                        let result = match op.op {
+                            Operator::Add => a + b,
+                            Operator::Sub => a - b,
+                            Operator::Star => a * b,
+                            Operator::Quo => a / b,
+                            _ => return None,
+                        };
+                        Some(ConstValue::F64(result))
+                    }
+                    (ConstValue::F64(a), ConstValue::I64(b)) => {
+                        let b = *b as f64;
+                        let result = match op.op {
+                            Operator::Add => a + b,
+                            Operator::Sub => a - b,
+                            Operator::Star => a * b,
+                            Operator::Quo => a / b,
+                            _ => return None,
+                        };
+                        Some(ConstValue::F64(result))
+                    }
+                    _ => None,
+                }
+            }
+            ast::Expression::Paren(p) => self.try_eval_const_expr(&p.expr),
+            _ => None,
+        }
+    }
+
+    fn infer_val_type_no_locals(&self, expr: &ast::Expression) -> ValType {
+        match expr {
+            ast::Expression::BasicLit(lit) => match lit.kind {
+                LitKind::Integer => ValType::I64,
+                LitKind::Float => ValType::F64,
+                LitKind::String => ValType::I32,
+                _ => ValType::I64,
+            },
+            ast::Expression::Ident(ident) => match ident.name.as_str() {
+                "true" | "false" => ValType::I32,
+                _ => {
+                    if let Some(cv) = self.constants.get(&ident.name) {
+                        return match cv {
+                            ConstValue::I64(_) => ValType::I64,
+                            ConstValue::F64(_) => ValType::F64,
+                            ConstValue::Bool(_) => ValType::I32,
+                            ConstValue::Str(_) => ValType::I32,
+                        };
+                    }
+                    ValType::I64
+                }
+            },
+            ast::Expression::Operation(op) if op.y.is_some() => {
+                let lhs = self.infer_val_type_no_locals(&op.x);
+                let rhs = self.infer_val_type_no_locals(op.y.as_ref().unwrap());
+                if lhs == ValType::F64 || rhs == ValType::F64 {
+                    ValType::F64
+                } else {
+                    lhs
+                }
+            }
+            _ => ValType::I64,
+        }
     }
 
     fn extract_recv_type_name(&self, recv: &ast::FieldList) -> Option<String> {
@@ -639,7 +825,7 @@ impl WasmCompiler {
             }
         }
 
-        // Track struct types for parameters
+        // Track struct types and signedness for parameters
         for field in &decl.typ.params.list {
             if let ast::Expression::Ident(type_ident) = &field.typ {
                 if self.struct_defs.contains_key(&type_ident.name) {
@@ -655,6 +841,11 @@ impl WasmCompiler {
                 if type_ident.name == "string" {
                     for name_ident in &field.name {
                         locals.set_var_struct_type(&name_ident.name, "__string");
+                    }
+                }
+                if Self::is_unsigned_type_name(&type_ident.name) {
+                    for name_ident in &field.name {
+                        locals.unsigned_vars.insert(name_ident.name.clone());
                     }
                 }
             }
@@ -891,6 +1082,10 @@ impl WasmCompiler {
                             }
                         }
 
+                        if self.is_unsigned_expr(&assign.right[i], locals) {
+                            locals.unsigned_vars.insert(ident.name.clone());
+                        }
+
                         // Track string variables
                         let is_string = self.is_string_expr(&assign.right[i], locals);
                         if is_string {
@@ -1054,6 +1249,23 @@ impl WasmCompiler {
                                 }
                                 _ => {
                                     out.push(Instruction::LocalSet(idx));
+                                }
+                            }
+                        } else if let Some(&(global_idx, vt)) = self.global_vars.get(&ident.name) {
+                            match assign.op {
+                                Operator::Assign => {
+                                    out.push(Instruction::GlobalSet(global_idx));
+                                }
+                                _ => {
+                                    let tmp = locals.add_local(
+                                        &format!("__gca_tmp_{}", locals.locals.len()),
+                                        vt,
+                                    );
+                                    out.push(Instruction::LocalSet(tmp));
+                                    out.push(Instruction::GlobalGet(global_idx));
+                                    out.push(Instruction::LocalGet(tmp));
+                                    self.emit_compound_op(&assign.op, vt, out)?;
+                                    out.push(Instruction::GlobalSet(global_idx));
                                 }
                             }
                         }
@@ -1515,6 +1727,36 @@ impl WasmCompiler {
                             (ValType::I32, ValType::I64) => {
                                 out.push(Instruction::I64ExtendI32S);
                             }
+                            (ValType::F64, ValType::I64) => {
+                                out.push(Instruction::I64TruncF64S);
+                            }
+                            (ValType::F32, ValType::I32) => {
+                                out.push(Instruction::I32TruncF32S);
+                            }
+                            (ValType::I32, ValType::F32) => {
+                                out.push(Instruction::F32ConvertI32S);
+                            }
+                            (ValType::I64, ValType::F64) => {
+                                out.push(Instruction::F64ConvertI64S);
+                            }
+                            (ValType::F64, ValType::F32) => {
+                                out.push(Instruction::F32DemoteF64);
+                            }
+                            (ValType::F32, ValType::F64) => {
+                                out.push(Instruction::F64PromoteF32);
+                            }
+                            (ValType::I32, ValType::F64) => {
+                                out.push(Instruction::F64ConvertI32S);
+                            }
+                            (ValType::I64, ValType::F32) => {
+                                out.push(Instruction::F32ConvertI64S);
+                            }
+                            (ValType::F64, ValType::I32) => {
+                                out.push(Instruction::I32TruncF64S);
+                            }
+                            (ValType::F32, ValType::I64) => {
+                                out.push(Instruction::I64TruncF32S);
+                            }
                             _ => {}
                         }
                     }
@@ -1618,6 +1860,14 @@ impl WasmCompiler {
             (Operator::Dec, ValType::F64) => {
                 out.push(Instruction::F64Const(1.0));
                 out.push(Instruction::F64Sub);
+            }
+            (Operator::Inc, ValType::F32) => {
+                out.push(Instruction::F32Const(1.0));
+                out.push(Instruction::F32Add);
+            }
+            (Operator::Dec, ValType::F32) => {
+                out.push(Instruction::F32Const(1.0));
+                out.push(Instruction::F32Sub);
             }
             (Operator::Inc, _) => {
                 out.push(Instruction::I64Const(1));
@@ -1728,7 +1978,7 @@ impl WasmCompiler {
 
                         let local_idx = locals.add_local(&ident.name, vt);
 
-                        // Track struct and string types
+                        // Track struct, string, and unsigned types
                         let mut is_string = false;
                         if let Some(ref typ) = spec.typ {
                             if let ast::Expression::Ident(type_ident) = typ {
@@ -1743,6 +1993,9 @@ impl WasmCompiler {
                                         &ident.name,
                                         &type_ident.name,
                                     );
+                                }
+                                if Self::is_unsigned_type_name(&type_ident.name) {
+                                    locals.unsigned_vars.insert(ident.name.clone());
                                 }
                             }
                         }
@@ -2127,6 +2380,44 @@ impl WasmCompiler {
             }
         }
 
+        if let Some(cv) = self.constants.get(&ident.name) {
+            match cv {
+                ConstValue::I64(v) => out.push(Instruction::I64Const(*v)),
+                ConstValue::F64(v) => out.push(Instruction::F64Const(*v)),
+                ConstValue::Bool(v) => out.push(Instruction::I32Const(*v as i32)),
+                ConstValue::Str(s) => {
+                    let bytes = s.as_bytes();
+                    let len = bytes.len() as i32;
+                    let ptr_local = locals.add_local(
+                        &format!("__const_str_ptr_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::I32Const(len));
+                    out.push(Instruction::Call(self.alloc_func_idx()));
+                    out.push(Instruction::LocalTee(ptr_local));
+
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        out.push(Instruction::LocalGet(ptr_local));
+                        out.push(Instruction::I32Const(byte as i32));
+                        out.push(Instruction::I32Store8(MemArg {
+                            offset: i as u64,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                    }
+
+                    out.push(Instruction::LocalGet(ptr_local));
+                    out.push(Instruction::I32Const(len));
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(&(global_idx, _vt)) = self.global_vars.get(&ident.name) {
+            out.push(Instruction::GlobalGet(global_idx));
+            return Ok(());
+        }
+
         let is_type_or_package = self.struct_defs.contains_key(&ident.name)
             || self.is_known_package(&ident.name);
         if is_type_or_package {
@@ -2175,6 +2466,29 @@ impl WasmCompiler {
             }
             _ => false,
         }
+    }
+
+    fn is_unsigned_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
+        match expr {
+            ast::Expression::Ident(ident) => locals.unsigned_vars.contains(&ident.name),
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                    matches!(ident.name.as_str(), "uint" | "uint64" | "uint32" | "uint8" | "uint16" | "byte")
+                } else {
+                    false
+                }
+            }
+            ast::Expression::Paren(p) => self.is_unsigned_expr(&p.expr, locals),
+            ast::Expression::Operation(op) if op.y.is_some() => {
+                self.is_unsigned_expr(&op.x, locals)
+                    || self.is_unsigned_expr(op.y.as_ref().unwrap(), locals)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_unsigned_type_name(name: &str) -> bool {
+        matches!(name, "uint" | "uint64" | "uint32" | "uint8" | "uint16" | "byte")
     }
 
     fn compile_operation(
@@ -2270,10 +2584,13 @@ impl WasmCompiler {
                 return self.emit_f64_op(op.op, out);
             }
 
+            let is_unsigned = self.is_unsigned_expr(&op.x, locals)
+                || self.is_unsigned_expr(y, locals);
+
             if lhs_type == ValType::I32 && rhs_type == ValType::I32 {
                 self.compile_expression(&op.x, out, locals)?;
                 self.compile_expression(y, out, locals)?;
-                return self.emit_i32_op(op.op, out);
+                return self.emit_i32_op_signed(op.op, !is_unsigned, out);
             }
 
             if lhs_type == ValType::I32 && rhs_type == ValType::I64 {
@@ -2283,20 +2600,28 @@ impl WasmCompiler {
                 self.compile_expression(y, &mut rhs_buf, locals)?;
 
                 out.extend(lhs_buf);
-                out.push(Instruction::I64ExtendI32S);
+                if is_unsigned {
+                    out.push(Instruction::I64ExtendI32U);
+                } else {
+                    out.push(Instruction::I64ExtendI32S);
+                }
                 out.extend(rhs_buf);
             } else if lhs_type == ValType::I64 && rhs_type == ValType::I32 {
                 self.compile_expression(&op.x, out, locals)?;
                 let mut rhs_buf = Vec::new();
                 self.compile_expression(y, &mut rhs_buf, locals)?;
                 out.extend(rhs_buf);
-                out.push(Instruction::I64ExtendI32S);
+                if is_unsigned {
+                    out.push(Instruction::I64ExtendI32U);
+                } else {
+                    out.push(Instruction::I64ExtendI32S);
+                }
             } else {
                 self.compile_expression(&op.x, out, locals)?;
                 self.compile_expression(y, out, locals)?;
             }
 
-            return self.emit_i64_op(op.op, out);
+            return self.emit_i64_op_signed(op.op, !is_unsigned, out);
         }
 
         // Unary operations
@@ -2408,28 +2733,29 @@ impl WasmCompiler {
         Ok(())
     }
 
-    fn emit_i64_op(
+    fn emit_i64_op_signed(
         &self,
         op: Operator,
+        signed: bool,
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
         match op {
             Operator::Add => out.push(Instruction::I64Add),
             Operator::Sub => out.push(Instruction::I64Sub),
             Operator::Star => out.push(Instruction::I64Mul),
-            Operator::Quo => out.push(Instruction::I64DivS),
-            Operator::Rem => out.push(Instruction::I64RemS),
+            Operator::Quo => out.push(if signed { Instruction::I64DivS } else { Instruction::I64DivU }),
+            Operator::Rem => out.push(if signed { Instruction::I64RemS } else { Instruction::I64RemU }),
             Operator::And => out.push(Instruction::I64And),
             Operator::Or => out.push(Instruction::I64Or),
             Operator::Xor => out.push(Instruction::I64Xor),
             Operator::Shl => out.push(Instruction::I64Shl),
-            Operator::Shr => out.push(Instruction::I64ShrS),
+            Operator::Shr => out.push(if signed { Instruction::I64ShrS } else { Instruction::I64ShrU }),
             Operator::Equal => out.push(Instruction::I64Eq),
             Operator::NotEqual => out.push(Instruction::I64Ne),
-            Operator::Less => out.push(Instruction::I64LtS),
-            Operator::LessEqual => out.push(Instruction::I64LeS),
-            Operator::Greater => out.push(Instruction::I64GtS),
-            Operator::GreaterEqual => out.push(Instruction::I64GeS),
+            Operator::Less => out.push(if signed { Instruction::I64LtS } else { Instruction::I64LtU }),
+            Operator::LessEqual => out.push(if signed { Instruction::I64LeS } else { Instruction::I64LeU }),
+            Operator::Greater => out.push(if signed { Instruction::I64GtS } else { Instruction::I64GtU }),
+            Operator::GreaterEqual => out.push(if signed { Instruction::I64GeS } else { Instruction::I64GeU }),
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported operator {:?} for i64 type",
@@ -2440,28 +2766,29 @@ impl WasmCompiler {
         Ok(())
     }
 
-    fn emit_i32_op(
+    fn emit_i32_op_signed(
         &self,
         op: Operator,
+        signed: bool,
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
         match op {
             Operator::Add => out.push(Instruction::I32Add),
             Operator::Sub => out.push(Instruction::I32Sub),
             Operator::Star => out.push(Instruction::I32Mul),
-            Operator::Quo => out.push(Instruction::I32DivS),
-            Operator::Rem => out.push(Instruction::I32RemS),
+            Operator::Quo => out.push(if signed { Instruction::I32DivS } else { Instruction::I32DivU }),
+            Operator::Rem => out.push(if signed { Instruction::I32RemS } else { Instruction::I32RemU }),
             Operator::And => out.push(Instruction::I32And),
             Operator::Or => out.push(Instruction::I32Or),
             Operator::Xor => out.push(Instruction::I32Xor),
             Operator::Shl => out.push(Instruction::I32Shl),
-            Operator::Shr => out.push(Instruction::I32ShrS),
+            Operator::Shr => out.push(if signed { Instruction::I32ShrS } else { Instruction::I32ShrU }),
             Operator::Equal => out.push(Instruction::I32Eq),
             Operator::NotEqual => out.push(Instruction::I32Ne),
-            Operator::Less => out.push(Instruction::I32LtS),
-            Operator::LessEqual => out.push(Instruction::I32LeS),
-            Operator::Greater => out.push(Instruction::I32GtS),
-            Operator::GreaterEqual => out.push(Instruction::I32GeS),
+            Operator::Less => out.push(if signed { Instruction::I32LtS } else { Instruction::I32LtU }),
+            Operator::LessEqual => out.push(if signed { Instruction::I32LeS } else { Instruction::I32LeU }),
+            Operator::Greater => out.push(if signed { Instruction::I32GtS } else { Instruction::I32GtU }),
+            Operator::GreaterEqual => out.push(if signed { Instruction::I32GeS } else { Instruction::I32GeU }),
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported operator {:?} for i32 type",
@@ -3005,7 +3332,10 @@ impl WasmCompiler {
                                 }
                                 _ => {
                                     return Err(Error::InternalError(format!(
-                                        "string() conversion from {:?} is not supported; only []byte is supported",
+                                        "string() conversion from {:?} is not supported; \
+                                         only []byte (which maps to i32 pointer) is supported. \
+                                         Integer-to-rune conversion (e.g. string(65) -> \"A\") \
+                                         is not yet implemented",
                                         vt
                                     )));
                                 }
@@ -3058,6 +3388,7 @@ impl WasmCompiler {
                             "Database" => Some(2),
                             "Schema" => Some(3),
                             "User" => Some(4),
+                            "Config" => Some(5),
                             _ => None,
                         };
                         if let Some(host_idx) = ctx_host_idx {
@@ -3066,6 +3397,43 @@ impl WasmCompiler {
                                     self.compile_expression(arg, out, locals)?;
                                 }
                                 out.push(Instruction::Call(host_idx));
+                                return Ok(());
+                            } else if sel.sel.name == "Config" {
+                                if let Some(arg) = call.args.first() {
+                                    self.compile_expression(arg, out, locals)?;
+                                }
+                                let key_len = locals.add_local(
+                                    &format!("__cfg_key_len_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                let key_ptr = locals.add_local(
+                                    &format!("__cfg_key_ptr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(key_len));
+                                out.push(Instruction::LocalSet(key_ptr));
+
+                                let buf_size = 256i32;
+                                out.push(Instruction::I32Const(buf_size));
+                                out.push(Instruction::Call(self.alloc_func_idx()));
+                                let buf_local = locals.add_local(
+                                    &format!("__cfg_buf_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(buf_local));
+
+                                out.push(Instruction::LocalGet(key_ptr));
+                                out.push(Instruction::LocalGet(key_len));
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::Call(host_idx));
+                                let len_local = locals.add_local(
+                                    &format!("__cfg_len_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(len_local));
+
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::LocalGet(len_local));
                                 return Ok(());
                             } else {
                                 let buf_size = 256i32;
@@ -3910,8 +4278,8 @@ impl WasmCompiler {
     }
 
     fn emit_deferred_calls(&self, out: &mut Vec<Instruction<'static>>) {
-        if let Some(deferred) = self.deferred_calls.last() {
-            for call in deferred.iter().rev() {
+        for scope in self.deferred_calls.iter().rev() {
+            for call in scope.iter().rev() {
                 for (local_idx, _vt) in &call.arg_locals {
                     out.push(Instruction::LocalGet(*local_idx));
                 }
@@ -3958,7 +4326,23 @@ impl WasmCompiler {
             ast::Expression::Ident(ident) => match ident.name.as_str() {
                 "true" | "false" => ValType::I32,
                 "nil" => ValType::I32,
-                _ => locals.find_type(&ident.name).unwrap_or(ValType::I64),
+                _ => {
+                    if let Some(vt) = locals.find_type(&ident.name) {
+                        return vt;
+                    }
+                    if let Some(cv) = self.constants.get(&ident.name) {
+                        return match cv {
+                            ConstValue::I64(_) => ValType::I64,
+                            ConstValue::F64(_) => ValType::F64,
+                            ConstValue::Bool(_) => ValType::I32,
+                            ConstValue::Str(_) => ValType::I32,
+                        };
+                    }
+                    if let Some(&(_idx, vt)) = self.global_vars.get(&ident.name) {
+                        return vt;
+                    }
+                    ValType::I64
+                }
             },
             ast::Expression::Operation(op) => {
                 if matches!(

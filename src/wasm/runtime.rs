@@ -43,6 +43,11 @@ impl HostState {
         self.user = user.to_string();
         self
     }
+
+    pub fn with_config(mut self, key: &str, value: &str) -> Self {
+        self.config.insert(key.to_string(), value.to_string());
+        self
+    }
 }
 
 fn validate_read(
