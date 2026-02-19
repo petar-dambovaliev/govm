@@ -1,4 +1,5 @@
 use clap::{Parser as ClapParser, Subcommand};
+use gno_rs::wasm::compiler::WasmCompiler;
 use std::path::PathBuf;
 
 #[derive(ClapParser, Debug)]
@@ -23,13 +24,52 @@ fn main() {
 
     match cli.action {
         SubCommand::Compile { source, output } => {
-            let out_path = output.unwrap_or_else(|| {
+            let wasm_path = output.unwrap_or_else(|| {
                 let mut p = source.clone();
                 p.set_extension("wasm");
                 p
             });
-            println!("compiling {:?} -> {:?}", source, out_path);
-            println!("WASM compilation not yet implemented");
+            let manifest_path = {
+                let mut p = wasm_path.clone();
+                p.set_extension("json");
+                p
+            };
+
+            let src = match std::fs::read_to_string(&source) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: failed to read {}: {}", source.display(), e);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut compiler = WasmCompiler::new();
+            let result = match compiler.compile_source(&src) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: compilation failed: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = std::fs::write(&wasm_path, &result.wasm_bytes) {
+                eprintln!("error: failed to write {}: {}", wasm_path.display(), e);
+                std::process::exit(1);
+            }
+
+            let manifest_json = serde_json::to_string_pretty(&result.manifest)
+                .expect("manifest serialization failed");
+            if let Err(e) = std::fs::write(&manifest_path, manifest_json) {
+                eprintln!("error: failed to write {}: {}", manifest_path.display(), e);
+                std::process::exit(1);
+            }
+
+            println!(
+                "compiled {} -> {} + {}",
+                source.display(),
+                wasm_path.display(),
+                manifest_path.display()
+            );
         }
     }
 }

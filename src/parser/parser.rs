@@ -1905,7 +1905,7 @@ impl Parser {
                 self.expect(Operator::SemiColon)?;
                 Ok(ast::DeferStmt { pos, call })
             }
-            _ => Err(self.else_error_at(pos + 2, "must be invoked function after go")),
+            _ => Err(self.else_error_at(pos + 2, "must be invoked function after defer")),
         }
     }
 
