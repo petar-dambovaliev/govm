@@ -333,7 +333,7 @@ impl WasmCompiler {
         match name {
             "int" | "int64" | "uint" | "uint64" => ValType::I64,
             "int32" | "uint32" | "int16" | "uint16" | "int8" | "uint8"
-            | "byte" | "rune" | "bool" => ValType::I32,
+            | "byte" | "rune" | "bool" | "uintptr" => ValType::I32,
             "float32" => ValType::F32,
             "float64" => ValType::F64,
             _ => ValType::I32, // structs are pointers
@@ -1763,6 +1763,13 @@ impl WasmCompiler {
                                         if is_c64 { "__complex64" } else { "__complex128" },
                                     );
                                 }
+                            }
+
+                            // Track []byte(s) and []rune(s) type conversions as slice variables
+                            if let ast::Expression::TypeSlice(slice_type) = call_expr.func.as_ref() {
+                                locals.set_var_struct_type(&ident.name, "__slice");
+                                let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                                locals.slice_elem_types.insert(ident.name.clone(), elem_vt);
                             }
                         }
 
@@ -3767,16 +3774,6 @@ impl WasmCompiler {
             Keyword::Continue => {
                 out.push(Instruction::Br(0 + extra));
             }
-            Keyword::FallThrough => {
-                return Err(Error::InternalError(
-                    "fallthrough is not supported in WASM UDFs".to_string(),
-                ));
-            }
-            Keyword::Goto => {
-                return Err(Error::InternalError(
-                    "goto is not supported in WASM UDFs".to_string(),
-                ));
-            }
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported branch keyword: {:?}",
@@ -4883,7 +4880,7 @@ impl WasmCompiler {
     }
 
     fn is_unsigned_type_name(name: &str) -> bool {
-        matches!(name, "uint" | "uint64" | "uint32" | "uint8" | "uint16" | "byte")
+        matches!(name, "uint" | "uint64" | "uint32" | "uint8" | "uint16" | "byte" | "uintptr")
     }
 
     fn compile_operation(
@@ -6561,7 +6558,7 @@ impl WasmCompiler {
                         }
                         return Ok(());
                     }
-                    "uint32" => {
+                    "uint32" | "uintptr" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             let vt = self.infer_val_type(arg, locals);
@@ -6610,13 +6607,59 @@ impl WasmCompiler {
                             }
                             // Check if arg is a []byte slice => string([]byte)
                             if let ast::Expression::Ident(arg_ident) = arg {
-                                if locals.slice_elem_types.get(&arg_ident.name) == Some(&ValType::I32) {
-                                    // Read slice header: ptr at offset 0, len at offset 4
+                                if locals.slice_elem_types.get(&arg_ident.name) == Some(&ValType::I32)
+                                    && locals.get_var_struct_type(&arg_ident.name) == Some("__slice")
+                                {
+                                    // Pack I32 slice elements back into compact bytes
                                     let hdr_idx = locals.find(&arg_ident.name).unwrap();
+                                    let src_ptr = locals.add_local(&format!("__s2b_sp_{}", locals.locals.len()), ValType::I32);
+                                    let s_len = locals.add_local(&format!("__s2b_ln_{}", locals.locals.len()), ValType::I32);
+                                    let dst_ptr = locals.add_local(&format!("__s2b_dp_{}", locals.locals.len()), ValType::I32);
+                                    let loop_i = locals.add_local(&format!("__s2b_i_{}", locals.locals.len()), ValType::I32);
+
                                     out.push(Instruction::LocalGet(hdr_idx));
                                     out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                                    out.push(Instruction::LocalSet(src_ptr));
                                     out.push(Instruction::LocalGet(hdr_idx));
                                     out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                                    out.push(Instruction::LocalSet(s_len));
+
+                                    out.push(Instruction::LocalGet(s_len));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    out.push(Instruction::LocalSet(dst_ptr));
+
+                                    out.push(Instruction::I32Const(0));
+                                    out.push(Instruction::LocalSet(loop_i));
+
+                                    out.push(Instruction::Block(BlockType::Empty));
+                                    out.push(Instruction::Loop(BlockType::Empty));
+                                    out.push(Instruction::LocalGet(loop_i));
+                                    out.push(Instruction::LocalGet(s_len));
+                                    out.push(Instruction::I32GeU);
+                                    out.push(Instruction::BrIf(1));
+
+                                    // dst[i] = (byte) src[i*4]
+                                    out.push(Instruction::LocalGet(dst_ptr));
+                                    out.push(Instruction::LocalGet(loop_i));
+                                    out.push(Instruction::I32Add);
+                                    out.push(Instruction::LocalGet(src_ptr));
+                                    out.push(Instruction::LocalGet(loop_i));
+                                    out.push(Instruction::I32Const(4));
+                                    out.push(Instruction::I32Mul);
+                                    out.push(Instruction::I32Add);
+                                    out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                                    out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+
+                                    out.push(Instruction::LocalGet(loop_i));
+                                    out.push(Instruction::I32Const(1));
+                                    out.push(Instruction::I32Add);
+                                    out.push(Instruction::LocalSet(loop_i));
+                                    out.push(Instruction::Br(0));
+                                    out.push(Instruction::End);
+                                    out.push(Instruction::End);
+
+                                    out.push(Instruction::LocalGet(dst_ptr));
+                                    out.push(Instruction::LocalGet(s_len));
                                     return Ok(());
                                 }
                             }
@@ -6996,6 +7039,11 @@ impl WasmCompiler {
                         }
                         out.push(Instruction::Call(0)); // ctx_log is import index 0
                         return Ok(());
+                    }
+                    "close" => {
+                        return Err(Error::InternalError(
+                            "close() is not supported in WASM UDFs (channels are not available)".to_string(),
+                        ));
                     }
                     "delete" => {
                         if call.args.len() < 2 {
@@ -7386,6 +7434,21 @@ impl WasmCompiler {
                         );
                     }
 
+                    // Method expression: TypeName.Method(receiver, args...)
+                    if (self.struct_defs.contains_key(&pkg_ident.name) || self.type_registry.contains_key(&pkg_ident.name))
+                        && locals.find(&pkg_ident.name).is_none()
+                    {
+                        let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                        if let Some(fi_idx) = self.functions.iter().position(|f| f.name == qualified && f.recv_type.is_some()) {
+                            let func_idx = self.functions[fi_idx].wasm_func_idx;
+                            for arg in &call.args {
+                                self.compile_expression(arg, out, locals)?;
+                            }
+                            out.push(Instruction::Call(func_idx));
+                            return Ok(());
+                        }
+                    }
+
                     // Method call on a receiver
                     self.compile_expression(sel.x.as_ref(), out, locals)?;
                     for arg in &call.args {
@@ -7494,7 +7557,7 @@ impl WasmCompiler {
                 if let ast::Expression::Ident(elem_ident) = slice_type.typ.as_ref() {
                     if let Some(arg) = call.args.first() {
                         if self.is_string_expr(arg, locals) && (elem_ident.name == "byte" || elem_ident.name == "uint8") {
-                            // []byte(str): copy string bytes into a new slice
+                            // []byte(str): unpack string bytes into 4-byte I32 slots
                             self.compile_expression(arg, out, locals)?;
                             let str_len = locals.add_local(&format!("__sb_len_{}", locals.locals.len()), ValType::I32);
                             let str_ptr = locals.add_local(&format!("__sb_ptr_{}", locals.locals.len()), ValType::I32);
@@ -7506,15 +7569,47 @@ impl WasmCompiler {
                             let hdr = locals.add_local(&format!("__sb_hdr_{}", locals.locals.len()), ValType::I32);
                             out.push(Instruction::LocalSet(hdr));
 
+                            // Allocate str_len * 4 bytes (each byte stored as I32)
                             out.push(Instruction::LocalGet(str_len));
+                            out.push(Instruction::I32Const(4));
+                            out.push(Instruction::I32Mul);
                             out.push(Instruction::Call(self.alloc_func_idx()?));
                             let data = locals.add_local(&format!("__sb_data_{}", locals.locals.len()), ValType::I32);
                             out.push(Instruction::LocalSet(data));
 
-                            out.push(Instruction::LocalGet(data));
-                            out.push(Instruction::LocalGet(str_ptr));
+                            // Loop: unpack each byte into a 4-byte slot
+                            let idx_l = locals.add_local(&format!("__sb_idx_{}", locals.locals.len()), ValType::I32);
+                            out.push(Instruction::I32Const(0));
+                            out.push(Instruction::LocalSet(idx_l));
+
+                            out.push(Instruction::Block(BlockType::Empty));
+                            out.push(Instruction::Loop(BlockType::Empty));
+
+                            out.push(Instruction::LocalGet(idx_l));
                             out.push(Instruction::LocalGet(str_len));
-                            out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+                            out.push(Instruction::I32GeU);
+                            out.push(Instruction::BrIf(1));
+
+                            // data[idx*4] = str_ptr[idx] (load byte, store as I32)
+                            out.push(Instruction::LocalGet(data));
+                            out.push(Instruction::LocalGet(idx_l));
+                            out.push(Instruction::I32Const(4));
+                            out.push(Instruction::I32Mul);
+                            out.push(Instruction::I32Add);
+                            out.push(Instruction::LocalGet(str_ptr));
+                            out.push(Instruction::LocalGet(idx_l));
+                            out.push(Instruction::I32Add);
+                            out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                            out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+
+                            out.push(Instruction::LocalGet(idx_l));
+                            out.push(Instruction::I32Const(1));
+                            out.push(Instruction::I32Add);
+                            out.push(Instruction::LocalSet(idx_l));
+                            out.push(Instruction::Br(0));
+
+                            out.push(Instruction::End); // loop
+                            out.push(Instruction::End); // block
 
                             out.push(Instruction::LocalGet(hdr));
                             out.push(Instruction::LocalGet(data));
@@ -10507,7 +10602,7 @@ impl WasmCompiler {
         match &field.typ {
             ast::Expression::Ident(ident) => match self.resolve_type_name(&ident.name) {
                 "bool" | "byte" | "uint8" | "int8" | "int16" | "uint16" | "int32"
-                | "uint32" | "rune" => vec![WasmType::I32],
+                | "uint32" | "rune" | "uintptr" => vec![WasmType::I32],
                 "int" | "int64" | "uint" | "uint64" => vec![WasmType::I64],
                 "float32" => vec![WasmType::F32],
                 "float64" => vec![WasmType::F64],
@@ -10609,7 +10704,7 @@ impl WasmCompiler {
                         "float32" => ValType::F32,
                         "int" | "int64" | "uint" | "uint64" => ValType::I64,
                         "int8" | "int16" | "int32" | "rune"
-                        | "byte" | "uint8" | "uint16" | "uint32" | "bool" => ValType::I32,
+                        | "byte" | "uint8" | "uint16" | "uint32" | "bool" | "uintptr" => ValType::I32,
                         "len" | "cap" => ValType::I64,
                         "make" | "append" | "new" | "complex" => ValType::I32,
                         "copy" => ValType::I64,
@@ -10643,6 +10738,8 @@ impl WasmCompiler {
                             }
                         }
                     }
+                } else if let ast::Expression::TypeSlice(_) = call.func.as_ref() {
+                    ValType::I32
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(receiver) = sel.x.as_ref() {
                         match (receiver.name.as_str(), sel.sel.name.as_str()) {
@@ -10734,7 +10831,7 @@ impl WasmCompiler {
         match expr {
             ast::Expression::Ident(ident) => match self.resolve_type_name(&ident.name) {
                 "bool" | "byte" | "uint8" | "int8" | "int16" | "uint16" | "int32"
-                | "uint32" | "rune" => ValType::I32,
+                | "uint32" | "rune" | "uintptr" => ValType::I32,
                 "int" | "int64" | "uint" | "uint64" => ValType::I64,
                 "float32" => ValType::F32,
                 "float64" => ValType::F64,
@@ -10745,6 +10842,10 @@ impl WasmCompiler {
             ast::Expression::TypePointer(_) => ValType::I32,
             ast::Expression::TypeSlice(_) => ValType::I32,
             ast::Expression::TypeInterface(_) => ValType::I32,
+            ast::Expression::TypeMap(_) => ValType::I32,
+            ast::Expression::TypeFunction(_) => ValType::I32,
+            ast::Expression::TypeArray(_) => ValType::I32,
+            ast::Expression::TypeStruct(_) => ValType::I32,
             _ => ValType::I64,
         }
     }
