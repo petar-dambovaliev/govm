@@ -318,7 +318,6 @@ impl Parser {
                 (Some(ast::Ident { pos, name }), self.string_literal()?)
             }
             Token::Literal(LitKind::String, value) => {
-                self.next()?;
                 (None, ast::StringLit { pos, value })
             }
             other => return Err(self.unexpected(exp_list, Some((pos, other)))),
@@ -1174,8 +1173,8 @@ impl Parser {
                     while self.current_not(Operator::ParenRight)
                         && self.current_not(Operator::DotDotDot)
                     {
-                        if let Some(pc) = prev_comma {
-                            assert!(pc);
+                        if let Some(false) = prev_comma {
+                            return Err(self.else_error("expected ',' between function arguments"));
                         }
                         args.push(self.parse_next_level_expr()?);
                         prev_comma = Some(self.skipped(Operator::Comma)?);
@@ -1906,7 +1905,7 @@ impl Parser {
         let pos = self.expect(Keyword::Defer)?;
         match self.expression()? {
             ast::Expression::Call(call) => {
-                self.expect(Operator::SemiColon)?;
+                self.skipped(Operator::SemiColon)?;
                 Ok(ast::DeferStmt { pos, call })
             }
             _ => Err(self.else_error_at(pos + 2, "must be invoked function after defer")),
