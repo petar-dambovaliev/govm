@@ -197,6 +197,7 @@ pub struct WasmCompiler {
     next_global_idx: u32,
     import_func_count: u32,
     heap_ptr_global: u32,
+    panicking_global: u32,
     oom_func_idx: u32,
 
     functions: Vec<FuncInfo>,
@@ -213,6 +214,7 @@ pub struct WasmCompiler {
     global_vars: HashMap<String, (u32, ValType)>,
     current_iota: Option<i64>,
     named_returns: Vec<(String, ValType)>,
+    current_result_types: Vec<ValType>,
 
     // Named type definitions: type MyInt int → "MyInt" → ("int", is_alias)
     type_aliases: HashMap<String, (String, bool)>,
@@ -252,6 +254,7 @@ impl WasmCompiler {
             next_global_idx: 0,
             import_func_count: 0,
             heap_ptr_global: 0,
+            panicking_global: 0,
             oom_func_idx: 0,
 
             functions: Vec::new(),
@@ -268,6 +271,7 @@ impl WasmCompiler {
             global_vars: HashMap::new(),
             current_iota: None,
             named_returns: Vec::new(),
+            current_result_types: Vec::new(),
 
             type_aliases: HashMap::new(),
 
@@ -402,6 +406,17 @@ impl WasmCompiler {
                 shared: false,
             },
             &ConstExpr::i32_const(1024),
+        );
+        self.next_global_idx += 1;
+
+        self.panicking_global = self.next_global_idx;
+        self.global_section.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
         );
         self.next_global_idx += 1;
     }
@@ -931,6 +946,7 @@ impl WasmCompiler {
                 LitKind::Integer => ValType::I64,
                 LitKind::Float => ValType::F64,
                 LitKind::String => ValType::I32,
+                LitKind::Imag => ValType::I32,
                 _ => ValType::I64,
             },
             ast::Expression::Ident(ident) => match ident.name.as_str() {
@@ -1247,8 +1263,10 @@ impl WasmCompiler {
 
         if let Some(body) = &decl.body {
             self.named_returns = named_returns.clone();
+            self.current_result_types = result_types.clone();
             self.compile_block(&body, &mut func_body, &mut locals, &result_types)?;
             self.named_returns = Vec::new();
+            self.current_result_types = Vec::new();
         }
 
         self.emit_deferred_calls(&mut func_body);
@@ -1736,7 +1754,25 @@ impl WasmCompiler {
                                             );
                                         }
                                     }
+                                } else if fn_ident.name == "complex" {
+                                    let is_c64 = call_expr.args.first().map_or(false, |a| {
+                                        self.infer_val_type(a, locals) == ValType::F32
+                                    });
+                                    locals.set_var_struct_type(
+                                        &ident.name,
+                                        if is_c64 { "__complex64" } else { "__complex128" },
+                                    );
                                 }
+                            }
+                        }
+
+                        // Track imaginary literal assignments
+                        if let ast::Expression::BasicLit(lit) = &assign.right[i] {
+                            if lit.kind == LitKind::Imag {
+                                locals.set_var_struct_type(
+                                    &ident.name,
+                                    "__complex128",
+                                );
                             }
                         }
 
@@ -1804,8 +1840,49 @@ impl WasmCompiler {
                 }
             }
         } else {
+            let needs_parallel = assign.left.len() > 1
+                && assign.right.len() > 1
+                && assign.op == Operator::Assign;
+
+            let mut par_temps: Vec<(u32, Option<u32>)> = Vec::new();
+            if needs_parallel {
+                for right in &assign.right {
+                    let is_str = self.is_string_expr(right, locals);
+                    self.compile_expression(right, out, locals)?;
+                    if is_str {
+                        let len_tmp = locals.add_local(
+                            &format!("__par_l_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        let ptr_tmp = locals.add_local(
+                            &format!("__par_p_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(len_tmp));
+                        out.push(Instruction::LocalSet(ptr_tmp));
+                        par_temps.push((ptr_tmp, Some(len_tmp)));
+                    } else {
+                        let vt = self.infer_val_type(right, locals);
+                        let tmp = locals.add_local(
+                            &format!("__par_{}", locals.locals.len()),
+                            vt,
+                        );
+                        out.push(Instruction::LocalSet(tmp));
+                        par_temps.push((tmp, None));
+                    }
+                }
+            }
+
             for (i, left) in assign.left.iter().enumerate() {
-                if i < assign.right.len() {
+                if needs_parallel {
+                    if i < par_temps.len() {
+                        let (val_tmp, len_tmp_opt) = par_temps[i];
+                        out.push(Instruction::LocalGet(val_tmp));
+                        if let Some(len_tmp) = len_tmp_opt {
+                            out.push(Instruction::LocalGet(len_tmp));
+                        }
+                    }
+                } else if i < assign.right.len() {
                     self.compile_expression(&assign.right[i], out, locals)?;
                 }
 
@@ -2712,6 +2789,7 @@ impl WasmCompiler {
                     LitKind::Integer => "int".to_string(),
                     LitKind::Float => "float64".to_string(),
                     LitKind::String => "string".to_string(),
+                    LitKind::Imag => "complex128".to_string(),
                     _ => "int".to_string(),
                 }
             }
@@ -2817,6 +2895,28 @@ impl WasmCompiler {
         self.iface_var_type_ids.get(name).copied()
     }
 
+    fn types_implementing_interface(&self, iface_name: &str) -> Vec<u32> {
+        let iface_methods = match self.iface_defs.get(iface_name) {
+            Some(methods) => methods,
+            None => return Vec::new(),
+        };
+
+        let mut result = Vec::new();
+        for (type_name, &type_id) in &self.type_registry {
+            if type_name == "nil" || self.iface_defs.contains_key(type_name) {
+                continue;
+            }
+            let has_all_methods = iface_methods.iter().all(|method| {
+                let qualified = format!("{}.{}", type_name, method);
+                self.functions.iter().any(|f| f.name == qualified)
+            });
+            if has_all_methods {
+                result.push(type_id);
+            }
+        }
+        result
+    }
+
     fn compile_type_assert(
         &mut self,
         ta: &ast::TypeAssertion,
@@ -2837,9 +2937,6 @@ impl WasmCompiler {
             }
         };
 
-        let target_id = self.get_or_create_type_id(&target_type_name);
-        let target_vt = Self::val_type_for_type_name(&target_type_name);
-
         // Get the interface variable
         let iface_var_name = match ta.left.as_ref() {
             ast::Expression::Ident(ident) => ident.name.clone(),
@@ -2856,6 +2953,55 @@ impl WasmCompiler {
         let data_local = locals.find(&iface_var_name).ok_or_else(|| {
             Error::InternalError(format!("variable '{}' not found", iface_var_name))
         })?;
+
+        // Check if target is an interface type
+        if self.iface_defs.contains_key(&target_type_name)
+            || target_type_name == "any"
+            || target_type_name == "error"
+        {
+            if target_type_name == "any" {
+                // any always succeeds: pass through the interface value
+                out.push(Instruction::LocalGet(data_local));
+                return Ok(());
+            }
+
+            let valid_type_ids = self.types_implementing_interface(&target_type_name);
+            if valid_type_ids.is_empty() {
+                out.push(Instruction::Unreachable);
+                return Ok(());
+            }
+
+            // Check if type_id matches any implementing type
+            let match_local = locals.add_local(
+                &format!("__ta_imatch_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(match_local));
+
+            for tid in &valid_type_ids {
+                out.push(Instruction::LocalGet(tid_local));
+                out.push(Instruction::I32Const(*tid as i32));
+                out.push(Instruction::I32Eq);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::LocalSet(match_local));
+                out.push(Instruction::End);
+            }
+
+            out.push(Instruction::LocalGet(match_local));
+            out.push(Instruction::I32Eqz);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+
+            // Pass through the data pointer (interface value stays as-is)
+            out.push(Instruction::LocalGet(data_local));
+            return Ok(());
+        }
+
+        let target_id = self.get_or_create_type_id(&target_type_name);
+        let target_vt = Self::val_type_for_type_name(&target_type_name);
 
         // Check type_id matches target
         out.push(Instruction::LocalGet(tid_local));
@@ -2894,9 +3040,6 @@ impl WasmCompiler {
             }
         };
 
-        let target_id = self.get_or_create_type_id(&target_type_name);
-        let target_vt = Self::val_type_for_type_name(&target_type_name);
-
         let iface_var_name = match ta.left.as_ref() {
             ast::Expression::Ident(ident) => ident.name.clone(),
             _ => {
@@ -2912,6 +3055,72 @@ impl WasmCompiler {
         let data_local = locals.find(&iface_var_name).ok_or_else(|| {
             Error::InternalError(format!("variable '{}' not found", iface_var_name))
         })?;
+
+        // Check if target is an interface type
+        if self.iface_defs.contains_key(&target_type_name)
+            || target_type_name == "any"
+            || target_type_name == "error"
+        {
+            let val_local = locals.add_local(val_var, ValType::I32);
+            let ok_local = locals.add_local(ok_var, ValType::I32);
+            locals.set_var_struct_type(val_var, "__interface");
+
+            // Create a type_id local for the result interface variable
+            let val_tid_local = locals.add_local(
+                &format!("{}__iface_tid", val_var),
+                ValType::I32,
+            );
+
+            if target_type_name == "any" {
+                // any always succeeds
+                out.push(Instruction::LocalGet(data_local));
+                out.push(Instruction::LocalSet(val_local));
+                out.push(Instruction::LocalGet(tid_local));
+                out.push(Instruction::LocalSet(val_tid_local));
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::LocalSet(ok_local));
+                self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
+                return Ok(());
+            }
+
+            let valid_type_ids = self.types_implementing_interface(&target_type_name);
+
+            let match_local = locals.add_local(
+                &format!("__taok_imatch_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(match_local));
+
+            for tid in &valid_type_ids {
+                out.push(Instruction::LocalGet(tid_local));
+                out.push(Instruction::I32Const(*tid as i32));
+                out.push(Instruction::I32Eq);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::LocalSet(match_local));
+                out.push(Instruction::End);
+            }
+
+            out.push(Instruction::LocalGet(match_local));
+            out.push(Instruction::If(BlockType::Empty));
+            {
+                out.push(Instruction::LocalGet(data_local));
+                out.push(Instruction::LocalSet(val_local));
+                out.push(Instruction::LocalGet(tid_local));
+                out.push(Instruction::LocalSet(val_tid_local));
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::LocalSet(ok_local));
+            }
+            out.push(Instruction::End);
+
+            self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
+
+            return Ok(());
+        }
+
+        let target_id = self.get_or_create_type_id(&target_type_name);
+        let target_vt = Self::val_type_for_type_name(&target_type_name);
 
         let val_local = locals.add_local(val_var, target_vt);
         let ok_local = locals.add_local(ok_var, ValType::I32);
@@ -4089,6 +4298,45 @@ impl WasmCompiler {
                 let ch = Self::unescape_go_char(s)? as i32;
                 out.push(Instruction::I32Const(ch));
             }
+            LitKind::Imag => {
+                let num_str = lit.value.trim_end_matches('i');
+                let imag_val: f64 = num_str.parse().map_err(|_| {
+                    Error::SyntaxError(format!("invalid imaginary literal: {}", lit.value))
+                })?;
+                let total_size: i32 = 16; // complex128: two f64s
+                let float_align: u32 = 3;
+
+                let real_local = locals.add_local(
+                    &format!("__imag_r_{}", locals.locals.len()),
+                    ValType::F64,
+                );
+                let imag_local = locals.add_local(
+                    &format!("__imag_i_{}", locals.locals.len()),
+                    ValType::F64,
+                );
+                out.push(Instruction::F64Const(0.0));
+                out.push(Instruction::LocalSet(real_local));
+                out.push(Instruction::F64Const(imag_val));
+                out.push(Instruction::LocalSet(imag_local));
+
+                out.push(Instruction::I32Const(total_size));
+                out.push(Instruction::Call(self.alloc_func_idx()?));
+                let ptr = locals.add_local(
+                    &format!("__imag_ptr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalSet(ptr));
+
+                out.push(Instruction::LocalGet(ptr));
+                out.push(Instruction::LocalGet(real_local));
+                out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+
+                out.push(Instruction::LocalGet(ptr));
+                out.push(Instruction::LocalGet(imag_local));
+                out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+
+                out.push(Instruction::LocalGet(ptr));
+            }
             _ => {
                 return Err(Error::InternalError(format!(
                     "unsupported literal kind: {:?}",
@@ -4358,6 +4606,223 @@ impl WasmCompiler {
         }
     }
 
+    fn is_complex_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
+        if let ast::Expression::Ident(ident) = expr {
+            let st = locals.get_var_struct_type(&ident.name);
+            st == Some("__complex64") || st == Some("__complex128")
+        } else if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                return ident.name == "complex";
+            }
+            false
+        } else if let ast::Expression::BasicLit(lit) = expr {
+            lit.kind == LitKind::Imag
+        } else {
+            false
+        }
+    }
+
+    fn emit_complex_binop(
+        &mut self,
+        lhs: &ast::Expression,
+        rhs: &ast::Expression,
+        op: Operator,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        let is_c64 = self.is_complex64_expr(lhs, locals);
+        let float_vt = if is_c64 { ValType::F32 } else { ValType::F64 };
+        let imag_offset = if is_c64 { 4u64 } else { 8u64 };
+        let float_align = if is_c64 { 2u32 } else { 3u32 };
+        let total_size = if is_c64 { 8i32 } else { 16i32 };
+
+        let ar = locals.add_local(&format!("__cx_ar_{}", locals.locals.len()), float_vt);
+        let ai = locals.add_local(&format!("__cx_ai_{}", locals.locals.len()), float_vt);
+        let br = locals.add_local(&format!("__cx_br_{}", locals.locals.len()), float_vt);
+        let bi = locals.add_local(&format!("__cx_bi_{}", locals.locals.len()), float_vt);
+
+        // Load lhs real and imag parts
+        self.compile_expression(lhs, out, locals)?;
+        let lptr = locals.add_local(&format!("__cx_lp_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalSet(lptr));
+        out.push(Instruction::LocalGet(lptr));
+        if is_c64 {
+            out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        }
+        out.push(Instruction::LocalSet(ar));
+        out.push(Instruction::LocalGet(lptr));
+        if is_c64 {
+            out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        }
+        out.push(Instruction::LocalSet(ai));
+
+        // Load rhs real and imag parts
+        self.compile_expression(rhs, out, locals)?;
+        let rptr = locals.add_local(&format!("__cx_rp_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalSet(rptr));
+        out.push(Instruction::LocalGet(rptr));
+        if is_c64 {
+            out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        }
+        out.push(Instruction::LocalSet(br));
+        out.push(Instruction::LocalGet(rptr));
+        if is_c64 {
+            out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        }
+        out.push(Instruction::LocalSet(bi));
+
+        match op {
+            Operator::Equal => {
+                // a.r == b.r && a.i == b.i
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Eq); } else { out.push(Instruction::F64Eq); }
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Eq); } else { out.push(Instruction::F64Eq); }
+                out.push(Instruction::I32And);
+                return Ok(());
+            }
+            Operator::NotEqual => {
+                // a.r != b.r || a.i != b.i
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Ne); } else { out.push(Instruction::F64Ne); }
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Ne); } else { out.push(Instruction::F64Ne); }
+                out.push(Instruction::I32Or);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Arithmetic: allocate result
+        let res_r = locals.add_local(&format!("__cx_rr_{}", locals.locals.len()), float_vt);
+        let res_i = locals.add_local(&format!("__cx_ri_{}", locals.locals.len()), float_vt);
+
+        match op {
+            Operator::Add => {
+                // (ar+br, ai+bi)
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
+                out.push(Instruction::LocalSet(res_r));
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
+                out.push(Instruction::LocalSet(res_i));
+            }
+            Operator::Sub => {
+                // (ar-br, ai-bi)
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Sub); } else { out.push(Instruction::F64Sub); }
+                out.push(Instruction::LocalSet(res_r));
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Sub); } else { out.push(Instruction::F64Sub); }
+                out.push(Instruction::LocalSet(res_i));
+            }
+            Operator::Star => {
+                // (ar*br - ai*bi, ar*bi + ai*br)
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                if is_c64 { out.push(Instruction::F32Sub); } else { out.push(Instruction::F64Sub); }
+                out.push(Instruction::LocalSet(res_r));
+
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
+                out.push(Instruction::LocalSet(res_i));
+            }
+            Operator::Quo => {
+                // denom = br*br + bi*bi
+                // real = (ar*br + ai*bi) / denom
+                // imag = (ai*br - ar*bi) / denom
+                let denom = locals.add_local(&format!("__cx_d_{}", locals.locals.len()), float_vt);
+                out.push(Instruction::LocalGet(br));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                out.push(Instruction::LocalGet(bi));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
+                out.push(Instruction::LocalSet(denom));
+
+                // real
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
+                out.push(Instruction::LocalGet(denom));
+                if is_c64 { out.push(Instruction::F32Div); } else { out.push(Instruction::F64Div); }
+                out.push(Instruction::LocalSet(res_r));
+
+                // imag
+                out.push(Instruction::LocalGet(ai));
+                out.push(Instruction::LocalGet(br));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                out.push(Instruction::LocalGet(ar));
+                out.push(Instruction::LocalGet(bi));
+                if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
+                if is_c64 { out.push(Instruction::F32Sub); } else { out.push(Instruction::F64Sub); }
+                out.push(Instruction::LocalGet(denom));
+                if is_c64 { out.push(Instruction::F32Div); } else { out.push(Instruction::F64Div); }
+                out.push(Instruction::LocalSet(res_i));
+            }
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported operator {:?} for complex numbers",
+                    op
+                )));
+            }
+        }
+
+        // Allocate and store result complex
+        out.push(Instruction::I32Const(total_size));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        let res_ptr = locals.add_local(&format!("__cx_rptr_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalSet(res_ptr));
+
+        out.push(Instruction::LocalGet(res_ptr));
+        out.push(Instruction::LocalGet(res_r));
+        if is_c64 {
+            out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        }
+        out.push(Instruction::LocalGet(res_ptr));
+        out.push(Instruction::LocalGet(res_i));
+        if is_c64 {
+            out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        } else {
+            out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+        }
+
+        out.push(Instruction::LocalGet(res_ptr));
+        Ok(())
+    }
+
     fn is_string_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         match expr {
             ast::Expression::BasicLit(lit) => lit.kind == LitKind::String,
@@ -4440,6 +4905,11 @@ impl WasmCompiler {
                 && self.is_string_expr(y, locals)
             {
                 return self.emit_string_compare(&op.x, y, op.op, out, locals);
+            }
+
+            // Complex number arithmetic
+            if self.is_complex_expr(&op.x, locals) && self.is_complex_expr(y, locals) {
+                return self.emit_complex_binop(&op.x, y, op.op, out, locals);
             }
 
             // Interface nil comparison: err == nil or err != nil
@@ -4939,7 +5409,12 @@ impl WasmCompiler {
                     out.push(Instruction::I32Const(-1i32));
                     out.push(Instruction::I32Ne);
                 }
-                _ => {}
+                _ => {
+                    return Err(Error::InternalError(format!(
+                        "unsupported operator {:?} for string comparison",
+                        op
+                    )));
+                }
             }
         }
 
@@ -5884,13 +6359,41 @@ impl WasmCompiler {
                             }
                             out.push(Instruction::Call(0)); // ctx_log
                         }
+
+                        // Set panicking flag
+                        out.push(Instruction::I32Const(1));
+                        out.push(Instruction::GlobalSet(self.panicking_global));
+
+                        // Run deferred calls so recover() can clear the flag
+                        self.emit_deferred_calls(out);
+
+                        // If still panicking (no recover), trap
+                        out.push(Instruction::GlobalGet(self.panicking_global));
+                        out.push(Instruction::If(BlockType::Empty));
                         out.push(Instruction::Unreachable);
+                        out.push(Instruction::End);
+
+                        // Recovered: push zero return values and return
+                        for rt in &self.current_result_types.clone() {
+                            match rt {
+                                ValType::I32 => out.push(Instruction::I32Const(0)),
+                                ValType::I64 => out.push(Instruction::I64Const(0)),
+                                ValType::F32 => out.push(Instruction::F32Const(0.0)),
+                                ValType::F64 => out.push(Instruction::F64Const(0.0)),
+                                _ => out.push(Instruction::I32Const(0)),
+                            }
+                        }
+                        out.push(Instruction::Return);
                         return Ok(());
                     }
                     "recover" => {
-                        return Err(Error::InternalError(
-                            "recover() is not supported in WASM UDFs".to_string(),
-                        ));
+                        // Check panicking flag and clear it if set
+                        out.push(Instruction::GlobalGet(self.panicking_global));
+                        out.push(Instruction::If(BlockType::Empty));
+                        out.push(Instruction::I32Const(0));
+                        out.push(Instruction::GlobalSet(self.panicking_global));
+                        out.push(Instruction::End);
+                        return Ok(());
                     }
                     "int" | "int64" => {
                         if let Some(arg) = call.args.first() {
@@ -7236,7 +7739,9 @@ impl WasmCompiler {
                 let func_ident = if let Some(ast::Expression::Ident(id)) = idx_expr.left.as_deref() {
                     id
                 } else {
-                    unreachable!()
+                    return Err(Error::InternalError(
+                        "generic function call requires an identifier as the function name".to_string(),
+                    ));
                 };
                 let type_arg = if let ast::Expression::Ident(ti) = idx_expr.index.as_ref() {
                     ti.name.clone()
@@ -7955,7 +8460,11 @@ impl WasmCompiler {
 
             let elem_expr = match &kv.val {
                 ast::Element::Expr(e) => e,
-                _ => unreachable!(),
+                _ => {
+                    return Err(Error::InternalError(
+                        "struct composite literal requires expression values".to_string(),
+                    ));
+                }
             };
 
             // Determine offset and type from struct layout
@@ -8391,15 +8900,234 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        // Simple approach: truncate to i64 and convert the integer part.
-        // This loses the fractional part but is sufficient for basic println debugging.
         let fval = locals.add_local(&format!("__ftos_v_{}", locals.locals.len()), ValType::F64);
+        let abs_val = locals.add_local(&format!("__ftos_abs_{}", locals.locals.len()), ValType::F64);
+        let is_neg = locals.add_local(&format!("__ftos_neg_{}", locals.locals.len()), ValType::I32);
+        let int_part = locals.add_local(&format!("__ftos_ip_{}", locals.locals.len()), ValType::I64);
+        let frac_val = locals.add_local(&format!("__ftos_fv_{}", locals.locals.len()), ValType::F64);
+        let frac_int = locals.add_local(&format!("__ftos_fi_{}", locals.locals.len()), ValType::I64);
+        let int_ptr = locals.add_local(&format!("__ftos_iptr_{}", locals.locals.len()), ValType::I32);
+        let int_len = locals.add_local(&format!("__ftos_ilen_{}", locals.locals.len()), ValType::I32);
+        let frac_buf = locals.add_local(&format!("__ftos_fb_{}", locals.locals.len()), ValType::I32);
+        let frac_pos = locals.add_local(&format!("__ftos_fp_{}", locals.locals.len()), ValType::I32);
+        let final_ptr = locals.add_local(&format!("__ftos_rp_{}", locals.locals.len()), ValType::I32);
+        let total_len = locals.add_local(&format!("__ftos_tl_{}", locals.locals.len()), ValType::I32);
+
         out.push(Instruction::LocalSet(fval));
 
-        // Truncate to integer
+        // Check sign
         out.push(Instruction::LocalGet(fval));
+        out.push(Instruction::F64Const(0.0));
+        out.push(Instruction::F64Lt);
+        out.push(Instruction::LocalSet(is_neg));
+
+        // abs_val = abs(fval)
+        out.push(Instruction::LocalGet(fval));
+        out.push(Instruction::F64Abs);
+        out.push(Instruction::LocalSet(abs_val));
+
+        // int_part = i64(trunc(abs_val))
+        out.push(Instruction::LocalGet(abs_val));
+        out.push(Instruction::F64Floor);
         out.push(Instruction::I64TruncF64S);
+        out.push(Instruction::LocalSet(int_part));
+
+        // frac_val = abs_val - f64(int_part)
+        out.push(Instruction::LocalGet(abs_val));
+        out.push(Instruction::LocalGet(int_part));
+        out.push(Instruction::F64ConvertI64S);
+        out.push(Instruction::F64Sub);
+        out.push(Instruction::LocalSet(frac_val));
+
+        // Convert int_part to string using existing helper
+        out.push(Instruction::LocalGet(int_part));
         self.emit_i64_to_string(out, locals)?;
+        out.push(Instruction::LocalSet(int_len));
+        out.push(Instruction::LocalSet(int_ptr));
+
+        // Check if frac is zero (frac_val < 1e-9)
+        out.push(Instruction::LocalGet(frac_val));
+        out.push(Instruction::F64Const(1e-9));
+        out.push(Instruction::F64Lt);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            // No fractional part: build sign + int_str
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::LocalGet(int_len));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalSet(total_len));
+            out.push(Instruction::LocalGet(total_len));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(final_ptr));
+
+            // If negative, write '-'
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::I32Const(45)); // '-'
+            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            out.push(Instruction::End);
+
+            // Copy int digits
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalGet(int_ptr));
+            out.push(Instruction::LocalGet(int_len));
+            out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+        }
+        out.push(Instruction::Else);
+        {
+            // Has fractional part: always generate 6 fractional digits then strip trailing '0's
+            // frac_int = i64(round(frac_val * 1e6))
+            out.push(Instruction::LocalGet(frac_val));
+            out.push(Instruction::F64Const(1e6));
+            out.push(Instruction::F64Mul);
+            out.push(Instruction::F64Const(0.5));
+            out.push(Instruction::F64Add);
+            out.push(Instruction::F64Floor);
+            out.push(Instruction::I64TruncF64S);
+            out.push(Instruction::LocalSet(frac_int));
+
+            // Allocate 8-byte buffer and write exactly 6 digits (right-to-left)
+            out.push(Instruction::I32Const(8));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(frac_buf));
+
+            {
+                let digit_idx = locals.add_local(&format!("__ftos_di_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::I32Const(5));
+                out.push(Instruction::LocalSet(digit_idx));
+
+                // Write 6 digits right-to-left
+                out.push(Instruction::Block(BlockType::Empty));
+                out.push(Instruction::Loop(BlockType::Empty));
+                out.push(Instruction::LocalGet(digit_idx));
+                out.push(Instruction::I32Const(0));
+                out.push(Instruction::I32LtS);
+                out.push(Instruction::BrIf(1));
+
+                out.push(Instruction::LocalGet(frac_buf));
+                out.push(Instruction::LocalGet(digit_idx));
+                out.push(Instruction::I32Add);
+                out.push(Instruction::LocalGet(frac_int));
+                out.push(Instruction::I64Const(10));
+                out.push(Instruction::I64RemU);
+                out.push(Instruction::I32WrapI64);
+                out.push(Instruction::I32Const(48));
+                out.push(Instruction::I32Add);
+                out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+
+                out.push(Instruction::LocalGet(frac_int));
+                out.push(Instruction::I64Const(10));
+                out.push(Instruction::I64DivU);
+                out.push(Instruction::LocalSet(frac_int));
+
+                out.push(Instruction::LocalGet(digit_idx));
+                out.push(Instruction::I32Const(1));
+                out.push(Instruction::I32Sub);
+                out.push(Instruction::LocalSet(digit_idx));
+                out.push(Instruction::Br(0));
+                out.push(Instruction::End); // loop
+                out.push(Instruction::End); // block
+            }
+
+            // frac_pos = 6 initially
+            out.push(Instruction::I32Const(6));
+            out.push(Instruction::LocalSet(frac_pos));
+
+            // Strip trailing '0' characters from frac_buf
+            out.push(Instruction::Block(BlockType::Empty));
+            out.push(Instruction::Loop(BlockType::Empty));
+            out.push(Instruction::LocalGet(frac_pos));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32LeS);
+            out.push(Instruction::BrIf(1)); // keep at least 1 digit
+
+            out.push(Instruction::LocalGet(frac_buf));
+            out.push(Instruction::LocalGet(frac_pos));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32Sub);
+            out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            out.push(Instruction::I32Const(48)); // '0'
+            out.push(Instruction::I32Ne);
+            out.push(Instruction::BrIf(1)); // stop if not '0'
+
+            out.push(Instruction::LocalGet(frac_pos));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32Sub);
+            out.push(Instruction::LocalSet(frac_pos));
+            out.push(Instruction::Br(0));
+            out.push(Instruction::End); // loop
+            out.push(Instruction::End); // block
+
+            // Build final: sign + int_str + '.' + frac_str
+            // total = is_neg + int_len + 1 + frac_pos
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::LocalGet(int_len));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::I32Const(1)); // for '.'
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalGet(frac_pos));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalSet(total_len));
+
+            out.push(Instruction::LocalGet(total_len));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(final_ptr));
+
+            let cursor = locals.add_local(&format!("__ftos_cur_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(cursor));
+
+            // Write '-' if negative
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::I32Const(45)); // '-'
+            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            out.push(Instruction::LocalGet(is_neg));
+            out.push(Instruction::LocalSet(cursor));
+            out.push(Instruction::End);
+
+            // Copy integer digits
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::LocalGet(cursor));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalGet(int_ptr));
+            out.push(Instruction::LocalGet(int_len));
+            out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+            out.push(Instruction::LocalGet(cursor));
+            out.push(Instruction::LocalGet(int_len));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalSet(cursor));
+
+            // Write '.'
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::LocalGet(cursor));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::I32Const(46)); // '.'
+            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            out.push(Instruction::LocalGet(cursor));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalSet(cursor));
+
+            // Copy fractional digits
+            out.push(Instruction::LocalGet(final_ptr));
+            out.push(Instruction::LocalGet(cursor));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalGet(frac_buf));
+            out.push(Instruction::LocalGet(frac_pos));
+            out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+        }
+        out.push(Instruction::End); // end if frac == 0
+
+        // Push result (ptr, len)
+        out.push(Instruction::LocalGet(final_ptr));
+        out.push(Instruction::LocalGet(total_len));
+
         Ok(())
     }
 
@@ -9809,6 +10537,7 @@ impl WasmCompiler {
                 LitKind::Float => ValType::F64,
                 LitKind::String => ValType::I32,
                 LitKind::Char => ValType::I32,
+                LitKind::Imag => ValType::I32,
                 _ => ValType::I64,
             },
             ast::Expression::Ident(ident) => match ident.name.as_str() {
