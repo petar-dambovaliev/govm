@@ -859,6 +859,16 @@ impl WasmCompiler {
                         for name_ident in &field.name {
                             locals.set_var_struct_type(&name_ident.name, &type_ident.name);
                         }
+                    } else {
+                        let ptr_tag = match type_ident.name.as_str() {
+                            "int" | "int64" | "uint" | "uint64" => "__ptr_i64",
+                            "float32" => "__ptr_f32",
+                            "float64" => "__ptr_f64",
+                            _ => "__ptr_i32",
+                        };
+                        for name_ident in &field.name {
+                            locals.set_var_struct_type(&name_ident.name, ptr_tag);
+                        }
                     }
                 }
             }
@@ -884,7 +894,20 @@ impl WasmCompiler {
         self.emit_deferred_calls(&mut func_body);
         self.deferred_calls.pop();
 
-        if result_types.is_empty()
+        let body_always_returns = decl
+            .body
+            .as_ref()
+            .map_or(false, |b| Self::block_always_returns(&b.list));
+
+        if body_always_returns {
+            if !result_types.is_empty()
+                && func_body
+                    .last()
+                    .map_or(true, |i| !matches!(i, Instruction::Return))
+            {
+                func_body.push(Instruction::Unreachable);
+            }
+        } else if result_types.is_empty()
             || func_body
                 .last()
                 .map_or(true, |i| !matches!(i, Instruction::Return))
@@ -1061,6 +1084,16 @@ impl WasmCompiler {
         let is_define = assign.op == Operator::Define;
 
         if is_define {
+            // Multi-return: single function call on the right, multiple vars on the left
+            if assign.right.len() == 1 && assign.left.len() > 1 {
+                if let ast::Expression::Call(_) = &assign.right[0] {
+                    let ret_types = self.call_return_val_types(&assign.right[0], locals);
+                    if ret_types.len() >= assign.left.len() {
+                        return self.compile_multi_return_define(assign, &ret_types, out, locals);
+                    }
+                }
+            }
+
             for (i, left) in assign.left.iter().enumerate() {
                 if let ast::Expression::Ident(ident) = left {
                     if ident.name == "_" {
@@ -1656,12 +1689,14 @@ impl WasmCompiler {
             }
         }
 
-        self.compile_block(&range.body, out, locals, result_types)?;
-
+        // Increment index BEFORE body so that `continue` (Br(0) to Loop start)
+        // doesn't skip the increment and cause an infinite loop.
         out.push(Instruction::LocalGet(idx_local));
         out.push(Instruction::I32Const(1));
         out.push(Instruction::I32Add);
         out.push(Instruction::LocalSet(idx_local));
+
+        self.compile_block(&range.body, out, locals, result_types)?;
 
         out.push(Instruction::Br(0));
         out.push(Instruction::End);
@@ -2084,11 +2119,19 @@ impl WasmCompiler {
             ast::Expression::Index(idx) => self.compile_index(idx, out, locals),
             ast::Expression::Star(star) => {
                 self.compile_expression(&star.right, out, locals)?;
-                out.push(Instruction::I32Load(MemArg {
+                let deref_vt = self.infer_deref_type(&star.right, locals);
+                let (_size, mem_idx) = Self::elem_size_and_align(deref_vt);
+                let mem_arg = MemArg {
                     offset: 0,
-                    align: 2,
+                    align: mem_idx,
                     memory_index: 0,
-                }));
+                };
+                match deref_vt {
+                    ValType::I64 => out.push(Instruction::I64Load(mem_arg)),
+                    ValType::F32 => out.push(Instruction::F32Load(mem_arg)),
+                    ValType::F64 => out.push(Instruction::F64Load(mem_arg)),
+                    _ => out.push(Instruction::I32Load(mem_arg)),
+                }
                 Ok(())
             }
             ast::Expression::TypeAssert(_) => Err(Error::InternalError(
@@ -4080,13 +4123,17 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let is_slice_header = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+        let left = idx.left.as_deref().ok_or_else(|| {
+            Error::InternalError("index expression missing left operand".to_string())
+        })?;
+
+        let is_slice_header = if let ast::Expression::Ident(ident) = left {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
         } else {
             false
         };
 
-        let elem_vt = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+        let elem_vt = if let ast::Expression::Ident(ident) = left {
             locals
                 .slice_elem_types
                 .get(&ident.name)
@@ -4102,14 +4149,14 @@ impl WasmCompiler {
         };
 
         if is_slice_header {
-            self.compile_expression(&idx.left, out, locals)?;
+            self.compile_expression(left, out, locals)?;
             out.push(Instruction::I32Load(MemArg {
                 offset: 0,
                 align: 2,
                 memory_index: 0,
             }));
         } else {
-            self.compile_expression(&idx.left, out, locals)?;
+            self.compile_expression(left, out, locals)?;
         }
 
         self.compile_expression(&idx.index, out, locals)?;
@@ -4154,13 +4201,17 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(ValType, u32), Error> {
-        let is_slice_header = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+        let left = idx.left.as_deref().ok_or_else(|| {
+            Error::InternalError("index expression missing left operand".to_string())
+        })?;
+
+        let is_slice_header = if let ast::Expression::Ident(ident) = left {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
         } else {
             false
         };
 
-        let elem_vt = if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+        let elem_vt = if let ast::Expression::Ident(ident) = left {
             locals
                 .slice_elem_types
                 .get(&ident.name)
@@ -4173,14 +4224,14 @@ impl WasmCompiler {
         let (elem_size, align) = Self::elem_size_and_align(elem_vt);
 
         if is_slice_header {
-            self.compile_expression(&idx.left, out, locals)?;
+            self.compile_expression(left, out, locals)?;
             out.push(Instruction::I32Load(MemArg {
                 offset: 0,
                 align: 2,
                 memory_index: 0,
             }));
         } else {
-            self.compile_expression(&idx.left, out, locals)?;
+            self.compile_expression(left, out, locals)?;
         }
 
         self.compile_expression(&idx.index, out, locals)?;
@@ -4484,7 +4535,13 @@ impl WasmCompiler {
                         "int" | "int64" => ValType::I64,
                         "int32" | "byte" | "bool" => ValType::I32,
                         "len" | "make" | "append" => ValType::I32,
-                        _ => ValType::I64,
+                        _ => {
+                            if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+                                fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())
+                            } else {
+                                ValType::I64
+                            }
+                        }
                     }
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
@@ -4514,7 +4571,7 @@ impl WasmCompiler {
             }
             ast::Expression::CompositeLit(_) => ValType::I32,
             ast::Expression::Index(idx) => {
-                if let ast::Expression::Ident(ident) = idx.left.as_ref() {
+                if let Some(ast::Expression::Ident(ident)) = idx.left.as_deref() {
                     locals
                         .slice_elem_types
                         .get(&ident.name)
@@ -4544,6 +4601,68 @@ impl WasmCompiler {
             ast::Expression::TypeSlice(_) => ValType::I32,
             _ => ValType::I64,
         }
+    }
+
+    fn block_always_returns(stmts: &[ast::Statement]) -> bool {
+        if let Some(last) = stmts.last() {
+            Self::stmt_always_returns(last)
+        } else {
+            false
+        }
+    }
+
+    fn stmt_always_returns(stmt: &ast::Statement) -> bool {
+        match stmt {
+            ast::Statement::Return(_) => true,
+            ast::Statement::If(if_stmt) => {
+                let then_returns = Self::block_always_returns(&if_stmt.body.list);
+                let else_returns =
+                    if_stmt
+                        .else_
+                        .as_ref()
+                        .map_or(false, |els| match els.as_ref() {
+                            ast::Statement::Block(block) => {
+                                Self::block_always_returns(&block.list)
+                            }
+                            other => Self::stmt_always_returns(other),
+                        });
+                then_returns && else_returns
+            }
+            ast::Statement::Block(block) => Self::block_always_returns(&block.list),
+            ast::Statement::Switch(sw) => {
+                let has_default = sw.block.body.iter().any(|c| c.tok == Keyword::Default);
+                if !has_default {
+                    return false;
+                }
+                sw.block.body.iter().all(|c| Self::block_always_returns_stmts(&c.body))
+            }
+            _ => false,
+        }
+    }
+
+    fn block_always_returns_stmts(stmts: &[ast::Statement]) -> bool {
+        Self::block_always_returns(stmts)
+    }
+
+    fn infer_deref_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
+        if let ast::Expression::Ident(ident) = expr {
+            if let Some(type_name) = locals.get_var_struct_type(&ident.name) {
+                if self.struct_defs.contains_key(type_name)
+                    || type_name == "__context"
+                    || type_name == "__slice"
+                    || type_name == "__string"
+                {
+                    return ValType::I32;
+                }
+                return match type_name {
+                    "__ptr_i64" => ValType::I64,
+                    "__ptr_f32" => ValType::F32,
+                    "__ptr_f64" => ValType::F64,
+                    _ => ValType::I32,
+                };
+            }
+        }
+        ValType::I32
     }
 
     fn elem_size_and_align(vt: ValType) -> (i32, u32) {
@@ -4592,6 +4711,53 @@ impl WasmCompiler {
             ast::Expression::FuncLit(_) => 1,
             _ => 1,
         }
+    }
+
+    fn call_return_val_types(&self, expr: &ast::Expression, _locals: &LocalAlloc) -> Vec<ValType> {
+        if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+                    return fi.results.iter().map(|wt| wt.to_val_type()).collect();
+                }
+            }
+        }
+        vec![]
+    }
+
+    fn compile_multi_return_define(
+        &mut self,
+        assign: &ast::AssignStmt,
+        ret_types: &[ValType],
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        self.compile_expression(&assign.right[0], out, locals)?;
+
+        // Pop return values into temp locals in reverse order (WASM stack is LIFO)
+        let mut temps: Vec<(usize, u32, ValType)> = Vec::new();
+        for i in (0..assign.left.len()).rev() {
+            let vt = ret_types[i];
+            let tmp = locals.add_local(&format!("__mret_tmp_{}", i), vt);
+            out.push(Instruction::LocalSet(tmp));
+            temps.push((i, tmp, vt));
+        }
+        temps.reverse();
+
+        // Assign from temps into named locals in forward order
+        for (i, left) in assign.left.iter().enumerate() {
+            if let ast::Expression::Ident(ident) = left {
+                if ident.name == "_" {
+                    continue;
+                }
+                let vt = ret_types[i];
+                let (_, tmp, _) = temps[i];
+                let local_idx = locals.add_local(&ident.name, vt);
+                out.push(Instruction::LocalGet(tmp));
+                out.push(Instruction::LocalSet(local_idx));
+            }
+        }
+
+        Ok(())
     }
 
     fn build_manifest(&mut self, file: &ast::File) -> Result<(), Error> {

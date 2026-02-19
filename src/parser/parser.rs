@@ -797,7 +797,7 @@ impl Parser {
                             let typ = self.array_or_typeargs()?;
                             if let ast::Expression::Index(mut typ) = typ {
                                 let name = name.pop().ok_or_else(|| self.else_error("expected at least one identifier"))?;
-                                typ.left = Box::new(ast::Expression::Ident(name));
+                                typ.left = Some(Box::new(ast::Expression::Ident(name)));
                                 let tag = self.string_literal_or_none()?;
                                 let typ = ast::Expression::Index(typ);
                                 return Ok(ast::Field {
@@ -1142,7 +1142,7 @@ impl Parser {
                                     .ok_or_else(|| self.else_error("expected index expression"))?
                                     .ok_or_else(|| self.else_error("expected non-empty index expression"))?
                             );
-                            ast::Expression::Index(ast::Index { pos, left, index })
+                            ast::Expression::Index(ast::Index { pos, left: Some(left), index })
                         }
                         Some(Operator::Comma) => {
                             let indices = index.into_iter().flatten().collect();
@@ -1505,7 +1505,7 @@ impl Parser {
                         ast::Expression::Index(mut typ) => {
                             // Type1, Type2[Args]
                             let id = id_list.pop().ok_or_else(|| self.else_error("expected at least one type identifier"))?;
-                            typ.left = Box::new(ast::Expression::Ident(id));
+                            typ.left = Some(Box::new(ast::Expression::Ident(id)));
                             let typ = ast::Expression::Index(typ);
 
                             let mut list =
@@ -1623,7 +1623,7 @@ impl Parser {
 
         Ok(ast::Expression::Index(ast::Index {
             pos: (pos0, pos1),
-            left: Box::new(ast::Expression::List(vec![])), // FIXME: this should be None
+            left: None,
             index: Box::new(expr),
         }))
     }
@@ -1662,7 +1662,7 @@ impl Parser {
 
         Ok(ast::Expression::Index(ast::Index {
             pos,
-            left: Box::new(left),
+            left: Some(Box::new(left)),
             index: Box::new(index),
         }))
     }

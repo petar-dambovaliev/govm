@@ -154,7 +154,7 @@ pub struct TypeAssertion {
 #[derive(Debug, Clone)]
 pub struct Index {
     pub pos: (usize, usize),
-    pub left: Box<Expression>,
+    pub left: Option<Box<Expression>>,
     pub index: Box<Expression>,
 }
 

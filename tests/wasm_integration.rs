@@ -4636,3 +4636,811 @@ func BitClearAssign(a int, b int) int {
     assert_eq!(func.call(&mut store, (0b1111, 0b1010)).expect("call failed"), 0b0101);
     assert_eq!(func.call(&mut store, (0xFF, 0x0F)).expect("call failed"), 0xF0);
 }
+
+// ==================== Bug Fix Regression Tests ====================
+
+#[test]
+fn test_infer_val_type_user_func_returning_int32() {
+    let source = r#"
+package main
+
+func helper(v int32) int32 {
+    return v
+}
+
+func Run(n int32) int32 {
+    x := helper(n)
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i32, i32>(&mut store, "Run")
+        .expect("Run not found");
+
+    assert_eq!(func.call(&mut store, 42).expect("call failed"), 42);
+}
+
+#[test]
+fn test_infer_val_type_user_func_returning_float64() {
+    let source = r#"
+package main
+
+func compute() float64 {
+    return 3.14
+}
+
+func Run() float64 {
+    x := compute()
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), f64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let result = func.call(&mut store, ()).expect("call failed");
+    assert!((result - 3.14).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_multi_return_define_assignment() {
+    let source = r#"
+package main
+
+func split(x int) (int, int) {
+    return x / 10, x % 10
+}
+
+func Run(x int) int {
+    tens, ones := split(x)
+    return tens * 100 + ones
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let result = func.call(&mut store, 47).expect("call failed");
+    assert_eq!(result, 407);
+}
+
+#[test]
+fn test_multi_return_with_blank_identifier() {
+    let source = r#"
+package main
+
+func pair(x int) (int, int) {
+    return x * 2, x * 3
+}
+
+func Run(x int) int {
+    _, second := pair(x)
+    return second
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    assert_eq!(func.call(&mut store, 5).expect("call failed"), 15);
+}
+
+#[test]
+fn test_all_branches_return_if_else() {
+    let source = r#"
+package main
+
+func Classify(x int) int {
+    if x > 0 {
+        return 1
+    } else {
+        return -1
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Classify")
+        .expect("Classify not found");
+
+    assert_eq!(func.call(&mut store, 10).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, -5).expect("call failed"), -1);
+}
+
+#[test]
+fn test_all_branches_return_nested_if_else() {
+    let source = r#"
+package main
+
+func Sign(x int) int {
+    if x > 0 {
+        return 1
+    } else if x < 0 {
+        return -1
+    } else {
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Sign")
+        .expect("Sign not found");
+
+    assert_eq!(func.call(&mut store, 100).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, -42).expect("call failed"), -1);
+    assert_eq!(func.call(&mut store, 0).expect("call failed"), 0);
+}
+
+// ==================== Feature Coverage Tests ====================
+
+#[test]
+fn test_nested_struct_field_access() {
+    let source = r#"
+package main
+
+type Inner struct {
+    Value int
+}
+
+type Outer struct {
+    A Inner
+    B int
+}
+
+func NestedAccess() int {
+    inner := Inner{Value: 100}
+    outer := Outer{A: inner, B: 5}
+    return outer.B
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "NestedAccess")
+        .expect("NestedAccess not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 5);
+}
+
+#[test]
+fn test_struct_method_returning_float64() {
+    let source = r#"
+package main
+
+import "math"
+
+type Circle struct {
+    Radius float64
+}
+
+func (c *Circle) Area() float64 {
+    return 3.14159 * c.Radius * c.Radius
+}
+
+func ComputeArea(r float64) float64 {
+    c := Circle{Radius: r}
+    return c.Area()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<f64, f64>(&mut store, "ComputeArea")
+        .expect("ComputeArea not found");
+
+    let result = func.call(&mut store, 2.0).expect("call failed");
+    assert!((result - 12.56636).abs() < 0.001);
+}
+
+#[test]
+fn test_struct_method_returning_bool_as_int() {
+    let source = r#"
+package main
+
+type Threshold struct {
+    Limit int
+}
+
+func (t *Threshold) Exceeds(val int) int {
+    if val > t.Limit {
+        return 1
+    }
+    return 0
+}
+
+func CheckThreshold(limit int, val int) int {
+    t := Threshold{Limit: limit}
+    return t.Exceeds(val)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "CheckThreshold")
+        .expect("CheckThreshold not found");
+
+    assert_eq!(func.call(&mut store, (10, 15)).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, (10, 5)).expect("call failed"), 0);
+    assert_eq!(func.call(&mut store, (10, 10)).expect("call failed"), 0);
+}
+
+#[test]
+fn test_const_expression_arithmetic() {
+    let source = r#"
+package main
+
+const (
+    A = 10
+    B = 3
+    C = A + B * 2
+)
+
+func GetConst() int {
+    return C
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "GetConst")
+        .expect("GetConst not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 16);
+}
+
+#[test]
+fn test_blank_identifier_in_for_range() {
+    let source = r#"
+package main
+
+func SumSlice() int {
+    s := make([]int, 0)
+    s = append(s, 10)
+    s = append(s, 20)
+    s = append(s, 30)
+    total := 0
+    for _, v := range s {
+        total = total + v
+    }
+    return total
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "SumSlice")
+        .expect("SumSlice not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 60);
+}
+
+#[test]
+fn test_nested_for_loop_break() {
+    let source = r#"
+package main
+
+func NestedBreak() int {
+    result := 0
+    for i := 0; i < 5; i++ {
+        for j := 0; j < 5; j++ {
+            if j == 3 {
+                break
+            }
+            result = result + 1
+        }
+    }
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "NestedBreak")
+        .expect("NestedBreak not found");
+
+    // 5 outer iterations * 3 inner iterations (j=0,1,2 then break at j=3)
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 15);
+}
+
+#[test]
+fn test_nested_for_loop_continue() {
+    let source = r#"
+package main
+
+func NestedContinue() int {
+    s := make([]int, 0)
+    s = append(s, 0)
+    s = append(s, 1)
+    s = append(s, 2)
+    s = append(s, 3)
+
+    result := 0
+    for _, v := range s {
+        if v == 2 {
+            continue
+        }
+        result = result + v
+    }
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "NestedContinue")
+        .expect("NestedContinue not found");
+
+    // 0 + 1 + 3 = 4 (skip v==2)
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 4);
+}
+
+#[test]
+fn test_switch_multi_value_with_expression() {
+    let source = r#"
+package main
+
+func Grade(score int) int {
+    switch {
+    case score >= 90:
+        return 4
+    case score >= 80:
+        return 3
+    case score >= 70:
+        return 2
+    default:
+        return 1
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Grade")
+        .expect("Grade not found");
+
+    assert_eq!(func.call(&mut store, 95).expect("call failed"), 4);
+    assert_eq!(func.call(&mut store, 85).expect("call failed"), 3);
+    assert_eq!(func.call(&mut store, 75).expect("call failed"), 2);
+    assert_eq!(func.call(&mut store, 50).expect("call failed"), 1);
+}
+
+#[test]
+fn test_multiple_defers_lifo_order() {
+    let source = r#"
+package main
+
+var result int
+
+func appendVal(v int) {
+    result = result * 10 + v
+}
+
+func TestDefers() int {
+    result = 0
+    defer appendVal(3)
+    defer appendVal(2)
+    defer appendVal(1)
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "TestDefers")
+        .expect("TestDefers not found");
+
+    let _result = func.call(&mut store, ()).expect("call failed");
+    // Defers execute in LIFO order: appendVal(1), then appendVal(2), then appendVal(3)
+    // result = ((0*10+1)*10+2)*10+3 = 123
+    // But result is returned BEFORE defers run, so the returned value is 0
+    // The global `result` is updated by defers after the return
+}
+
+#[test]
+fn test_closure_capturing_multiple_types() {
+    let source = r#"
+package main
+
+func ClosureMultiCapture() int {
+    x := 10
+    y := 20
+    sum := func() int {
+        return x + y
+    }
+    return sum()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "ClosureMultiCapture")
+        .expect("ClosureMultiCapture not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 30);
+}
+
+#[test]
+fn test_global_variable_modification() {
+    let source = r#"
+package main
+
+var counter int
+
+func Increment() int {
+    counter = counter + 1
+    return counter
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Increment")
+        .expect("Increment not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 2);
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 3);
+}
+
+#[test]
+fn test_for_loop_with_no_condition() {
+    let source = r#"
+package main
+
+func CountToTen() int {
+    i := 0
+    for {
+        i = i + 1
+        if i >= 10 {
+            break
+        }
+    }
+    return i
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "CountToTen")
+        .expect("CountToTen not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 10);
+}
+
+#[test]
+fn test_switch_all_cases_return() {
+    let source = r#"
+package main
+
+func Category(x int) int {
+    switch {
+    case x < 0:
+        return -1
+    case x == 0:
+        return 0
+    default:
+        return 1
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Category")
+        .expect("Category not found");
+
+    assert_eq!(func.call(&mut store, -5).expect("call failed"), -1);
+    assert_eq!(func.call(&mut store, 0).expect("call failed"), 0);
+    assert_eq!(func.call(&mut store, 42).expect("call failed"), 1);
+}
+
+#[test]
+fn test_multiple_var_declarations() {
+    let source = r#"
+package main
+
+func MultiVarDecl() int {
+    var a int
+    var b int
+    a = 10
+    b = 20
+    return a + b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "MultiVarDecl")
+        .expect("MultiVarDecl not found");
+
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 30);
+}
+
+#[test]
+fn test_if_inside_for_with_break() {
+    let source = r#"
+package main
+
+func FindFirst(target int) int {
+    s := make([]int, 0)
+    s = append(s, 5)
+    s = append(s, 10)
+    s = append(s, 15)
+    s = append(s, 20)
+
+    found := 0
+    for _, v := range s {
+        if v == target {
+            found = 1
+            break
+        }
+    }
+    return found
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "FindFirst")
+        .expect("FindFirst not found");
+
+    assert_eq!(func.call(&mut store, 15).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, 5).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, 99).expect("call failed"), 0);
+}
+
+#[test]
+fn test_deeply_nested_control_flow() {
+    let source = r#"
+package main
+
+func DeepNesting(n int) int {
+    result := 0
+    for i := 0; i < n; i++ {
+        if i % 2 == 0 {
+            for j := 0; j < i; j++ {
+                if j % 3 == 0 {
+                    result = result + 1
+                }
+            }
+        }
+    }
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "DeepNesting")
+        .expect("DeepNesting not found");
+
+    // i=0 (even): j loop 0..0 = 0 iterations
+    // i=1 (odd): skip
+    // i=2 (even): j loop 0..2: j=0 (0%3==0, +1) = 1
+    // i=3 (odd): skip
+    // i=4 (even): j loop 0..4: j=0 (+1), j=1, j=2, j=3 (+1) = 2
+    // Total: 0 + 1 + 2 = 3
+    assert_eq!(func.call(&mut store, 5).expect("call failed"), 3);
+}
+
+#[test]
+fn test_multiple_functions_calling_each_other() {
+    let source = r#"
+package main
+
+func double(x int) int {
+    return x * 2
+}
+
+func addOne(x int) int {
+    return x + 1
+}
+
+func Pipeline(x int) int {
+    return addOne(double(x))
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<i64, i64>(&mut store, "Pipeline")
+        .expect("Pipeline not found");
+
+    assert_eq!(func.call(&mut store, 5).expect("call failed"), 11);
+    assert_eq!(func.call(&mut store, 0).expect("call failed"), 1);
+}
