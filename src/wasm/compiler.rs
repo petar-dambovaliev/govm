@@ -645,12 +645,26 @@ impl WasmCompiler {
                         locals.set_var_struct_type(&name_ident.name, &type_ident.name);
                     }
                 }
+                if type_ident.name == "Context" {
+                    for name_ident in &field.name {
+                        locals.set_var_struct_type(&name_ident.name, "__context");
+                    }
+                }
             }
             if let ast::Expression::TypePointer(ptr) = &field.typ {
                 if let ast::Expression::Ident(type_ident) = ptr.typ.as_ref() {
                     if self.struct_defs.contains_key(&type_ident.name) {
                         for name_ident in &field.name {
                             locals.set_var_struct_type(&name_ident.name, &type_ident.name);
+                        }
+                    }
+                }
+            }
+            if let ast::Expression::Selector(sel) = &field.typ {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    if pkg.name == "context" && sel.sel.name == "Context" {
+                        for name_ident in &field.name {
+                            locals.set_var_struct_type(&name_ident.name, "__context");
                         }
                     }
                 }
@@ -1082,7 +1096,12 @@ impl WasmCompiler {
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        return Err(Error::InternalError(
+                            "compound assignment to non-identifier targets not supported"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -1177,6 +1196,11 @@ impl WasmCompiler {
                 self.compile_expression(&expr_stmt.expr, out, locals)?;
                 out.push(Instruction::I32Eqz);
                 out.push(Instruction::BrIf(1));
+            } else {
+                return Err(Error::InternalError(format!(
+                    "unsupported for-loop condition statement: {:?}",
+                    cond
+                )));
             }
         }
 
@@ -1292,28 +1316,60 @@ impl WasmCompiler {
         if let Some(value) = &range.value {
             if let ast::Expression::Ident(ident) = value {
                 if ident.name != "_" {
+                    let elem_vt = if let ast::Expression::Ident(slice_ident) = &range.expr {
+                        locals
+                            .slice_elem_types
+                            .get(&slice_ident.name)
+                            .copied()
+                            .unwrap_or(ValType::I64)
+                    } else {
+                        ValType::I64
+                    };
+
                     let value_local = if range
                         .op
                         .as_ref()
                         .map_or(false, |(_, op)| *op == Operator::Define)
                     {
-                        locals.add_local(&ident.name, ValType::I64)
+                        locals.add_local(&ident.name, elem_vt)
                     } else {
                         locals.find(&ident.name).unwrap_or_else(|| {
-                            locals.add_local(&ident.name, ValType::I64)
+                            locals.add_local(&ident.name, elem_vt)
                         })
                     };
-                    // Load element: base_ptr + idx * 8
+
+                    let (elem_size, align) = match elem_vt {
+                        ValType::I32 | ValType::F32 => (4i32, 2u32),
+                        _ => (8i32, 3u32),
+                    };
+
                     out.push(Instruction::LocalGet(base_ptr_local));
                     out.push(Instruction::LocalGet(idx_local));
-                    out.push(Instruction::I32Const(8));
+                    out.push(Instruction::I32Const(elem_size));
                     out.push(Instruction::I32Mul);
                     out.push(Instruction::I32Add);
-                    out.push(Instruction::I64Load(MemArg {
-                        offset: 0,
-                        align: 3,
-                        memory_index: 0,
-                    }));
+                    match elem_vt {
+                        ValType::I32 => out.push(Instruction::I32Load(MemArg {
+                            offset: 0,
+                            align,
+                            memory_index: 0,
+                        })),
+                        ValType::F32 => out.push(Instruction::F32Load(MemArg {
+                            offset: 0,
+                            align,
+                            memory_index: 0,
+                        })),
+                        ValType::F64 => out.push(Instruction::F64Load(MemArg {
+                            offset: 0,
+                            align,
+                            memory_index: 0,
+                        })),
+                        _ => out.push(Instruction::I64Load(MemArg {
+                            offset: 0,
+                            align,
+                            memory_index: 0,
+                        })),
+                    }
                     out.push(Instruction::LocalSet(value_local));
                 }
             }
@@ -1346,13 +1402,14 @@ impl WasmCompiler {
             self.compile_statement(init, out, locals, result_types)?;
         }
 
-        let tag_local = if let Some(tag) = &switch.tag {
-            let local = locals.add_local("__switch_tag", ValType::I64);
+        let (tag_local, tag_vt) = if let Some(tag) = &switch.tag {
+            let vt = self.infer_val_type(tag, locals);
+            let local = locals.add_local("__switch_tag", vt);
             self.compile_expression(tag, out, locals)?;
             out.push(Instruction::LocalSet(local));
-            Some(local)
+            (Some(local), vt)
         } else {
-            None
+            (None, ValType::I32)
         };
 
         let mut non_default_cases: Vec<&ast::CaseClause> = Vec::new();
@@ -1375,20 +1432,39 @@ impl WasmCompiler {
             return Ok(());
         }
 
+        let eq_instr = match tag_vt {
+            ValType::I32 => Instruction::I32Eq,
+            ValType::F32 => Instruction::F32Eq,
+            ValType::F64 => Instruction::F64Eq,
+            _ => Instruction::I64Eq,
+        };
+
         let num_cases = non_default_cases.len();
 
         for (i, case) in non_default_cases.iter().enumerate() {
             let mut first = true;
             for expr in &case.list {
-                if !first {
-                    out.push(Instruction::I32Or);
-                }
                 if let Some(tag_l) = tag_local {
                     out.push(Instruction::LocalGet(tag_l));
                     self.compile_expression(expr, out, locals)?;
-                    out.push(Instruction::I64Eq);
+                    let case_vt = self.infer_val_type(expr, locals);
+                    if case_vt != tag_vt {
+                        match (case_vt, tag_vt) {
+                            (ValType::I64, ValType::I32) => {
+                                out.push(Instruction::I32WrapI64);
+                            }
+                            (ValType::I32, ValType::I64) => {
+                                out.push(Instruction::I64ExtendI32S);
+                            }
+                            _ => {}
+                        }
+                    }
+                    out.push(eq_instr.clone());
                 } else {
                     self.compile_expression(expr, out, locals)?;
+                }
+                if !first {
+                    out.push(Instruction::I32Or);
                 }
                 first = false;
             }
@@ -1897,12 +1973,18 @@ impl WasmCompiler {
             }
         }
 
-        let is_known = self.functions.iter().any(|f| f.name == ident.name)
-            || self.struct_defs.contains_key(&ident.name)
+        let is_type_or_package = self.struct_defs.contains_key(&ident.name)
             || self.is_known_package(&ident.name);
-        if is_known {
+        if is_type_or_package {
             out.push(Instruction::I64Const(0));
             return Ok(());
+        }
+
+        if self.functions.iter().any(|f| f.name == ident.name) {
+            return Err(Error::InternalError(format!(
+                "function '{}' used as value; first-class function values are not supported",
+                ident.name
+            )));
         }
 
         Err(Error::InternalError(format!(
@@ -1949,6 +2031,37 @@ impl WasmCompiler {
 
             let lhs_type = self.infer_val_type(&op.x, locals);
             let rhs_type = self.infer_val_type(y, locals);
+
+            if lhs_type == ValType::F32 && rhs_type == ValType::F32 {
+                self.compile_expression(&op.x, out, locals)?;
+                self.compile_expression(y, out, locals)?;
+                return self.emit_f32_op(op.op, out);
+            }
+
+            if lhs_type == ValType::F32 || rhs_type == ValType::F32 {
+                let mut lhs_buf = Vec::new();
+                self.compile_expression(&op.x, &mut lhs_buf, locals)?;
+                let mut rhs_buf = Vec::new();
+                self.compile_expression(y, &mut rhs_buf, locals)?;
+
+                out.extend(lhs_buf);
+                if lhs_type != ValType::F32 {
+                    if lhs_type == ValType::I32 {
+                        out.push(Instruction::F32ConvertI32S);
+                    } else if lhs_type == ValType::I64 {
+                        out.push(Instruction::F32ConvertI64S);
+                    }
+                }
+                out.extend(rhs_buf);
+                if rhs_type != ValType::F32 {
+                    if rhs_type == ValType::I32 {
+                        out.push(Instruction::F32ConvertI32S);
+                    } else if rhs_type == ValType::I64 {
+                        out.push(Instruction::F32ConvertI64S);
+                    }
+                }
+                return self.emit_f32_op(op.op, out);
+            }
 
             if lhs_type == ValType::F64 || rhs_type == ValType::F64 {
                 let mut lhs_buf = Vec::new();
@@ -2023,8 +2136,15 @@ impl WasmCompiler {
                         self.compile_expression(&op.x, out, locals)?;
                         out.push(Instruction::I32Sub);
                     }
-                    _ => {
+                    ValType::F32 => {
                         self.compile_expression(&op.x, out, locals)?;
+                        out.push(Instruction::F32Neg);
+                    }
+                    _ => {
+                        return Err(Error::InternalError(format!(
+                            "unsupported type for unary negation: {:?}",
+                            vt
+                        )));
                     }
                 }
             }
@@ -2036,7 +2156,10 @@ impl WasmCompiler {
                 self.compile_expression(&op.x, out, locals)?;
             }
             _ => {
-                self.compile_expression(&op.x, out, locals)?;
+                return Err(Error::InternalError(format!(
+                    "unsupported unary operator: {:?}",
+                    op.op
+                )));
             }
         }
 
@@ -2127,7 +2250,12 @@ impl WasmCompiler {
             Operator::GreaterEqual => out.push(Instruction::I64GeS),
             Operator::AndAnd => out.push(Instruction::I64And),
             Operator::OrOr => out.push(Instruction::I64Or),
-            _ => {}
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported operator {:?} for i64 type",
+                    op
+                )))
+            }
         }
         Ok(())
     }
@@ -2156,7 +2284,12 @@ impl WasmCompiler {
             Operator::GreaterEqual => out.push(Instruction::I32GeS),
             Operator::AndAnd => out.push(Instruction::I32And),
             Operator::OrOr => out.push(Instruction::I32Or),
-            _ => {}
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported operator {:?} for i32 type",
+                    op
+                )))
+            }
         }
         Ok(())
     }
@@ -2177,7 +2310,38 @@ impl WasmCompiler {
             Operator::LessEqual => out.push(Instruction::F64Le),
             Operator::Greater => out.push(Instruction::F64Gt),
             Operator::GreaterEqual => out.push(Instruction::F64Ge),
-            _ => {}
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported operator {:?} for f64 type",
+                    op
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_f32_op(
+        &self,
+        op: Operator,
+        out: &mut Vec<Instruction<'static>>,
+    ) -> Result<(), Error> {
+        match op {
+            Operator::Add => out.push(Instruction::F32Add),
+            Operator::Sub => out.push(Instruction::F32Sub),
+            Operator::Star => out.push(Instruction::F32Mul),
+            Operator::Quo => out.push(Instruction::F32Div),
+            Operator::Equal => out.push(Instruction::F32Eq),
+            Operator::NotEqual => out.push(Instruction::F32Ne),
+            Operator::Less => out.push(Instruction::F32Lt),
+            Operator::LessEqual => out.push(Instruction::F32Le),
+            Operator::Greater => out.push(Instruction::F32Gt),
+            Operator::GreaterEqual => out.push(Instruction::F32Ge),
+            _ => {
+                return Err(Error::InternalError(format!(
+                    "unsupported operator {:?} for f32 type",
+                    op
+                )))
+            }
         }
         Ok(())
     }
@@ -2255,7 +2419,8 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        const ELEM_SIZE: i32 = 8;
+        let elem_vt = Self::infer_slice_elem_type(call.args.first());
+        let (elem_size, _align) = Self::elem_size_and_align(elem_vt);
         const HEADER_SIZE: i32 = 12;
 
         let len_local = locals.add_local(
@@ -2283,9 +2448,9 @@ impl WasmCompiler {
         );
         out.push(Instruction::LocalSet(hdr_local));
 
-        // Allocate data region (len * ELEM_SIZE bytes)
+        // Allocate data region (len * elem_size bytes)
         out.push(Instruction::LocalGet(len_local));
-        out.push(Instruction::I32Const(ELEM_SIZE));
+        out.push(Instruction::I32Const(elem_size));
         out.push(Instruction::I32Mul);
         out.push(Instruction::Call(self.alloc_func_idx()));
         let data_local = locals.add_local(
@@ -2332,13 +2497,22 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        const ELEM_SIZE: i32 = 8;
-
         if call.args.len() < 2 {
             return Err(Error::InternalError(
                 "append() requires at least 2 arguments".to_string(),
             ));
         }
+
+        let elem_vt_from_slice = if let ast::Expression::Ident(ident) = &call.args[0] {
+            locals
+                .slice_elem_types
+                .get(&ident.name)
+                .copied()
+                .unwrap_or(ValType::I64)
+        } else {
+            ValType::I64
+        };
+        let (elem_size, _align) = Self::elem_size_and_align(elem_vt_from_slice);
 
         // Compile slice argument (header pointer)
         self.compile_expression(&call.args[0], out, locals)?;
@@ -2348,9 +2522,19 @@ impl WasmCompiler {
         );
         out.push(Instruction::LocalSet(hdr_local));
 
-        // Compile the element to append, save in temp
+        // Compile the element to append, coerce to slice element type
         self.compile_expression(&call.args[1], out, locals)?;
-        let elem_vt = self.infer_val_type(&call.args[1], locals);
+        let expr_vt = self.infer_val_type(&call.args[1], locals);
+        if expr_vt != elem_vt_from_slice {
+            match (expr_vt, elem_vt_from_slice) {
+                (ValType::I64, ValType::I32) => out.push(Instruction::I32WrapI64),
+                (ValType::I32, ValType::I64) => out.push(Instruction::I64ExtendI32S),
+                (ValType::F64, ValType::F32) => out.push(Instruction::F32DemoteF64),
+                (ValType::F32, ValType::F64) => out.push(Instruction::F64PromoteF32),
+                _ => {}
+            }
+        }
+        let elem_vt = elem_vt_from_slice;
         let elem_local = locals.add_local(
             &format!("__app_elem_{}", locals.locals.len()),
             elem_vt,
@@ -2401,18 +2585,18 @@ impl WasmCompiler {
             out.push(Instruction::I32Mul);
             out.push(Instruction::LocalSet(new_cap));
 
-            // Allocate new data: new_cap * ELEM_SIZE
+            // Allocate new data: new_cap * elem_size
             let new_data = locals.add_local(
                 &format!("__app_ndata_{}", locals.locals.len()),
                 ValType::I32,
             );
             out.push(Instruction::LocalGet(new_cap));
-            out.push(Instruction::I32Const(ELEM_SIZE));
+            out.push(Instruction::I32Const(elem_size));
             out.push(Instruction::I32Mul);
             out.push(Instruction::Call(self.alloc_func_idx()));
             out.push(Instruction::LocalSet(new_data));
 
-            // Copy old data: memory.copy(new_data, old_data_ptr, old_len * ELEM_SIZE)
+            // Copy old data: memory.copy(new_data, old_data_ptr, old_len * elem_size)
             out.push(Instruction::LocalGet(new_data));
             out.push(Instruction::LocalGet(hdr_local));
             out.push(Instruction::I32Load(MemArg {
@@ -2421,7 +2605,7 @@ impl WasmCompiler {
                 memory_index: 0,
             }));
             out.push(Instruction::LocalGet(old_len));
-            out.push(Instruction::I32Const(ELEM_SIZE));
+            out.push(Instruction::I32Const(elem_size));
             out.push(Instruction::I32Mul);
             out.push(Instruction::MemoryCopy {
                 dst_mem: 0,
@@ -2461,10 +2645,10 @@ impl WasmCompiler {
         }));
         out.push(Instruction::LocalSet(data_ptr));
 
-        // Store element at data_ptr + old_len * ELEM_SIZE
+        // Store element at data_ptr + old_len * elem_size
         out.push(Instruction::LocalGet(data_ptr));
         out.push(Instruction::LocalGet(old_len));
-        out.push(Instruction::I32Const(ELEM_SIZE));
+        out.push(Instruction::I32Const(elem_size));
         out.push(Instruction::I32Mul);
         out.push(Instruction::I32Add);
         out.push(Instruction::LocalGet(elem_local));
@@ -2542,7 +2726,13 @@ impl WasmCompiler {
                                 ValType::F64 => out.push(Instruction::I64TruncF64S),
                                 ValType::F32 => out.push(Instruction::I64TruncF32S),
                                 ValType::I32 => out.push(Instruction::I64ExtendI32S),
-                                _ => {}
+                                ValType::I64 => {}
+                                _ => {
+                                    return Err(Error::InternalError(format!(
+                                        "unsupported source type {:?} for int conversion",
+                                        vt
+                                    )));
+                                }
                             }
                         }
                         return Ok(());
@@ -2555,7 +2745,13 @@ impl WasmCompiler {
                                 ValType::I64 => out.push(Instruction::F64ConvertI64S),
                                 ValType::I32 => out.push(Instruction::F64ConvertI32S),
                                 ValType::F32 => out.push(Instruction::F64PromoteF32),
-                                _ => {}
+                                ValType::F64 => {}
+                                _ => {
+                                    return Err(Error::InternalError(format!(
+                                        "unsupported source type {:?} for float64 conversion",
+                                        vt
+                                    )));
+                                }
                             }
                         }
                         return Ok(());
@@ -2567,7 +2763,14 @@ impl WasmCompiler {
                             match vt {
                                 ValType::I64 => out.push(Instruction::F32ConvertI64S),
                                 ValType::I32 => out.push(Instruction::F32ConvertI32S),
-                                _ => {}
+                                ValType::F64 => out.push(Instruction::F32DemoteF64),
+                                ValType::F32 => {}
+                                _ => {
+                                    return Err(Error::InternalError(format!(
+                                        "unsupported source type {:?} for float32 conversion",
+                                        vt
+                                    )));
+                                }
                             }
                         }
                         return Ok(());
@@ -2579,7 +2782,14 @@ impl WasmCompiler {
                             match vt {
                                 ValType::I64 => out.push(Instruction::I32WrapI64),
                                 ValType::F64 => out.push(Instruction::I32TruncF64S),
-                                _ => {}
+                                ValType::F32 => out.push(Instruction::I32TruncF32S),
+                                ValType::I32 => {}
+                                _ => {
+                                    return Err(Error::InternalError(format!(
+                                        "unsupported source type {:?} for int32 conversion",
+                                        vt
+                                    )));
+                                }
                             }
                         }
                         return Ok(());
@@ -2588,8 +2798,17 @@ impl WasmCompiler {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             let vt = self.infer_val_type(arg, locals);
-                            if vt == ValType::I64 {
-                                out.push(Instruction::I32WrapI64);
+                            match vt {
+                                ValType::I64 => out.push(Instruction::I32WrapI64),
+                                ValType::I32 => {}
+                                ValType::F64 => out.push(Instruction::I32TruncF64S),
+                                ValType::F32 => out.push(Instruction::I32TruncF32S),
+                                _ => {
+                                    return Err(Error::InternalError(format!(
+                                        "unsupported source type {:?} for byte conversion",
+                                        vt
+                                    )));
+                                }
                             }
                         }
                         return Ok(());
@@ -2637,6 +2856,48 @@ impl WasmCompiler {
             }
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
+                    // Handle context method calls (ctx.Log, ctx.QueryID, etc.)
+                    if locals.get_var_struct_type(&pkg_ident.name) == Some("__context") {
+                        let ctx_host_idx: Option<u32> = match sel.sel.name.as_str() {
+                            "Log" => Some(0),
+                            "QueryID" => Some(1),
+                            "Database" => Some(2),
+                            "Schema" => Some(3),
+                            "User" => Some(4),
+                            _ => None,
+                        };
+                        if let Some(host_idx) = ctx_host_idx {
+                            if sel.sel.name == "Log" {
+                                if let Some(arg) = call.args.first() {
+                                    self.compile_expression(arg, out, locals)?;
+                                }
+                                out.push(Instruction::Call(host_idx));
+                                return Ok(());
+                            } else {
+                                let buf_size = 256i32;
+                                out.push(Instruction::I32Const(buf_size));
+                                out.push(Instruction::Call(self.alloc_func_idx()));
+                                let buf_local = locals.add_local(
+                                    &format!("__ctx_buf_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(buf_local));
+
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::Call(host_idx));
+                                let len_local = locals.add_local(
+                                    &format!("__ctx_len_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(len_local));
+
+                                out.push(Instruction::LocalGet(buf_local));
+                                out.push(Instruction::LocalGet(len_local));
+                                return Ok(());
+                            }
+                        }
+                    }
+
                     match (pkg_ident.name.as_str(), sel.sel.name.as_str()) {
                         ("fmt", "Errorf" | "Sprintf") => {
                             return Err(Error::InternalError(format!(
@@ -2706,6 +2967,12 @@ impl WasmCompiler {
                             out.push(Instruction::F64Max);
                             return Ok(());
                         }
+                        ("math", func_name) => {
+                            return Err(Error::InternalError(format!(
+                                "unsupported math function: math.{}",
+                                func_name
+                            )));
+                        }
                         _ => {}
                     }
 
@@ -2748,9 +3015,10 @@ impl WasmCompiler {
                 }
             }
             _ => {
-                for arg in &call.args {
-                    self.compile_expression(arg, out, locals)?;
-                }
+                return Err(Error::InternalError(format!(
+                    "unsupported call expression: {:?}",
+                    call.func
+                )));
             }
         }
         Ok(())
@@ -2803,13 +3071,15 @@ impl WasmCompiler {
             }
         }
 
-        // Fallback
-        out.push(Instruction::I32Load(MemArg {
-            offset: 0,
-            align: 2,
-            memory_index: 0,
-        }));
-        Ok(())
+        let sel_name = if let ast::Expression::Ident(ident) = sel.x.as_ref() {
+            format!("{}.{}", ident.name, sel.sel.name)
+        } else {
+            format!("<expr>.{}", sel.sel.name)
+        };
+        Err(Error::InternalError(format!(
+            "unresolved selector: {}",
+            sel_name
+        )))
     }
 
     fn compile_func_lit(
@@ -3131,10 +3401,20 @@ impl WasmCompiler {
         }
         out.push(Instruction::LocalSet(high_local));
 
-        // new_ptr = base + low * 8
+        let slice_elem_vt = if let ast::Expression::Ident(ident) = &*slice.left {
+            locals
+                .slice_elem_types
+                .get(&ident.name)
+                .copied()
+                .unwrap_or(ValType::I64)
+        } else {
+            ValType::I64
+        };
+        let (slice_elem_size, _) = Self::elem_size_and_align(slice_elem_vt);
+
         out.push(Instruction::LocalGet(base_local));
         out.push(Instruction::LocalGet(low_local));
-        out.push(Instruction::I32Const(8));
+        out.push(Instruction::I32Const(slice_elem_size));
         out.push(Instruction::I32Mul);
         out.push(Instruction::I32Add);
 
@@ -3358,6 +3638,13 @@ impl WasmCompiler {
         }
     }
 
+    fn elem_size_and_align(vt: ValType) -> (i32, u32) {
+        match vt {
+            ValType::I32 | ValType::F32 => (4, 2),
+            _ => (8, 3),
+        }
+    }
+
     fn expression_result_count(&self, expr: &ast::Expression) -> usize {
         match expr {
             ast::Expression::Call(call) => {
@@ -3375,6 +3662,16 @@ impl WasmCompiler {
                                 1
                             }
                         }
+                    }
+                } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                    if let ast::Expression::Ident(_pkg) = sel.x.as_ref() {
+                        match sel.sel.name.as_str() {
+                            "Log" => 0,
+                            "QueryID" | "Database" | "Schema" | "User" | "Config" => 2,
+                            _ => 1,
+                        }
+                    } else {
+                        1
                     }
                 } else {
                     1
