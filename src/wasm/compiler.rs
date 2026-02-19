@@ -442,6 +442,7 @@ impl WasmCompiler {
             }
             ast::Declaration::Type(type_decl) => {
                 for spec in &type_decl.specs {
+                    Self::reject_unsupported_type(&spec.typ)?;
                     if let ast::Expression::TypeStruct(struct_type) = &spec.typ {
                         let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
@@ -1009,6 +1010,12 @@ impl WasmCompiler {
                     arg_locals.push((temp, vt));
                 }
 
+                if matches!(defer.call.func.as_ref(), ast::Expression::FuncLit(_)) {
+                    return Err(Error::InternalError(
+                        "defer with closure literals is not yet supported in WASM UDFs".to_string(),
+                    ));
+                }
+
                 let func_idx =
                     if let ast::Expression::Ident(ident) = defer.call.func.as_ref() {
                         self.functions
@@ -1024,6 +1031,17 @@ impl WasmCompiler {
                                 .iter()
                                 .find(|f| f.name == qname)
                                 .map(|f| f.wasm_func_idx)
+                                .or_else(|| {
+                                    if let Some(type_name) = locals.get_var_struct_type(&pkg.name) {
+                                        let method_qname = format!("{}.{}", type_name, sel.sel.name);
+                                        self.functions
+                                            .iter()
+                                            .find(|f| f.name == method_qname)
+                                            .map(|f| f.wasm_func_idx)
+                                    } else {
+                                        None
+                                    }
+                                })
                         } else {
                             None
                         }
@@ -1868,6 +1886,16 @@ impl WasmCompiler {
         branch: &ast::BranchStmt,
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
+        if branch.key == Keyword::Goto {
+            return Err(Error::InternalError(
+                "goto is not supported in WASM UDFs".to_string(),
+            ));
+        }
+        if branch.key == Keyword::FallThrough {
+            return Err(Error::InternalError(
+                "fallthrough is not supported in WASM UDFs".to_string(),
+            ));
+        }
         if let Some(ref label_ident) = branch.ident {
             return self.compile_labeled_branch(branch.key, &label_ident.name, out);
         }
@@ -1879,6 +1907,16 @@ impl WasmCompiler {
             }
             Keyword::Continue => {
                 out.push(Instruction::Br(0 + extra));
+            }
+            Keyword::FallThrough => {
+                return Err(Error::InternalError(
+                    "fallthrough is not supported in WASM UDFs".to_string(),
+                ));
+            }
+            Keyword::Goto => {
+                return Err(Error::InternalError(
+                    "goto is not supported in WASM UDFs".to_string(),
+                ));
             }
             _ => {
                 return Err(Error::InternalError(format!(
@@ -2075,6 +2113,9 @@ impl WasmCompiler {
         match decl {
             ast::DeclStmt::Variable(var_decl) => {
                 for spec in &var_decl.specs {
+                    if let Some(ref typ) = spec.typ {
+                        Self::reject_unsupported_type(typ)?;
+                    }
                     for (i, ident) in spec.name.iter().enumerate() {
                         let vt = if let Some(ref typ) = spec.typ {
                             self.expr_to_val_type(typ)
@@ -2176,6 +2217,7 @@ impl WasmCompiler {
             }
             ast::DeclStmt::Type(type_decl) => {
                 for spec in &type_decl.specs {
+                    Self::reject_unsupported_type(&spec.typ)?;
                     if let ast::Expression::TypeStruct(struct_type) = &spec.typ {
                         let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
@@ -2243,15 +2285,23 @@ impl WasmCompiler {
             ast::Expression::Invar(inv) => {
                 self.compile_expression(&inv.expr, out, locals)
             }
-            ast::Expression::Range(_) => Ok(()),
-            ast::Expression::TypeMap(_)
-            | ast::Expression::TypeArray(_)
+            ast::Expression::Range(_) => Err(Error::InternalError(
+                "range expression is only valid inside a for statement".to_string(),
+            )),
+            ast::Expression::TypeMap(_) => Err(Error::InternalError(
+                "maps are not yet supported in WASM UDFs".to_string(),
+            )),
+            ast::Expression::TypeInterface(_) => Err(Error::InternalError(
+                "interfaces are not yet supported in WASM UDFs".to_string(),
+            )),
+            ast::Expression::TypeChannel(_) => Err(Error::InternalError(
+                "channels are not supported in WASM UDFs".to_string(),
+            )),
+            ast::Expression::TypeArray(_)
             | ast::Expression::TypeSlice(_)
             | ast::Expression::TypeFunction(_)
             | ast::Expression::TypeStruct(_)
-            | ast::Expression::TypeChannel(_)
-            | ast::Expression::TypePointer(_)
-            | ast::Expression::TypeInterface(_) => Ok(()),
+            | ast::Expression::TypePointer(_) => Ok(()),
             _ => Err(Error::InternalError(format!(
                 "unsupported expression in WASM compilation: {:?}",
                 expr
@@ -3275,7 +3325,12 @@ impl WasmCompiler {
                 (ValType::I32, ValType::I64) => out.push(Instruction::I64ExtendI32S),
                 (ValType::F64, ValType::F32) => out.push(Instruction::F32DemoteF64),
                 (ValType::F32, ValType::F64) => out.push(Instruction::F64PromoteF32),
-                _ => {}
+                _ => {
+                    return Err(Error::InternalError(format!(
+                        "type mismatch in append: element type {:?} cannot be coerced to slice element type {:?}",
+                        expr_vt, elem_vt_from_slice
+                    )));
+                }
             }
         }
         let elem_vt = elem_vt_from_slice;
@@ -4204,7 +4259,11 @@ impl WasmCompiler {
         for (i, kv) in comp.val.values.iter().enumerate() {
             let elem_expr = match &kv.val {
                 ast::Element::Expr(e) => e,
-                ast::Element::LitValue(_) => continue,
+                ast::Element::LitValue(_) => {
+                    return Err(Error::InternalError(
+                        "nested composite literals are not yet supported in WASM UDFs".to_string(),
+                    ));
+                }
             };
 
             // Determine offset and type from struct layout
@@ -4214,13 +4273,20 @@ impl WasmCompiler {
                         if let Some(field) = sd.find_field(&key_ident.name) {
                             (field.offset as u64, Some(field.wasm_type))
                         } else {
-                            ((i * 8) as u64, None)
+                            return Err(Error::InternalError(format!(
+                                "unknown field '{}' in struct literal",
+                                key_ident.name
+                            )));
                         }
                     } else {
-                        ((i * 8) as u64, None)
+                        return Err(Error::InternalError(
+                            "struct definition not found for composite literal".to_string(),
+                        ));
                     }
                 } else {
-                    ((i * 8) as u64, None)
+                    return Err(Error::InternalError(
+                        "unsupported key expression in composite literal".to_string(),
+                    ));
                 }
             } else if let Some(ref sd) = struct_def {
                 if i < sd.fields.len() {
@@ -4229,10 +4295,16 @@ impl WasmCompiler {
                         Some(sd.fields[i].wasm_type),
                     )
                 } else {
-                    ((i * 8) as u64, None)
+                    return Err(Error::InternalError(format!(
+                        "too many fields in struct literal: got {}, struct has {}",
+                        i + 1,
+                        sd.fields.len()
+                    )));
                 }
             } else {
-                ((i * 8) as u64, None)
+                return Err(Error::InternalError(
+                    "struct definition not found for composite literal".to_string(),
+                ));
             };
 
             out.push(Instruction::LocalGet(ptr_local));
@@ -4575,6 +4647,21 @@ impl WasmCompiler {
                 align,
                 memory_index: 0,
             })),
+        }
+    }
+
+    fn reject_unsupported_type(typ: &ast::Expression) -> Result<(), Error> {
+        match typ {
+            ast::Expression::TypeMap(_) => Err(Error::InternalError(
+                "maps are not yet supported in WASM UDFs".to_string(),
+            )),
+            ast::Expression::TypeInterface(_) => Err(Error::InternalError(
+                "interfaces are not yet supported in WASM UDFs".to_string(),
+            )),
+            ast::Expression::TypeChannel(_) => Err(Error::InternalError(
+                "channels are not supported in WASM UDFs".to_string(),
+            )),
+            _ => Ok(()),
         }
     }
 

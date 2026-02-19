@@ -2206,8 +2206,8 @@ func Bad(x int) int {
         Err(e) => {
             let err_msg = format!("{}", e);
             assert!(
-                err_msg.contains("unsupported") || err_msg.contains("branch"),
-                "error should mention unsupported branch keyword, got: {}",
+                err_msg.contains("fallthrough is not supported"),
+                "error should mention fallthrough is not supported, got: {}",
                 err_msg
             );
         }
@@ -5868,4 +5868,509 @@ func Increment() int {
     assert_eq!(func.call(&mut store, ()).unwrap(), 1);
     assert_eq!(func.call(&mut store, ()).unwrap(), 2);
     assert_eq!(func.call(&mut store, ()).unwrap(), 3);
+}
+
+// ========================== Regression tests ==========================
+
+#[test]
+fn test_append_type_mismatch_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    s := make([]float64, 0)
+    s = append(s, "hello")
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("appending string to float64 slice should error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("type mismatch in append"),
+                "expected type mismatch error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_nested_composite_literal_error() {
+    let source = r#"
+package main
+
+type Inner struct {
+    X int
+}
+
+type Outer struct {
+    In Inner
+}
+
+func Bad() int {
+    o := Outer{In: {X: 42}}
+    return int(o.In)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("nested composite literal should error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("nested composite literals are not yet supported"),
+                "expected nested composite literal error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_unknown_struct_field_error() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func Bad() int {
+    p := Point{Z: 42}
+    return int(p.X)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("unknown struct field should error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("unknown field 'Z'"),
+                "expected unknown field error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_goto_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    goto end
+end:
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("goto should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("goto is not supported"),
+                "expected goto not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_map_type_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    var m map[string]int
+    _ = m
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("map type should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("maps are not yet supported"),
+                "expected maps not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_interface_type_error() {
+    let source = r#"
+package main
+
+type MyInterface interface {
+    DoSomething() int
+}
+
+func Bad() int {
+    var x MyInterface
+    _ = x
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("interface type should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("interfaces are not yet supported"),
+                "expected interfaces not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_channel_type_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    var c chan int
+    _ = c
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("channel type should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("channels are not supported"),
+                "expected channels not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_defer_closure_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    defer func() {
+    }()
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("defer with closure should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("defer with closure literals is not yet supported"),
+                "expected defer closure error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_defer_method_call_resolution() {
+    let source = r#"
+package main
+
+type Resource struct {
+    Value int32
+}
+
+func (r *Resource) Close() {
+}
+
+func Compute(x int32) int32 {
+    r := Resource{Value: x}
+    defer r.Close()
+    return r.Value + int32(1)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => {}
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                !err_msg.contains("could not resolve function"),
+                "defer method call should be resolved, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_fallthrough_specific_error() {
+    let source = r#"
+package main
+
+func Bad(x int) int {
+    switch x {
+    case 1:
+        fallthrough
+    case 2:
+        return 2
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("fallthrough should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("fallthrough is not supported"),
+                "expected specific fallthrough error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_goroutine_error() {
+    let source = r#"
+package main
+
+func helper() {
+}
+
+func Bad() int {
+    go helper()
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("goroutine should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("goroutines not supported"),
+                "expected goroutines not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_select_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    select {
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("select should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("select not supported"),
+                "expected select not supported error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_struct_too_many_fields_error() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+}
+
+func Bad() int {
+    p := Point{10, 20}
+    return int(p.X)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("too many fields should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("too many fields"),
+                "expected too many fields error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_string_conversion_and_assignment() {
+    let source = r#"
+package main
+
+func Convert(x int32) int32 {
+    s := string(65)
+    return int32(len(s))
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<i32, i32>(&mut store, "Convert")
+        .unwrap();
+    assert_eq!(func.call(&mut store, 0).unwrap(), 1);
+}
+
+#[test]
+fn test_string_compound_assign_error() {
+    let source = r#"
+package main
+
+func Bad() int {
+    s := "hello"
+    s += " world"
+    return len(s)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("string += should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("compound assignment") && err_msg.contains("string"),
+                "expected compound assignment on string error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_function_as_value_error_regression() {
+    let source = r#"
+package main
+
+func helper() int {
+    return 42
+}
+
+func Bad() int {
+    f := helper
+    return f()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match result {
+        Ok(_) => panic!("function as value should produce a compile error"),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("function") && err_msg.contains("value"),
+                "expected function as value error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_slice_of_int32() {
+    let source = r#"
+package main
+
+func Sum() int {
+    s := make([]int32, 0)
+    s = append(s, int32(10))
+    s = append(s, int32(20))
+    s = append(s, int32(30))
+    var total int = 0
+    for i := 0; i < len(s); i++ {
+        total = total + int(s[i])
+    }
+    return total
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().unwrap();
+    let module = runtime.load_module(&result.wasm_bytes).unwrap();
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).unwrap();
+    let instance = runtime.instantiate(&mut store, &module).unwrap();
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Sum")
+        .unwrap();
+    assert_eq!(func.call(&mut store, ()).unwrap(), 60);
+}
+
+#[test]
+fn test_aggregate_accumulate_and_finalize() {
+    let source = r#"
+package main
+
+type SumAgg struct {
+    Total int
+}
+
+func (a *SumAgg) Accumulate(val int) {
+    a.Total = a.Total + val
+}
+
+func (a *SumAgg) Finalize() int {
+    return a.Total
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    assert!(
+        !result.manifest.aggregates.is_empty(),
+        "should detect aggregate"
+    );
+    assert_eq!(result.manifest.aggregates[0].name, "SumAgg");
 }

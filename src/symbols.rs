@@ -264,8 +264,10 @@ pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
         return false;
     }
     let val = i as i128;
-    let (min, max) = t.integer_range_i128();
-    val >= min && val <= max
+    match t.integer_range_i128() {
+        Ok((min, max)) => val >= min && val <= max,
+        Err(_) => false,
+    }
 }
 
 pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
@@ -273,8 +275,10 @@ pub fn is_uint_coerceable_to(i: usize, t: &DefineType) -> bool {
         return false;
     }
     let val = i as i128;
-    let (min, max) = t.integer_range_i128();
-    val >= min && val <= max
+    match t.integer_range_i128() {
+        Ok((min, max)) => val >= min && val <= max,
+        Err(_) => false,
+    }
 }
 
 impl DefineType {
@@ -291,11 +295,14 @@ impl DefineType {
     }
 
     pub fn struct_has_method(&self, name: &str) -> bool {
-        let (_, _, methods) = self.as_struct().unwrap();
+        let Ok((_, _, methods)) = self.as_struct() else {
+            return false;
+        };
         for method in methods {
-            let (f_name, _, _, _) = method.as_func();
-            if name == f_name {
-                return true;
+            if let Ok((f_name, _, _, _)) = method.as_func() {
+                if name == f_name {
+                    return true;
+                }
             }
         }
         false
@@ -307,10 +314,13 @@ impl DefineType {
         n1 == n2 && fields1 == fields2
     }
 
-    pub fn as_array(&self) -> (usize, Self) {
+    pub fn as_array(&self) -> Result<(usize, Self), Error> {
         match &self {
-            Self::Array { len, inner_type } => (*len, *inner_type.clone()),
-            _ => panic!("expected Self::Array, got {:#?}", self),
+            Self::Array { len, inner_type } => Ok((*len, *inner_type.clone())),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Array, got {:#?}",
+                self
+            ))),
         }
     }
 
@@ -336,12 +346,15 @@ impl DefineType {
         }
     }
 
-    pub fn get_type_name(&self) -> String {
+    pub fn get_type_name(&self) -> Result<String, Error> {
         match self {
-            Self::Struct { name: n, .. } => n.to_string(),
+            Self::Struct { name: n, .. } => Ok(n.to_string()),
             Self::Ref(inner) => inner.get_type_name(),
-            Self::Spec { name: n, .. } => n.to_string(),
-            _ => panic!("not implemented for {:#?}", self),
+            Self::Spec { name: n, .. } => Ok(n.to_string()),
+            _ => Err(Error::InternalError(format!(
+                "get_type_name not implemented for {:#?}",
+                self
+            ))),
         }
     }
 
@@ -381,57 +394,66 @@ impl DefineType {
         false
     }
 
-    pub fn integer_range_i128(&self) -> (i128, i128) {
+    pub fn integer_range_i128(&self) -> Result<(i128, i128), Error> {
         match &self {
-            Self::Int => (isize::MIN as i128, isize::MAX as i128),
-            Self::Byte => (u8::MIN as i128, u8::MAX as i128),
-            Self::Int8 => (i8::MIN as i128, i8::MAX as i128),
-            Self::Int16 => (i16::MIN as i128, i16::MAX as i128),
-            Self::Int32 => (i32::MIN as i128, i32::MAX as i128),
-            Self::Int64 => (i64::MIN as i128, i64::MAX as i128),
-            Self::Uint => (usize::MIN as i128, usize::MAX as i128),
-            Self::Uint8 => (u8::MIN as i128, u8::MAX as i128),
-            Self::Uint16 => (u16::MIN as i128, u16::MAX as i128),
-            Self::Uint32 => (u32::MIN as i128, u32::MAX as i128),
-            Self::Uint64 => (u64::MIN as i128, u64::MAX as i128),
+            Self::Int => Ok((isize::MIN as i128, isize::MAX as i128)),
+            Self::Byte => Ok((u8::MIN as i128, u8::MAX as i128)),
+            Self::Int8 => Ok((i8::MIN as i128, i8::MAX as i128)),
+            Self::Int16 => Ok((i16::MIN as i128, i16::MAX as i128)),
+            Self::Int32 => Ok((i32::MIN as i128, i32::MAX as i128)),
+            Self::Int64 => Ok((i64::MIN as i128, i64::MAX as i128)),
+            Self::Uint => Ok((usize::MIN as i128, usize::MAX as i128)),
+            Self::Uint8 => Ok((u8::MIN as i128, u8::MAX as i128)),
+            Self::Uint16 => Ok((u16::MIN as i128, u16::MAX as i128)),
+            Self::Uint32 => Ok((u32::MIN as i128, u32::MAX as i128)),
+            Self::Uint64 => Ok((u64::MIN as i128, u64::MAX as i128)),
             Self::Qualified(_, inner) => inner.integer_range_i128(),
-            _ => panic!("not integer: {:#?}", self),
+            _ => Err(Error::InternalError(format!(
+                "integer_range_i128 called on non-integer type: {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn integer_max_usize(&self) -> (usize, usize) {
+    pub fn integer_max_usize(&self) -> Result<(usize, usize), Error> {
         match &self {
-            Self::Int => (isize::MIN as usize, isize::MAX as usize),
-            Self::Byte => (u8::MIN as usize, u8::MAX as usize),
-            Self::Int8 => (i8::MIN as usize, i8::MAX as usize),
-            Self::Int16 => (i16::MIN as usize, i16::MAX as usize),
-            Self::Int32 => (i32::MIN as usize, i32::MAX as usize),
-            Self::Int64 => (i64::MIN as usize, i64::MAX as usize),
-            Self::Uint => (usize::MIN, usize::MAX),
-            Self::Uint8 => (u8::MIN as usize, u8::MAX as usize),
-            Self::Uint16 => (u16::MIN as usize, u16::MAX as usize),
-            Self::Uint32 => (u32::MIN as usize, u32::MAX as usize),
-            Self::Uint64 => (u64::MIN as usize, u64::MAX as usize),
+            Self::Int => Ok((isize::MIN as usize, isize::MAX as usize)),
+            Self::Byte => Ok((u8::MIN as usize, u8::MAX as usize)),
+            Self::Int8 => Ok((i8::MIN as usize, i8::MAX as usize)),
+            Self::Int16 => Ok((i16::MIN as usize, i16::MAX as usize)),
+            Self::Int32 => Ok((i32::MIN as usize, i32::MAX as usize)),
+            Self::Int64 => Ok((i64::MIN as usize, i64::MAX as usize)),
+            Self::Uint => Ok((usize::MIN, usize::MAX)),
+            Self::Uint8 => Ok((u8::MIN as usize, u8::MAX as usize)),
+            Self::Uint16 => Ok((u16::MIN as usize, u16::MAX as usize)),
+            Self::Uint32 => Ok((u32::MIN as usize, u32::MAX as usize)),
+            Self::Uint64 => Ok((u64::MIN as usize, u64::MAX as usize)),
             Self::Qualified(_, inner) => inner.integer_max_usize(),
-            _ => panic!("not integer: {:#?}", self),
+            _ => Err(Error::InternalError(format!(
+                "integer_max_usize called on non-integer type: {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn integer_max_isize(&self) -> (isize, isize) {
+    pub fn integer_max_isize(&self) -> Result<(isize, isize), Error> {
         match &self {
-            Self::Int => (isize::MIN, isize::MAX),
-            Self::Byte => (u8::MIN as isize, u8::MAX as isize),
-            Self::Int8 => (i8::MIN as isize, i8::MAX as isize),
-            Self::Int16 => (i16::MIN as isize, i16::MAX as isize),
-            Self::Int32 => (i32::MIN as isize, i32::MAX as isize),
-            Self::Int64 => (i64::MIN as isize, i64::MAX as isize),
-            Self::Uint => (usize::MIN as isize, usize::MAX as isize),
-            Self::Uint8 => (u8::MIN as isize, u8::MAX as isize),
-            Self::Uint16 => (u16::MIN as isize, u16::MAX as isize),
-            Self::Uint32 => (u32::MIN as isize, u32::MAX as isize),
-            Self::Uint64 => (u64::MIN as isize, u64::MAX as isize),
+            Self::Int => Ok((isize::MIN, isize::MAX)),
+            Self::Byte => Ok((u8::MIN as isize, u8::MAX as isize)),
+            Self::Int8 => Ok((i8::MIN as isize, i8::MAX as isize)),
+            Self::Int16 => Ok((i16::MIN as isize, i16::MAX as isize)),
+            Self::Int32 => Ok((i32::MIN as isize, i32::MAX as isize)),
+            Self::Int64 => Ok((i64::MIN as isize, i64::MAX as isize)),
+            Self::Uint => Ok((usize::MIN as isize, usize::MAX as isize)),
+            Self::Uint8 => Ok((u8::MIN as isize, u8::MAX as isize)),
+            Self::Uint16 => Ok((u16::MIN as isize, u16::MAX as isize)),
+            Self::Uint32 => Ok((u32::MIN as isize, u32::MAX as isize)),
+            Self::Uint64 => Ok((u64::MIN as isize, u64::MAX as isize)),
             Self::Qualified(_, inner) => inner.integer_max_isize(),
-            _ => panic!("not integer: {:#?}", self),
+            _ => Err(Error::InternalError(format!(
+                "integer_max_isize called on non-integer type: {:#?}",
+                self
+            ))),
         }
     }
 
@@ -565,10 +587,13 @@ impl DefineType {
     pub fn is_var(&self) -> bool { matches!(self, Self::Qualified(Qualifier::Var, _)) }
     pub fn is_variadic(&self) -> bool { matches!(self, Self::Variadic(_)) }
 
-    pub fn as_variadic(&self) -> DefineType {
+    pub fn as_variadic(&self) -> Result<DefineType, Error> {
         match &self {
-            Self::Variadic(t) => *t.clone(),
-            _ => panic!("expected Variadic"),
+            Self::Variadic(t) => Ok(*t.clone()),
+            _ => Err(Error::InternalError(format!(
+                "expected Variadic, got {:#?}",
+                self
+            ))),
         }
     }
 
@@ -577,17 +602,23 @@ impl DefineType {
     pub fn is_tuple(&self) -> bool { matches!(self, Self::Tuple(_)) }
     pub fn is_func(&self) -> bool { matches!(self, Self::Func { .. }) }
 
-    pub fn as_type(&self) -> (DefineType, RuntimeType) {
+    pub fn as_type(&self) -> Result<(DefineType, RuntimeType), Error> {
         match &self {
-            Self::Type(df, t) => (*df.clone(), *t),
-            _ => panic!("expected Self::Type, got {:#?}", self),
+            Self::Type(df, t) => Ok((*df.clone(), *t)),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Type, got {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn as_tuple(&self) -> Vec<DefineType> {
+    pub fn as_tuple(&self) -> Result<Vec<DefineType>, Error> {
         match &self {
-            Self::Tuple(t) => t.clone(),
-            _ => panic!("expected Self::Tuple, got {:#?}", self),
+            Self::Tuple(t) => Ok(t.clone()),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Tuple, got {:#?}",
+                self
+            ))),
         }
     }
 
@@ -618,33 +649,45 @@ impl DefineType {
         }
     }
 
-    pub fn as_interface(&self) -> (String, Vec<DefineType>) {
+    pub fn as_interface(&self) -> Result<(String, Vec<DefineType>), Error> {
         match &self {
-            Self::Interface { methods, name } => (name.clone(), methods.clone()),
-            _ => panic!("expected Self::Interface, got {:#?}", self),
+            Self::Interface { methods, name } => Ok((name.clone(), methods.clone())),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Interface, got {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn as_var(&self) -> DefineType {
+    pub fn as_var(&self) -> Result<DefineType, Error> {
         match &self {
-            Self::Qualified(Qualifier::Var, t) => *t.clone(),
-            _ => panic!("expected Qualified(Var, ...), got {:#?}", self),
+            Self::Qualified(Qualifier::Var, t) => Ok(*t.clone()),
+            _ => Err(Error::InternalError(format!(
+                "expected Qualified(Var, ...), got {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn as_func(&self) -> (String, Option<Box<DefineType>>, Vec<ContextType>, Box<DefineType>) {
+    pub fn as_func(&self) -> Result<(String, Option<Box<DefineType>>, Vec<ContextType>, Box<DefineType>), Error> {
         match &self {
             Self::Func { name, recv, args, rt } => {
-                (name.clone(), recv.clone(), args.clone(), rt.clone())
+                Ok((name.clone(), recv.clone(), args.clone(), rt.clone()))
             }
-            _ => panic!("expected Self::Func, got {:#?}", self),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Func, got {:#?}",
+                self
+            ))),
         }
     }
 
-    pub fn as_ref(&self) -> DefineType {
+    pub fn as_ref_type(&self) -> Result<DefineType, Error> {
         match &self {
-            Self::Ref(t) => *t.clone(),
-            _ => panic!("expected Self::Ref, got {:#?}", self),
+            Self::Ref(t) => Ok(*t.clone()),
+            _ => Err(Error::InternalError(format!(
+                "expected Self::Ref, got {:#?}",
+                self
+            ))),
         }
     }
 }
@@ -668,10 +711,13 @@ impl ContextType {
         }
     }
 
-    pub fn as_unnamed(&self) -> DefineType {
+    pub fn as_unnamed(&self) -> Result<DefineType, Error> {
         match &self {
-            Self::Unnamed(t) => t.clone(),
-            _ => panic!("expected Unnamed"),
+            Self::Unnamed(t) => Ok(t.clone()),
+            _ => Err(Error::InternalError(format!(
+                "expected Unnamed, got {:#?}",
+                self
+            ))),
         }
     }
 }
@@ -782,10 +828,13 @@ impl Resolved {
         }
     }
 
-    pub fn as_local(&self) -> (Symbol, DefineType, String) {
+    pub fn as_local(&self) -> Result<(Symbol, DefineType, String), Error> {
         match &self {
-            Self::Enclosed(_) => panic!("as_local: {:#?}", self),
-            Self::Local(s) => s.clone(),
+            Self::Enclosed(_) => Err(Error::InternalError(format!(
+                "expected Local, got Enclosed: {:#?}",
+                self
+            ))),
+            Self::Local(s) => Ok(s.clone()),
         }
     }
 }
