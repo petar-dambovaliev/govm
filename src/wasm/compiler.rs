@@ -92,6 +92,28 @@ fn val_type_byte_size(vt: ValType) -> u32 {
     }
 }
 
+use std::collections::HashSet;
+
+#[derive(Debug, Clone)]
+struct StackLocal {
+    name: String,
+    offset: u32,
+    size: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StackFrameInfo {
+    locals: Vec<StackLocal>,
+    total_size: u32,
+    frame_base_local: Option<u32>,
+}
+
+impl StackFrameInfo {
+    fn find(&self, name: &str) -> Option<&StackLocal> {
+        self.locals.iter().find(|l| l.name == name)
+    }
+}
+
 fn aligned_capture_env_offset(captures: &[CapturedVar], next_vt: ValType) -> u32 {
     let mut offset: u32 = 0;
     for c in captures {
@@ -289,6 +311,7 @@ pub struct WasmCompiler {
     next_global_idx: u32,
     import_func_count: u32,
     heap_ptr_global: u32,
+    stack_ptr_global: u32,
     panicking_global: u32,
     panic_value_ptr_global: u32,
     panic_value_len_global: u32,
@@ -346,6 +369,11 @@ pub struct WasmCompiler {
 
     // Map type info stored per struct field: ("StructName", "fieldName") -> MapTypeInfo
     struct_field_map_types: HashMap<(String, String), MapTypeInfo>,
+
+    // Current function's stack frame info for escape-analysis-driven stack allocation
+    current_stack_frame: Option<StackFrameInfo>,
+    // When set, the next allocation should use the stack frame slot for this variable
+    stack_alloc_target: Option<String>,
 }
 
 impl WasmCompiler {
@@ -367,6 +395,7 @@ impl WasmCompiler {
             next_global_idx: 0,
             import_func_count: 0,
             heap_ptr_global: 0,
+            stack_ptr_global: 0,
             panicking_global: 0,
             panic_value_ptr_global: 0,
             panic_value_len_global: 0,
@@ -411,6 +440,8 @@ impl WasmCompiler {
             generic_types: HashMap::new(),
             monomorphized: HashMap::new(),
             struct_field_map_types: HashMap::new(),
+            current_stack_frame: None,
+            stack_alloc_target: None,
         }
     }
 
@@ -571,7 +602,7 @@ impl WasmCompiler {
 
     fn emit_memory(&mut self) {
         self.memory_section.memory(MemoryType {
-            minimum: 1,
+            minimum: 2,
             maximum: Some(256),
             memory64: false,
             shared: false,
@@ -579,6 +610,9 @@ impl WasmCompiler {
         });
         self.export_section.export("memory", ExportKind::Memory, 0);
     }
+
+    const HEAP_BASE: i32 = 65536;
+    const STACK_BASE: i32 = 1024;
 
     fn emit_heap_globals(&mut self) {
         self.heap_ptr_global = self.next_global_idx;
@@ -588,7 +622,18 @@ impl WasmCompiler {
                 mutable: true,
                 shared: false,
             },
-            &ConstExpr::i32_const(1024),
+            &ConstExpr::i32_const(Self::HEAP_BASE),
+        );
+        self.next_global_idx += 1;
+
+        self.stack_ptr_global = self.next_global_idx;
+        self.global_section.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(Self::STACK_BASE),
         );
         self.next_global_idx += 1;
 
@@ -773,8 +818,10 @@ impl WasmCompiler {
         self.next_func_idx += 1;
 
         let mut func = Function::new(vec![]);
-        func.instruction(&Instruction::I32Const(1024));
+        func.instruction(&Instruction::I32Const(Self::HEAP_BASE));
         func.instruction(&Instruction::GlobalSet(self.heap_ptr_global));
+        func.instruction(&Instruction::I32Const(Self::STACK_BASE));
+        func.instruction(&Instruction::GlobalSet(self.stack_ptr_global));
         func.instruction(&Instruction::End);
 
         self.code_section.function(&func);
@@ -1907,6 +1954,557 @@ impl WasmCompiler {
         })
     }
 
+    fn analyze_function_escapes(body: &ast::BlockStmt) -> HashSet<String> {
+        let mut escaping = HashSet::new();
+        let mut assignments: Vec<(String, String)> = Vec::new();
+
+        for stmt in &body.list {
+            Self::escape_scan_stmt(stmt, &mut escaping, &mut assignments);
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (dst, src) in &assignments {
+                if escaping.contains(dst.as_str()) && !escaping.contains(src.as_str()) {
+                    escaping.insert(src.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        escaping
+    }
+
+    fn escape_scan_stmt(
+        stmt: &ast::Statement,
+        escaping: &mut HashSet<String>,
+        assignments: &mut Vec<(String, String)>,
+    ) {
+        match stmt {
+            ast::Statement::Return(ret) => {
+                for expr in &ret.ret {
+                    Self::mark_expr_escaping(expr, escaping);
+                }
+            }
+            ast::Statement::Assign(assign) => {
+                for expr in &assign.right {
+                    Self::escape_scan_call_args(expr, escaping);
+                }
+
+                for (i, lhs) in assign.left.iter().enumerate() {
+                    match lhs {
+                        ast::Expression::Selector(_)
+                        | ast::Expression::Index(_) => {
+                            if let Some(rhs) = assign.right.get(i) {
+                                Self::mark_expr_escaping(rhs, escaping);
+                            }
+                        }
+                        ast::Expression::Ident(dst_id) => {
+                            if let Some(rhs) = assign.right.get(i) {
+                                if let ast::Expression::Ident(src_id) = rhs {
+                                    assignments.push((dst_id.name.clone(), src_id.name.clone()));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ast::Statement::Expr(es) => {
+                Self::escape_scan_call_args(&es.expr, escaping);
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    Self::escape_scan_stmt(init, escaping, assignments);
+                }
+                Self::escape_scan_call_args(&if_stmt.cond, escaping);
+                for s in &if_stmt.body.list {
+                    Self::escape_scan_stmt(s, escaping, assignments);
+                }
+                if let Some(else_) = &if_stmt.else_ {
+                    Self::escape_scan_stmt(else_, escaping, assignments);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    Self::escape_scan_stmt(init, escaping, assignments);
+                }
+                if let Some(cond) = &for_stmt.cond {
+                    Self::escape_scan_stmt(cond, escaping, assignments);
+                }
+                if let Some(post) = &for_stmt.post {
+                    Self::escape_scan_stmt(post, escaping, assignments);
+                }
+                for s in &for_stmt.body.list {
+                    Self::escape_scan_stmt(s, escaping, assignments);
+                }
+            }
+            ast::Statement::Range(range_stmt) => {
+                for s in &range_stmt.body.list {
+                    Self::escape_scan_stmt(s, escaping, assignments);
+                }
+            }
+            ast::Statement::Block(block) => {
+                for s in &block.list {
+                    Self::escape_scan_stmt(s, escaping, assignments);
+                }
+            }
+            ast::Statement::Switch(sw) => {
+                if let Some(init) = &sw.init {
+                    Self::escape_scan_stmt(init, escaping, assignments);
+                }
+                for clause in &sw.block.body {
+                    for s in clause.body.iter() {
+                        Self::escape_scan_stmt(s, escaping, assignments);
+                    }
+                }
+            }
+            ast::Statement::TypeSwitch(tsw) => {
+                if let Some(init) = &tsw.init {
+                    Self::escape_scan_stmt(init, escaping, assignments);
+                }
+                if let Some(tag) = &tsw.tag {
+                    Self::escape_scan_stmt(tag, escaping, assignments);
+                }
+                for clause in &tsw.block.body {
+                    for s in clause.body.iter() {
+                        Self::escape_scan_stmt(s, escaping, assignments);
+                    }
+                }
+            }
+            ast::Statement::Send(send) => {
+                Self::mark_expr_escaping(&send.value, escaping);
+            }
+            ast::Statement::Go(go_stmt) => {
+                for arg in &go_stmt.call.args {
+                    Self::mark_expr_escaping(arg, escaping);
+                }
+            }
+            ast::Statement::Defer(defer_stmt) => {
+                for arg in &defer_stmt.call.args {
+                    Self::mark_expr_escaping(arg, escaping);
+                }
+            }
+            ast::Statement::Declaration(decl_stmt) => {
+                if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
+                    for spec in &var_decl.specs {
+                        for val in &spec.values {
+                            Self::escape_scan_call_args(val, escaping);
+                        }
+                    }
+                }
+            }
+            ast::Statement::Label(labeled) => {
+                Self::escape_scan_stmt(&labeled.stmt, escaping, assignments);
+            }
+            ast::Statement::Select(sel) => {
+                for clause in &sel.body.body {
+                    if let Some(comm) = &clause.comm {
+                        Self::escape_scan_stmt(comm, escaping, assignments);
+                    }
+                    for s in clause.body.iter() {
+                        Self::escape_scan_stmt(s, escaping, assignments);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn mark_expr_escaping(expr: &ast::Expression, escaping: &mut HashSet<String>) {
+        match expr {
+            ast::Expression::Ident(id) => {
+                escaping.insert(id.name.clone());
+            }
+            ast::Expression::Paren(p) => Self::mark_expr_escaping(&p.expr, escaping),
+            ast::Expression::Star(s) => Self::mark_expr_escaping(&s.right, escaping),
+            ast::Expression::Operation(op) if op.y.is_none() => {
+                Self::mark_expr_escaping(&op.x, escaping);
+            }
+            _ => {}
+        }
+    }
+
+    fn escape_scan_call_args(expr: &ast::Expression, escaping: &mut HashSet<String>) {
+        match expr {
+            ast::Expression::Call(call) => {
+                for arg in &call.args {
+                    Self::mark_expr_escaping(arg, escaping);
+                }
+                Self::escape_scan_call_args(&call.func, escaping);
+            }
+            ast::Expression::Operation(op) => {
+                Self::escape_scan_call_args(&op.x, escaping);
+                if let Some(ref y) = op.y {
+                    Self::escape_scan_call_args(y, escaping);
+                }
+                if op.y.is_none() {
+                    if matches!(op.op, Operator::And) {
+                        Self::mark_expr_escaping(&op.x, escaping);
+                    }
+                }
+            }
+            ast::Expression::Paren(p) => Self::escape_scan_call_args(&p.expr, escaping),
+            ast::Expression::CompositeLit(comp) => {
+                for kv in &comp.val.values {
+                    if let ast::Element::Expr(e) = &kv.val {
+                        Self::mark_expr_escaping(e, escaping);
+                    }
+                }
+            }
+            ast::Expression::FuncLit(fl) => {
+                let mut captured = HashSet::new();
+                Self::collect_free_vars_block(&fl.body, &mut HashSet::new(), &mut captured);
+                for name in &captured {
+                    escaping.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_free_vars_block(
+        block: &ast::BlockStmt,
+        bound: &mut HashSet<String>,
+        free: &mut HashSet<String>,
+    ) {
+        for stmt in &block.list {
+            Self::collect_free_vars_stmt(stmt, bound, free);
+        }
+    }
+
+    fn collect_free_vars_stmt(
+        stmt: &ast::Statement,
+        bound: &mut HashSet<String>,
+        free: &mut HashSet<String>,
+    ) {
+        match stmt {
+            ast::Statement::Assign(assign) => {
+                for expr in &assign.right {
+                    Self::collect_free_vars_expr(expr, bound, free);
+                }
+                if matches!(assign.op, Operator::Define) {
+                    for lhs in &assign.left {
+                        if let ast::Expression::Ident(id) = lhs {
+                            bound.insert(id.name.clone());
+                        }
+                    }
+                }
+            }
+            ast::Statement::Expr(es) => {
+                Self::collect_free_vars_expr(&es.expr, bound, free);
+            }
+            ast::Statement::Return(ret) => {
+                for e in &ret.ret {
+                    Self::collect_free_vars_expr(e, bound, free);
+                }
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    Self::collect_free_vars_stmt(init, bound, free);
+                }
+                Self::collect_free_vars_expr(&if_stmt.cond, bound, free);
+                Self::collect_free_vars_block(&if_stmt.body, bound, free);
+                if let Some(else_) = &if_stmt.else_ {
+                    Self::collect_free_vars_stmt(else_, bound, free);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    Self::collect_free_vars_stmt(init, bound, free);
+                }
+                Self::collect_free_vars_block(&for_stmt.body, bound, free);
+            }
+            ast::Statement::Range(range_stmt) => {
+                Self::collect_free_vars_expr(&range_stmt.expr, bound, free);
+                Self::collect_free_vars_block(&range_stmt.body, bound, free);
+            }
+            ast::Statement::Block(block) => {
+                Self::collect_free_vars_block(block, bound, free);
+            }
+            ast::Statement::Declaration(decl_stmt) => {
+                if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
+                    for spec in &var_decl.specs {
+                        for val in &spec.values {
+                            Self::collect_free_vars_expr(val, bound, free);
+                        }
+                        for name in &spec.name {
+                            bound.insert(name.name.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_free_vars_expr(
+        expr: &ast::Expression,
+        bound: &HashSet<String>,
+        free: &mut HashSet<String>,
+    ) {
+        match expr {
+            ast::Expression::Ident(id) => {
+                if !bound.contains(&id.name)
+                    && !matches!(id.name.as_str(), "true" | "false" | "nil" | "iota"
+                        | "len" | "cap" | "append" | "copy" | "delete" | "make" | "new"
+                        | "panic" | "recover" | "print" | "println" | "string" | "int"
+                        | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
+                        | "uint32" | "uint64" | "float32" | "float64" | "byte" | "rune"
+                        | "bool" | "complex64" | "complex128" | "error" | "any")
+                {
+                    free.insert(id.name.clone());
+                }
+            }
+            ast::Expression::Call(call) => {
+                Self::collect_free_vars_expr(&call.func, bound, free);
+                for arg in &call.args {
+                    Self::collect_free_vars_expr(arg, bound, free);
+                }
+            }
+            ast::Expression::Operation(op) => {
+                Self::collect_free_vars_expr(&op.x, bound, free);
+                if let Some(ref y) = op.y {
+                    Self::collect_free_vars_expr(y, bound, free);
+                }
+            }
+            ast::Expression::Selector(sel) => {
+                Self::collect_free_vars_expr(&sel.x, bound, free);
+            }
+            ast::Expression::Index(idx) => {
+                if let Some(ref l) = idx.left {
+                    Self::collect_free_vars_expr(l, bound, free);
+                }
+                Self::collect_free_vars_expr(&idx.index, bound, free);
+            }
+            ast::Expression::Paren(p) => Self::collect_free_vars_expr(&p.expr, bound, free),
+            ast::Expression::Star(s) => Self::collect_free_vars_expr(&s.right, bound, free),
+            ast::Expression::CompositeLit(comp) => {
+                for kv in &comp.val.values {
+                    if let ast::Element::Expr(e) = &kv.val {
+                        Self::collect_free_vars_expr(e, bound, free);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn compute_stack_frame(
+        &self,
+        decl: &ast::FuncDecl,
+        escaping: &HashSet<String>,
+    ) -> StackFrameInfo {
+        let mut locals: Vec<StackLocal> = Vec::new();
+        let mut offset: u32 = 0;
+
+        if let Some(body) = &decl.body {
+            Self::collect_stack_locals_from_block(
+                &body.list, escaping, &self.struct_defs, &mut locals, &mut offset,
+            );
+        }
+
+        let total_size = (offset + 7) & !7;
+        StackFrameInfo {
+            locals,
+            total_size,
+            frame_base_local: None,
+        }
+    }
+
+    fn collect_stack_locals_from_block(
+        stmts: &[ast::Statement],
+        escaping: &HashSet<String>,
+        struct_defs: &HashMap<String, StructDef>,
+        locals: &mut Vec<StackLocal>,
+        offset: &mut u32,
+    ) {
+        for stmt in stmts {
+            Self::collect_stack_locals_from_stmt(stmt, escaping, struct_defs, locals, offset);
+        }
+    }
+
+    fn collect_stack_locals_from_stmt(
+        stmt: &ast::Statement,
+        escaping: &HashSet<String>,
+        struct_defs: &HashMap<String, StructDef>,
+        locals: &mut Vec<StackLocal>,
+        offset: &mut u32,
+    ) {
+        match stmt {
+            ast::Statement::Assign(assign) if matches!(assign.op, Operator::Define) => {
+                for (i, lhs) in assign.left.iter().enumerate() {
+                    if let ast::Expression::Ident(id) = lhs {
+                        if escaping.contains(&id.name) {
+                            continue;
+                        }
+                        if locals.iter().any(|l| l.name == id.name) {
+                            continue;
+                        }
+                        let size = if let Some(rhs) = assign.right.get(i) {
+                            Self::infer_compound_alloc_size(rhs, struct_defs)
+                        } else {
+                            None
+                        };
+                        if let Some(sz) = size {
+                            let aligned = (*offset + 7) & !7;
+                            locals.push(StackLocal {
+                                name: id.name.clone(),
+                                offset: aligned,
+                                size: sz,
+                            });
+                            *offset = aligned + sz;
+                        }
+                    }
+                }
+            }
+            ast::Statement::Declaration(decl_stmt) => {
+                if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
+                    for spec in &var_decl.specs {
+                        for (i, name) in spec.name.iter().enumerate() {
+                            if escaping.contains(&name.name) {
+                                continue;
+                            }
+                            if locals.iter().any(|l| l.name == name.name) {
+                                continue;
+                            }
+                            let size = if let Some(val) = spec.values.get(i) {
+                                Self::infer_compound_alloc_size(val, struct_defs)
+                            } else if let Some(typ) = &spec.typ {
+                                Self::infer_type_expr_size(typ, struct_defs)
+                            } else {
+                                None
+                            };
+                            if let Some(sz) = size {
+                                let aligned = (*offset + 7) & !7;
+                                locals.push(StackLocal {
+                                    name: name.name.clone(),
+                                    offset: aligned,
+                                    size: sz,
+                                });
+                                *offset = aligned + sz;
+                            }
+                        }
+                    }
+                }
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    Self::collect_stack_locals_from_stmt(init, escaping, struct_defs, locals, offset);
+                }
+                Self::collect_stack_locals_from_block(&if_stmt.body.list, escaping, struct_defs, locals, offset);
+                if let Some(else_) = &if_stmt.else_ {
+                    Self::collect_stack_locals_from_stmt(else_, escaping, struct_defs, locals, offset);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    Self::collect_stack_locals_from_stmt(init, escaping, struct_defs, locals, offset);
+                }
+                Self::collect_stack_locals_from_block(&for_stmt.body.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Range(range_stmt) => {
+                Self::collect_stack_locals_from_block(&range_stmt.body.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Block(block) => {
+                Self::collect_stack_locals_from_block(&block.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Switch(sw) => {
+                for clause in &sw.block.body {
+                    Self::collect_stack_locals_from_block(&clause.body, escaping, struct_defs, locals, offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn infer_compound_alloc_size(
+        expr: &ast::Expression,
+        struct_defs: &HashMap<String, StructDef>,
+    ) -> Option<u32> {
+        match expr {
+            ast::Expression::CompositeLit(comp) => {
+                match comp.typ.as_ref() {
+                    ast::Expression::Ident(id) => {
+                        if let Some(sdef) = struct_defs.get(&id.name) {
+                            Some(sdef.total_size)
+                        } else {
+                            None
+                        }
+                    }
+                    ast::Expression::TypeSlice(_) => Some(12),
+                    ast::Expression::TypeMap(_) => Some(20),
+                    ast::Expression::TypeArray(arr) => {
+                        if let ast::Expression::BasicLit(lit) = arr.len.as_ref() {
+                            if let Ok(n) = lit.value.parse::<u32>() {
+                                let elem_size = Self::infer_type_expr_size(&arr.typ, struct_defs).unwrap_or(8);
+                                n.checked_mul(elem_size)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(id) = call.func.as_ref() {
+                    if id.name == "make" {
+                        if let Some(type_arg) = call.args.first() {
+                            match type_arg {
+                                ast::Expression::TypeSlice(_) => return Some(12),
+                                ast::Expression::TypeMap(_) => return Some(20),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn infer_type_expr_size(
+        typ: &ast::Expression,
+        struct_defs: &HashMap<String, StructDef>,
+    ) -> Option<u32> {
+        match typ {
+            ast::Expression::Ident(id) => {
+                if let Some(sdef) = struct_defs.get(&id.name) {
+                    Some(sdef.total_size)
+                } else {
+                    match id.name.as_str() {
+                        "int" | "int64" | "uint" | "uint64" | "float64" => Some(8),
+                        "int32" | "uint32" | "float32" | "rune" => Some(4),
+                        "int16" | "uint16" => Some(2),
+                        "int8" | "uint8" | "byte" | "bool" => Some(1),
+                        "string" => None,
+                        _ => None,
+                    }
+                }
+            }
+            ast::Expression::TypeSlice(_) => Some(12),
+            ast::Expression::TypeMap(_) => Some(20),
+            ast::Expression::TypeArray(arr) => {
+                if let ast::Expression::BasicLit(lit) = arr.len.as_ref() {
+                    if let Ok(n) = lit.value.parse::<u32>() {
+                        let elem_size = Self::infer_type_expr_size(&arr.typ, struct_defs).unwrap_or(8);
+                        n.checked_mul(elem_size)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn compile_func_decl(&mut self, decl: &ast::FuncDecl, defer_code: bool) -> Result<(), Error> {
         let name = &decl.name.name;
 
@@ -2273,6 +2871,40 @@ impl WasmCompiler {
 
         let mut func_body: Vec<Instruction<'static>> = Vec::new();
 
+        let stack_frame = if let Some(body) = &decl.body {
+            let escaping = Self::analyze_function_escapes(body);
+            let mut sf = self.compute_stack_frame(decl, &escaping);
+            if sf.total_size > 0 {
+                let fb = locals.add_local("__frame_base", ValType::I32);
+                sf.frame_base_local = Some(fb);
+
+                func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
+                func_body.push(Instruction::LocalSet(fb));
+
+                func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
+                func_body.push(Instruction::I32Const(sf.total_size as i32));
+                func_body.push(Instruction::I32Add);
+                func_body.push(Instruction::GlobalSet(self.stack_ptr_global));
+
+                func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
+                func_body.push(Instruction::I32Const(Self::HEAP_BASE));
+                func_body.push(Instruction::I32GeU);
+                func_body.push(Instruction::If(BlockType::Empty));
+                func_body.push(Instruction::Call(self.oom_func_idx));
+                func_body.push(Instruction::Unreachable);
+                func_body.push(Instruction::End);
+            }
+            sf
+        } else {
+            StackFrameInfo::default()
+        };
+
+        self.current_stack_frame = if stack_frame.total_size > 0 {
+            Some(stack_frame.clone())
+        } else {
+            None
+        };
+
         if let Some(body) = &decl.body {
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();
@@ -2283,8 +2915,24 @@ impl WasmCompiler {
             self.current_result_go_types = Vec::new();
         }
 
+        self.current_stack_frame = None;
+
         self.emit_deferred_calls(&mut func_body);
         self.deferred_calls.pop();
+
+        if stack_frame.total_size > 0 {
+            if let Some(fb) = stack_frame.frame_base_local {
+                let mut patched = Vec::with_capacity(func_body.len());
+                for instr in func_body {
+                    if matches!(instr, Instruction::Return) {
+                        patched.push(Instruction::LocalGet(fb));
+                        patched.push(Instruction::GlobalSet(self.stack_ptr_global));
+                    }
+                    patched.push(instr);
+                }
+                func_body = patched;
+            }
+        }
 
         let body_always_returns = decl
             .body
@@ -2315,6 +2963,13 @@ impl WasmCompiler {
                     "missing return at end of function '{}'",
                     decl.name.name
                 )));
+            }
+        }
+
+        if stack_frame.total_size > 0 {
+            if let Some(fb) = stack_frame.frame_base_local {
+                func_body.push(Instruction::LocalGet(fb));
+                func_body.push(Instruction::GlobalSet(self.stack_ptr_global));
             }
         }
 
@@ -3201,7 +3856,20 @@ impl WasmCompiler {
                             );
                         }
 
+                        if self.current_stack_frame.is_some() {
+                            let is_struct_lit = matches!(
+                                &assign.right[i],
+                                ast::Expression::CompositeLit(comp)
+                                    if matches!(comp.typ.as_ref(),
+                                        ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name))
+                            );
+                            if is_struct_lit {
+                                self.stack_alloc_target = Some(ident.name.clone());
+                            }
+                        }
+
                         self.compile_expression(&assign.right[i], out, locals)?;
+                        self.stack_alloc_target = None;
                         if is_iface_from_call {
                             let wrapper = locals.add_local(
                                 &format!("__iface_wrap_{}", locals.locals.len()),
@@ -6217,7 +6885,20 @@ impl WasmCompiler {
                         }
 
                         if i < spec.values.len() {
+                            if self.current_stack_frame.is_some() {
+                                let is_struct_lit = matches!(
+                                    &spec.values[i],
+                                    ast::Expression::CompositeLit(comp)
+                                        if matches!(comp.typ.as_ref(),
+                                            ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name))
+                                );
+                                if is_struct_lit {
+                                    self.stack_alloc_target = Some(ident.name.clone());
+                                }
+                            }
+
                             self.compile_expression(&spec.values[i], out, locals)?;
+                            self.stack_alloc_target = None;
                             if is_iface {
                                 let rhs_vt = self.infer_val_type(&spec.values[i], locals);
                                 let rhs_type_name = self.infer_concrete_type_name(&spec.values[i], locals);
@@ -6245,8 +6926,21 @@ impl WasmCompiler {
                             if let ast::Expression::Ident(type_ident) = typ {
                                 if let Some(sd) = self.struct_defs.get(&type_ident.name) {
                                     let size = sd.total_size as i32;
-                                    out.push(Instruction::I32Const(size));
-                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    let used_stack = if let Some(sf) = &self.current_stack_frame {
+                                        if let Some(sl) = sf.find(&ident.name) {
+                                            let fb = sf.frame_base_local.unwrap();
+                                            out.push(Instruction::LocalGet(fb));
+                                            if sl.offset > 0 {
+                                                out.push(Instruction::I32Const(sl.offset as i32));
+                                                out.push(Instruction::I32Add);
+                                            }
+                                            true
+                                        } else { false }
+                                    } else { false };
+                                    if !used_stack {
+                                        out.push(Instruction::I32Const(size));
+                                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    }
                                     out.push(Instruction::LocalTee(local_idx));
                                     out.push(Instruction::I32Const(0));
                                     out.push(Instruction::I32Const(size));
@@ -12934,8 +13628,30 @@ impl WasmCompiler {
             ((field_count * 8) as i32).max(8)
         };
 
-        out.push(Instruction::I32Const(total_size));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
+        let used_stack = if let Some(ref target) = self.stack_alloc_target.take() {
+            if let Some(sf) = &self.current_stack_frame {
+                if let Some(sl) = sf.find(target) {
+                    let fb = sf.frame_base_local.unwrap();
+                    out.push(Instruction::LocalGet(fb));
+                    if sl.offset > 0 {
+                        out.push(Instruction::I32Const(sl.offset as i32));
+                        out.push(Instruction::I32Add);
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !used_stack {
+            out.push(Instruction::I32Const(total_size));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+        }
 
         let ptr_local = locals.add_local("__comp_ptr", ValType::I32);
         out.push(Instruction::LocalSet(ptr_local));

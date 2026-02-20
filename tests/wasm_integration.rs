@@ -1481,15 +1481,15 @@ func Greet() int {
         .get_memory(&mut store, "memory")
         .expect("memory export not found");
 
-    // The string "hello" should be in memory after offset 1024 (heap start)
+    // The string "hello" should be in memory after offset 65536 (heap start)
     let data = memory.data(&store);
-    let heap_start = 1024usize;
+    let heap_start = 65536usize;
     let heap_data = &data[heap_start..];
     let pos = heap_data
         .windows(5)
         .position(|w| w == b"hello")
         .expect("string 'hello' not found in WASM memory");
-    assert!(pos < 1024, "string should be near heap start");
+    assert!(pos < 4096, "string should be near heap start");
 }
 
 #[test]
@@ -1721,13 +1721,13 @@ func EscapeTest() int {
         .get_memory(&mut store, "memory")
         .expect("memory export not found");
     let data = memory.data(&store);
-    let heap = &data[1024..];
+    let heap = &data[65536..];
     // "ab\nc" should be 4 bytes: 'a', 'b', '\n', 'c'
     let pos = heap
         .windows(4)
         .position(|w| w == b"ab\nc")
         .expect("escaped string not found in memory");
-    assert!(pos < 1024, "string should be near heap start");
+    assert!(pos < 4096, "string should be near heap start");
 }
 
 #[test]
@@ -26372,4 +26372,287 @@ func Run() int {
     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 5, "interface method dispatch with value receiver should return len('hello')=5");
+}
+
+// ===================== Stack/Heap Escape Analysis Tests =====================
+
+#[test]
+fn test_non_escaping_struct_uses_stack() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func SumPoint() int {
+    p := Point{X: 10, Y: 20}
+    return p.X + p.Y
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "SumPoint")
+        .expect("SumPoint not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 30);
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("memory export not found");
+    let data = memory.data(&store);
+
+    // Non-escaping struct should be allocated in the stack region [1024, 65536)
+    // Check that the struct data (10, 20) appears in the stack region
+    let stack_region = &data[1024..65536];
+    let found_in_stack = stack_region.windows(8).any(|w| {
+        let x = i64::from_le_bytes(w.try_into().unwrap());
+        x == 10
+    });
+    assert!(found_in_stack, "non-escaping struct should be allocated in stack region");
+}
+
+#[test]
+fn test_escaping_struct_uses_heap() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func MakePoint() Point {
+    p := Point{X: 100, Y: 200}
+    return p
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i32>(&mut store, "MakePoint")
+        .expect("MakePoint not found");
+
+    let ptr = func.call(&mut store, ()).expect("call failed");
+    // The returned pointer should be in the heap region (>= 65536)
+    assert!(ptr >= 65536, "escaping struct should be in heap region, got ptr={}", ptr);
+}
+
+#[test]
+fn test_stack_restored_after_function_call() {
+    let source = r#"
+package main
+
+type Pair struct {
+    A int
+    B int
+}
+
+func First() int {
+    p := Pair{A: 1, B: 2}
+    return p.A
+}
+
+func Second() int {
+    q := Pair{A: 3, B: 4}
+    return q.B
+}
+
+func Run() int {
+    a := First()
+    b := Second()
+    return a + b
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 5, "stack should be properly restored between calls");
+}
+
+#[test]
+fn test_struct_passed_to_function_escapes() {
+    let source = r#"
+package main
+
+type Data struct {
+    Val int
+}
+
+func process(d Data) int {
+    return d.Val * 2
+}
+
+func Run() int {
+    d := Data{Val: 21}
+    return process(d)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "struct passed to function should work correctly");
+}
+
+#[test]
+fn test_var_decl_zero_value_struct_stack() {
+    let source = r#"
+package main
+
+type Config struct {
+    Width  int
+    Height int
+}
+
+func Run() int {
+    var c Config
+    c.Width = 800
+    c.Height = 600
+    return c.Width + c.Height
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1400, "zero-value struct on stack should work");
+}
+
+#[test]
+fn test_reset_restores_heap_base() {
+    let source = r#"
+package main
+
+func Alloc() int {
+    s := "hello world"
+    return len(s)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Alloc")
+        .expect("Alloc not found");
+
+    // Call once to allocate
+    let val = func.call(&mut store, ()).expect("first call failed");
+    assert_eq!(val, 11);
+
+    // Call reset
+    let reset_fn = instance
+        .get_typed_func::<(), ()>(&mut store, "reset")
+        .expect("reset not found");
+    reset_fn.call(&mut store, ()).expect("reset failed");
+
+    // Call again - should work fine after reset
+    store.set_fuel(1_000_000).expect("set fuel failed");
+    let val2 = func.call(&mut store, ()).expect("second call after reset failed");
+    assert_eq!(val2, 11, "function should work identically after reset");
+}
+
+#[test]
+fn test_nested_function_calls_stack_frames() {
+    let source = r#"
+package main
+
+type Vec2 struct {
+    X int
+    Y int
+}
+
+func add(a Vec2, b Vec2) int {
+    return a.X + b.X + a.Y + b.Y
+}
+
+func Run() int {
+    v1 := Vec2{X: 1, Y: 2}
+    v2 := Vec2{X: 3, Y: 4}
+    return add(v1, v2)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "nested calls with stack-allocated structs should work");
 }
