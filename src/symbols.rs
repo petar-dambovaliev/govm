@@ -460,7 +460,8 @@ impl DefineType {
     pub fn is_integer(&self) -> bool {
         match &self {
             Self::Int | Self::Byte | Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64
-            | Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64 => true,
+            | Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64
+            | Self::Rune => true,
             Self::Qualified(_, inner) => inner.is_integer(),
             _ => false,
         }
@@ -478,7 +479,8 @@ impl DefineType {
         match &self {
             Self::Int | Self::Byte | Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64
             | Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64
-            | Self::Float32 | Self::Float64 => true,
+            | Self::Float32 | Self::Float64
+            | Self::Rune => true,
             Self::Qualified(_, inner) => inner.is_numeric(),
             _ => false,
         }
