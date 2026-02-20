@@ -322,6 +322,7 @@ pub struct WasmCompiler {
     type_registry: HashMap<String, u32>,
     next_type_id: u32,
     iface_defs: HashMap<String, Vec<String>>,
+    iface_method_sigs: HashMap<String, HashMap<String, (Vec<WasmType>, Vec<WasmType>)>>,
     iface_var_type_ids: HashMap<String, u32>,
 
     // init() function support
@@ -392,6 +393,7 @@ impl WasmCompiler {
             type_registry: HashMap::new(),
             next_type_id: 1, // 0 = nil
             iface_defs: HashMap::new(),
+            iface_method_sigs: HashMap::new(),
             iface_var_type_ids: HashMap::new(),
 
             init_func_indices: Vec::new(),
@@ -435,6 +437,9 @@ impl WasmCompiler {
         self.get_or_create_type_id("rune");
 
         self.iface_defs.insert("error".to_string(), vec!["Error".to_string()]);
+        let mut error_sigs = HashMap::new();
+        error_sigs.insert("Error".to_string(), (vec![], vec![WasmType::I32, WasmType::I32]));
+        self.iface_method_sigs.insert("error".to_string(), error_sigs);
     }
 
     fn type_id_for_val_type(vt: ValType) -> &'static str {
@@ -889,14 +894,28 @@ impl WasmCompiler {
                     if let ast::Expression::TypeInterface(iface) = &spec.typ {
                         let mut methods = Vec::new();
                         let mut embedded_ifaces = Vec::new();
+                        let mut method_sigs: HashMap<String, (Vec<WasmType>, Vec<WasmType>)> = HashMap::new();
                         for field in &iface.methods.list {
                             if field.name.is_empty() {
                                 if let ast::Expression::Ident(embedded_id) = &field.typ {
                                     embedded_ifaces.push(embedded_id.name.clone());
                                 }
                             } else {
-                                for ident in &field.name {
-                                    methods.push(ident.name.clone());
+                                if let ast::Expression::TypeFunction(ft) = &field.typ {
+                                    let param_types: Vec<WasmType> = ft.params.list.iter()
+                                        .flat_map(|p| self.field_to_wasm_types(p))
+                                        .collect();
+                                    let result_types: Vec<WasmType> = ft.result.list.iter()
+                                        .flat_map(|r| self.field_to_wasm_types(r))
+                                        .collect();
+                                    for ident in &field.name {
+                                        methods.push(ident.name.clone());
+                                        method_sigs.insert(ident.name.clone(), (param_types.clone(), result_types.clone()));
+                                    }
+                                } else {
+                                    for ident in &field.name {
+                                        methods.push(ident.name.clone());
+                                    }
                                 }
                             }
                         }
@@ -904,8 +923,12 @@ impl WasmCompiler {
                             if let Some(embedded_methods) = self.iface_defs.get(embedded_name) {
                                 methods.extend(embedded_methods.clone());
                             }
+                            if let Some(embedded_sigs) = self.iface_method_sigs.get(embedded_name) {
+                                method_sigs.extend(embedded_sigs.clone());
+                            }
                         }
                         self.iface_defs.insert(name.clone(), methods);
+                        self.iface_method_sigs.insert(name.clone(), method_sigs);
                     } else if let ast::Expression::TypeStruct(_) = &spec.typ {
                         self.get_or_create_type_id(name);
                     }
@@ -956,6 +979,7 @@ impl WasmCompiler {
             }
             for name in &iface_names {
                 let mut methods = self.iface_defs.get(name).cloned().unwrap_or_default();
+                let mut sigs = self.iface_method_sigs.get(name).cloned().unwrap_or_default();
                 for decl in &file.decl {
                     if let ast::Declaration::Type(type_decl) = decl {
                         for spec in &type_decl.specs {
@@ -971,6 +995,11 @@ impl WasmCompiler {
                                                         }
                                                     }
                                                 }
+                                                if let Some(embedded_sigs) = self.iface_method_sigs.get(&embedded_id.name).cloned() {
+                                                    for (k, v) in embedded_sigs {
+                                                        sigs.entry(k).or_insert(v);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -980,6 +1009,7 @@ impl WasmCompiler {
                     }
                 }
                 self.iface_defs.insert(name.clone(), methods);
+                self.iface_method_sigs.insert(name.clone(), sigs);
             }
         }
     }
@@ -3149,6 +3179,14 @@ impl WasmCompiler {
                                 } else {
                                     "int".to_string()
                                 };
+                                if let Some(st) = locals.get_var_struct_type(&ident.name) {
+                                    if let Some(iface_name) = st.strip_prefix("__iface_") {
+                                        let iface_name = iface_name.to_string();
+                                        if !self.is_interface_var_expr(&assign.right[i], locals) {
+                                            self.check_iface_satisfaction(&iface_name, &rhs_type_name)?;
+                                        }
+                                    }
+                                }
                                 let type_id = self.get_or_create_type_id(&rhs_type_name);
                                 let (elem_size, _) = Self::elem_size_and_align(rhs_vt);
                                 self.emit_box_value(rhs_vt, elem_size, type_id, tid_local, data_local, out, locals)?;
@@ -4336,6 +4374,7 @@ impl WasmCompiler {
             Some(methods) => methods,
             None => return Vec::new(),
         };
+        let iface_sigs = self.iface_method_sigs.get(iface_name);
 
         let mut result = Vec::new();
         for (type_name, &type_id) in &self.type_registry {
@@ -4344,13 +4383,63 @@ impl WasmCompiler {
             }
             let has_all_methods = iface_methods.iter().all(|method| {
                 let qualified = format!("{}.{}", type_name, method);
-                self.functions.iter().any(|f| f.name == qualified)
+                if let Some(f) = self.functions.iter().find(|f| f.name == qualified) {
+                    if let Some(sigs) = iface_sigs {
+                        if let Some((expected_params, expected_results)) = sigs.get(method) {
+                            let impl_params: Vec<WasmType> = f.params.iter()
+                                .skip(1) // skip receiver
+                                .map(|(_, wt)| *wt)
+                                .collect();
+                            let impl_results: Vec<WasmType> = f.results.clone();
+                            return impl_params == *expected_params && impl_results == *expected_results;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
             });
             if has_all_methods {
                 result.push(type_id);
             }
         }
         result
+    }
+
+    fn check_iface_satisfaction(&self, iface_name: &str, concrete_type: &str) -> Result<(), Error> {
+        if iface_name == "any" || concrete_type == "nil" {
+            return Ok(());
+        }
+        let iface_methods = match self.iface_defs.get(iface_name) {
+            Some(methods) => methods,
+            None => return Ok(()),
+        };
+        let iface_sigs = self.iface_method_sigs.get(iface_name);
+        for method in iface_methods {
+            let qualified = format!("{}.{}", concrete_type, method);
+            if let Some(f) = self.functions.iter().find(|f| f.name == qualified) {
+                if let Some(sigs) = iface_sigs {
+                    if let Some((expected_params, expected_results)) = sigs.get(method) {
+                        let impl_params: Vec<WasmType> = f.params.iter()
+                            .skip(1)
+                            .map(|(_, wt)| *wt)
+                            .collect();
+                        if impl_params != *expected_params || f.results != *expected_results {
+                            return Err(Error::TypeError(format!(
+                                "type '{}' does not implement interface '{}': method '{}' has wrong signature",
+                                concrete_type, iface_name, method
+                            )));
+                        }
+                    }
+                }
+            } else {
+                return Err(Error::TypeError(format!(
+                    "type '{}' does not implement interface '{}': missing method '{}'",
+                    concrete_type, iface_name, method
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn compile_type_assert(
@@ -5748,6 +5837,7 @@ impl WasmCompiler {
                         // Track struct, string, interface, and unsigned types
                         let mut is_string = false;
                         let mut is_iface = false;
+                        let mut iface_type_name: Option<String> = None;
                         if let Some(ref typ) = spec.typ {
                             if let ast::Expression::TypeInterface(_) = typ {
                                 is_iface = true;
@@ -5814,6 +5904,7 @@ impl WasmCompiler {
                                     || type_ident.name == "any"
                                 {
                                     is_iface = true;
+                                    iface_type_name = Some(type_ident.name.clone());
                                     let iface_tag = format!("__iface_{}", type_ident.name);
                                     locals.set_var_struct_type(&ident.name, &iface_tag);
                                     let tid_local = locals.add_local(
@@ -5839,7 +5930,7 @@ impl WasmCompiler {
                                 }
                             }
                         }
-                        if i < spec.values.len() {
+                        if i < spec.values.len() && !is_iface {
                             if let ast::Expression::CompositeLit(comp) = &spec.values[i]
                             {
                                 if let ast::Expression::Ident(type_ident) =
@@ -5888,6 +5979,11 @@ impl WasmCompiler {
                             if is_iface {
                                 let rhs_vt = self.infer_val_type(&spec.values[i], locals);
                                 let rhs_type_name = self.infer_concrete_type_name(&spec.values[i], locals);
+                                if let Some(ref iname) = iface_type_name {
+                                    if !self.is_interface_var_expr(&spec.values[i], locals) {
+                                        self.check_iface_satisfaction(iname, &rhs_type_name)?;
+                                    }
+                                }
                                 let type_id = self.get_or_create_type_id(&rhs_type_name);
                                 let tid_local = *self.iface_var_type_ids.get(&ident.name).unwrap();
                                 let (elem_size, _) = Self::elem_size_and_align(rhs_vt);
@@ -7442,7 +7538,22 @@ impl WasmCompiler {
                 };
                 let is_composite = matches!(&*op.x, ast::Expression::CompositeLit(_));
 
-                if is_struct_var || is_composite {
+                // &slice[i] or &array[i]: compute element address in-place
+                let is_index_addr = if let ast::Expression::Index(idx) = &*op.x {
+                    if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
+                        locals.get_var_struct_type(&id.name).map_or(false, |t| {
+                            t == "__slice" || t == "__array"
+                        }) || locals.array_info.contains_key(&id.name)
+                            || locals.slice_elem_types.contains_key(&id.name)
+                    } else { false }
+                } else { false };
+
+                if is_index_addr {
+                    if let ast::Expression::Index(idx) = &*op.x {
+                        let (elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
+                        let _ = elem_vt;
+                    }
+                } else if is_struct_var || is_composite {
                     self.compile_expression(&op.x, out, locals)?;
                 } else {
                     let val_vt = self.infer_val_type(&op.x, locals);
