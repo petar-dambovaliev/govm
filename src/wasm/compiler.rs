@@ -171,7 +171,7 @@ impl LocalAlloc {
     }
 
     fn current_scope_id(&self) -> u32 {
-        *self.scope_stack.last().unwrap()
+        *self.scope_stack.last().expect("scope_stack must never be empty")
     }
 
     fn push_scope(&mut self) {
@@ -332,6 +332,9 @@ pub struct WasmCompiler {
     // Deferred global variable initializers (non-constant or string expressions)
     global_var_inits: Vec<(String, ast::Expression, ValType)>,
 
+    // Global variables that hold function values: var_name -> wasm_func_idx
+    global_func_vars: HashMap<String, u32>,
+
     // Generics support: store uncompiled generic function declarations
     generic_funcs: HashMap<String, ast::FuncDecl>,
     // Generic type definitions: type Pair[T any] struct { ... }
@@ -400,6 +403,7 @@ impl WasmCompiler {
             start_func_idx: None,
 
             global_var_inits: Vec::new(),
+            global_func_vars: HashMap::new(),
 
             generic_funcs: HashMap::new(),
             generic_types: HashMap::new(),
@@ -1527,6 +1531,12 @@ impl WasmCompiler {
 
             if has_non_const_init {
                 if let Some(val) = spec.values.first() {
+                    if let ast::Expression::Ident(func_ident) = val {
+                        if let Some(fi) = self.functions.iter().find(|f| f.name == func_ident.name) {
+                            self.global_func_vars.insert(name.name.clone(), fi.wasm_func_idx);
+                            continue;
+                        }
+                    }
                     self.global_var_inits.push((name.name.clone(), val.clone(), vt));
                 }
             }
@@ -3097,7 +3107,11 @@ impl WasmCompiler {
                                 ValType::I32,
                             );
                             out.push(Instruction::LocalSet(wrapper));
-                            let tid_local = *self.iface_var_type_ids.get(&ident.name).unwrap();
+                            let tid_local = *self.iface_var_type_ids.get(&ident.name).ok_or_else(|| {
+                                Error::InternalError(format!(
+                                    "interface type-id local not found for '{}'", ident.name
+                                ))
+                            })?;
                             out.push(Instruction::LocalGet(wrapper));
                             out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
                             out.push(Instruction::LocalSet(tid_local));
@@ -6043,7 +6057,11 @@ impl WasmCompiler {
                                     }
                                 }
                                 let type_id = self.get_or_create_type_id(&rhs_type_name);
-                                let tid_local = *self.iface_var_type_ids.get(&ident.name).unwrap();
+                                let tid_local = *self.iface_var_type_ids.get(&ident.name).ok_or_else(|| {
+                                    Error::InternalError(format!(
+                                        "interface type-id local not found for '{}'", ident.name
+                                    ))
+                                })?;
                                 let (elem_size, _) = Self::elem_size_and_align(rhs_vt);
                                 self.emit_box_value(rhs_vt, elem_size, type_id, tid_local, local_idx, out, locals)?;
                             } else if is_string {
@@ -9593,7 +9611,11 @@ impl WasmCompiler {
                                 if locals.rune_slices.contains(&arg_ident.name)
                                     && locals.get_var_struct_type(&arg_ident.name) == Some("__slice")
                                 {
-                                    let hdr_idx = locals.find(&arg_ident.name).unwrap();
+                                    let hdr_idx = locals.find(&arg_ident.name).ok_or_else(|| {
+                                        Error::InternalError(format!(
+                                            "local variable '{}' not found for []rune to string conversion", arg_ident.name
+                                        ))
+                                    })?;
                                     let src_ptr = locals.add_local(&format!("__sr2s_sp_{}", locals.locals.len()), ValType::I32);
                                     let s_len = locals.add_local(&format!("__sr2s_ln_{}", locals.locals.len()), ValType::I32);
                                     let dst_ptr = locals.add_local(&format!("__sr2s_dp_{}", locals.locals.len()), ValType::I32);
@@ -9798,7 +9820,11 @@ impl WasmCompiler {
                                     && locals.get_var_struct_type(&arg_ident.name) == Some("__slice")
                                 {
                                     // Pack I32 slice elements back into compact bytes
-                                    let hdr_idx = locals.find(&arg_ident.name).unwrap();
+                                    let hdr_idx = locals.find(&arg_ident.name).ok_or_else(|| {
+                                        Error::InternalError(format!(
+                                            "local variable '{}' not found for []byte to string conversion", arg_ident.name
+                                        ))
+                                    })?;
                                     let src_ptr = locals.add_local(&format!("__s2b_sp_{}", locals.locals.len()), ValType::I32);
                                     let s_len = locals.add_local(&format!("__s2b_ln_{}", locals.locals.len()), ValType::I32);
                                     let dst_ptr = locals.add_local(&format!("__s2b_dp_{}", locals.locals.len()), ValType::I32);
@@ -10684,6 +10710,42 @@ impl WasmCompiler {
                                     out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
                                     out.push(Instruction::LocalGet(box_ptr));
                                     out.push(Instruction::I32Const(type_id as i32));
+                                } else if let ast::Expression::Operation(addr_op) = arg {
+                                    if addr_op.op == Operator::And {
+                                        let concrete_type = if let ast::Expression::Ident(inner_id) = &*addr_op.x {
+                                            locals.get_var_struct_type(&inner_id.name)
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| inner_id.name.clone())
+                                        } else if let ast::Expression::CompositeLit(comp) = &*addr_op.x {
+                                            if let ast::Expression::Ident(ti) = comp.typ.as_ref() {
+                                                ti.name.clone()
+                                            } else {
+                                                "unknown".to_string()
+                                            }
+                                        } else {
+                                            "unknown".to_string()
+                                        };
+                                        let type_id = self.get_or_create_type_id(&concrete_type);
+                                        let rhs_vt = ValType::I32;
+                                        let box_tmp = locals.add_local(
+                                            &format!("__ibox_tmp_{}", locals.locals.len()),
+                                            rhs_vt,
+                                        );
+                                        out.push(Instruction::LocalSet(box_tmp));
+                                        out.push(Instruction::I32Const(8));
+                                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                                        let box_ptr = locals.add_local(
+                                            &format!("__ibox_ptr_{}", locals.locals.len()),
+                                            ValType::I32,
+                                        );
+                                        out.push(Instruction::LocalTee(box_ptr));
+                                        out.push(Instruction::LocalGet(box_tmp));
+                                        out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                                        out.push(Instruction::LocalGet(box_ptr));
+                                        out.push(Instruction::I32Const(type_id as i32));
+                                    } else {
+                                        out.push(Instruction::I32Const(0));
+                                    }
                                 } else {
                                     out.push(Instruction::I32Const(0));
                                 }
@@ -10703,7 +10765,11 @@ impl WasmCompiler {
                     }
                 } else if self.generic_funcs.contains_key(&ident.name) {
                     // Type inference for generic function calls: F(args) instead of F[T](args)
-                    let template = self.generic_funcs.get(&ident.name).cloned().unwrap();
+                    let template = self.generic_funcs.get(&ident.name).cloned().ok_or_else(|| {
+                        Error::InternalError(format!(
+                            "generic function template not found for '{}'", ident.name
+                        ))
+                    })?;
                     let type_param_names: std::collections::HashSet<String> = template.typ.typ_params.list.iter()
                         .flat_map(|f| f.name.iter().map(|n| n.name.clone()))
                         .collect();
@@ -10756,6 +10822,11 @@ impl WasmCompiler {
                             ident.name
                         )));
                     }
+                } else if let Some(&func_idx) = self.global_func_vars.get(&ident.name) {
+                    for arg in &call.args {
+                        self.compile_expression(arg, out, locals)?;
+                    }
+                    out.push(Instruction::Call(func_idx));
                 } else {
                     for arg in &call.args {
                         self.compile_expression(arg, out, locals)?;
@@ -11186,12 +11257,13 @@ impl WasmCompiler {
                             out.push(Instruction::LocalGet(byte0));
                             out.push(Instruction::LocalSet(rune_v));
 
-                            // Multi-byte UTF-8 decode (same structure as string range)
+                            // Multi-byte UTF-8 decode with boundary checks
                             out.push(Instruction::LocalGet(byte0));
                             out.push(Instruction::I32Const(0x80));
                             out.push(Instruction::I32GeU);
                             out.push(Instruction::If(BlockType::Empty));
                             {
+                                // 2-byte: (byte0 & 0xE0) == 0xC0
                                 out.push(Instruction::LocalGet(byte0));
                                 out.push(Instruction::I32Const(0xE0));
                                 out.push(Instruction::I32And);
@@ -11199,45 +11271,23 @@ impl WasmCompiler {
                                 out.push(Instruction::I32Eq);
                                 out.push(Instruction::If(BlockType::Empty));
                                 {
+                                    // Boundary check: src_idx + 2 <= str_len
+                                    out.push(Instruction::LocalGet(src_idx));
                                     out.push(Instruction::I32Const(2));
-                                    out.push(Instruction::LocalSet(rune_w));
-                                    out.push(Instruction::LocalGet(byte0));
-                                    out.push(Instruction::I32Const(0x1F));
-                                    out.push(Instruction::I32And);
-                                    out.push(Instruction::I32Const(6));
-                                    out.push(Instruction::I32Shl);
-                                    out.push(Instruction::LocalGet(addr));
-                                    out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                                    out.push(Instruction::I32Const(0x3F));
-                                    out.push(Instruction::I32And);
-                                    out.push(Instruction::I32Or);
-                                    out.push(Instruction::LocalSet(rune_v));
-                                }
-                                out.push(Instruction::Else);
-                                {
-                                    out.push(Instruction::LocalGet(byte0));
-                                    out.push(Instruction::I32Const(0xF0));
-                                    out.push(Instruction::I32And);
-                                    out.push(Instruction::I32Const(0xE0));
-                                    out.push(Instruction::I32Eq);
+                                    out.push(Instruction::I32Add);
+                                    out.push(Instruction::LocalGet(str_len));
+                                    out.push(Instruction::I32LeU);
                                     out.push(Instruction::If(BlockType::Empty));
                                     {
-                                        out.push(Instruction::I32Const(3));
+                                        out.push(Instruction::I32Const(2));
                                         out.push(Instruction::LocalSet(rune_w));
                                         out.push(Instruction::LocalGet(byte0));
-                                        out.push(Instruction::I32Const(0x0F));
-                                        out.push(Instruction::I32And);
-                                        out.push(Instruction::I32Const(12));
-                                        out.push(Instruction::I32Shl);
-                                        out.push(Instruction::LocalGet(addr));
-                                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                                        out.push(Instruction::I32Const(0x3F));
+                                        out.push(Instruction::I32Const(0x1F));
                                         out.push(Instruction::I32And);
                                         out.push(Instruction::I32Const(6));
                                         out.push(Instruction::I32Shl);
-                                        out.push(Instruction::I32Or);
                                         out.push(Instruction::LocalGet(addr));
-                                        out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
                                         out.push(Instruction::I32Const(0x3F));
                                         out.push(Instruction::I32And);
                                         out.push(Instruction::I32Or);
@@ -11245,33 +11295,102 @@ impl WasmCompiler {
                                     }
                                     out.push(Instruction::Else);
                                     {
-                                        out.push(Instruction::I32Const(4));
-                                        out.push(Instruction::LocalSet(rune_w));
-                                        out.push(Instruction::LocalGet(byte0));
-                                        out.push(Instruction::I32Const(0x07));
-                                        out.push(Instruction::I32And);
-                                        out.push(Instruction::I32Const(18));
-                                        out.push(Instruction::I32Shl);
-                                        out.push(Instruction::LocalGet(addr));
-                                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
-                                        out.push(Instruction::I32Const(0x3F));
-                                        out.push(Instruction::I32And);
-                                        out.push(Instruction::I32Const(12));
-                                        out.push(Instruction::I32Shl);
-                                        out.push(Instruction::I32Or);
-                                        out.push(Instruction::LocalGet(addr));
-                                        out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
-                                        out.push(Instruction::I32Const(0x3F));
-                                        out.push(Instruction::I32And);
-                                        out.push(Instruction::I32Const(6));
-                                        out.push(Instruction::I32Shl);
-                                        out.push(Instruction::I32Or);
-                                        out.push(Instruction::LocalGet(addr));
-                                        out.push(Instruction::I32Load8U(MemArg { offset: 3, align: 0, memory_index: 0 }));
-                                        out.push(Instruction::I32Const(0x3F));
-                                        out.push(Instruction::I32And);
-                                        out.push(Instruction::I32Or);
+                                        out.push(Instruction::I32Const(0xFFFD));
                                         out.push(Instruction::LocalSet(rune_v));
+                                    }
+                                    out.push(Instruction::End);
+                                }
+                                out.push(Instruction::Else);
+                                {
+                                    // 3-byte: (byte0 & 0xF0) == 0xE0
+                                    out.push(Instruction::LocalGet(byte0));
+                                    out.push(Instruction::I32Const(0xF0));
+                                    out.push(Instruction::I32And);
+                                    out.push(Instruction::I32Const(0xE0));
+                                    out.push(Instruction::I32Eq);
+                                    out.push(Instruction::If(BlockType::Empty));
+                                    {
+                                        // Boundary check: src_idx + 3 <= str_len
+                                        out.push(Instruction::LocalGet(src_idx));
+                                        out.push(Instruction::I32Const(3));
+                                        out.push(Instruction::I32Add);
+                                        out.push(Instruction::LocalGet(str_len));
+                                        out.push(Instruction::I32LeU);
+                                        out.push(Instruction::If(BlockType::Empty));
+                                        {
+                                            out.push(Instruction::I32Const(3));
+                                            out.push(Instruction::LocalSet(rune_w));
+                                            out.push(Instruction::LocalGet(byte0));
+                                            out.push(Instruction::I32Const(0x0F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Const(12));
+                                            out.push(Instruction::I32Shl);
+                                            out.push(Instruction::LocalGet(addr));
+                                            out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::I32Const(0x3F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Const(6));
+                                            out.push(Instruction::I32Shl);
+                                            out.push(Instruction::I32Or);
+                                            out.push(Instruction::LocalGet(addr));
+                                            out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::I32Const(0x3F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Or);
+                                            out.push(Instruction::LocalSet(rune_v));
+                                        }
+                                        out.push(Instruction::Else);
+                                        {
+                                            out.push(Instruction::I32Const(0xFFFD));
+                                            out.push(Instruction::LocalSet(rune_v));
+                                        }
+                                        out.push(Instruction::End);
+                                    }
+                                    out.push(Instruction::Else);
+                                    {
+                                        // 4-byte: assume (byte0 & 0xF8) == 0xF0
+                                        // Boundary check: src_idx + 4 <= str_len
+                                        out.push(Instruction::LocalGet(src_idx));
+                                        out.push(Instruction::I32Const(4));
+                                        out.push(Instruction::I32Add);
+                                        out.push(Instruction::LocalGet(str_len));
+                                        out.push(Instruction::I32LeU);
+                                        out.push(Instruction::If(BlockType::Empty));
+                                        {
+                                            out.push(Instruction::I32Const(4));
+                                            out.push(Instruction::LocalSet(rune_w));
+                                            out.push(Instruction::LocalGet(byte0));
+                                            out.push(Instruction::I32Const(0x07));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Const(18));
+                                            out.push(Instruction::I32Shl);
+                                            out.push(Instruction::LocalGet(addr));
+                                            out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::I32Const(0x3F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Const(12));
+                                            out.push(Instruction::I32Shl);
+                                            out.push(Instruction::I32Or);
+                                            out.push(Instruction::LocalGet(addr));
+                                            out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::I32Const(0x3F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Const(6));
+                                            out.push(Instruction::I32Shl);
+                                            out.push(Instruction::I32Or);
+                                            out.push(Instruction::LocalGet(addr));
+                                            out.push(Instruction::I32Load8U(MemArg { offset: 3, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::I32Const(0x3F));
+                                            out.push(Instruction::I32And);
+                                            out.push(Instruction::I32Or);
+                                            out.push(Instruction::LocalSet(rune_v));
+                                        }
+                                        out.push(Instruction::Else);
+                                        {
+                                            out.push(Instruction::I32Const(0xFFFD));
+                                            out.push(Instruction::LocalSet(rune_v));
+                                        }
+                                        out.push(Instruction::End);
                                     }
                                     out.push(Instruction::End);
                                 }
