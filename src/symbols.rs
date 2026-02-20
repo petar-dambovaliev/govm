@@ -255,8 +255,17 @@ impl Display for DefineType {
     }
 }
 
+fn normalize_alias(t: DefineType) -> DefineType {
+    match t {
+        DefineType::Byte => DefineType::Uint8,
+        DefineType::Rune => DefineType::Int32,
+        DefineType::Tuple(v) => DefineType::Tuple(v.into_iter().map(normalize_alias).collect()),
+        other => other,
+    }
+}
+
 pub fn types_equal(a: &DefineType, b: &DefineType) -> bool {
-    a.unwrap_to_base_type() == b.unwrap_to_base_type()
+    normalize_alias(a.unwrap_to_base_type()) == normalize_alias(b.unwrap_to_base_type())
 }
 
 pub fn is_integer_coerceable_to(i: isize, t: &DefineType) -> bool {
@@ -351,10 +360,11 @@ impl DefineType {
             Self::Struct { name: n, .. } => Ok(n.to_string()),
             Self::Ref(inner) => inner.get_type_name(),
             Self::Spec { name: n, .. } => Ok(n.to_string()),
-            _ => Err(Error::InternalError(format!(
-                "get_type_name not implemented for {:#?}",
-                self
-            ))),
+            Self::Interface { name: n, .. } => Ok(n.to_string()),
+            Self::Func { name: n, .. } => Ok(n.to_string()),
+            Self::Qualified(_, inner) => inner.get_type_name(),
+            Self::Type(inner, _) => inner.get_type_name(),
+            other => Ok(other.to_string()),
         }
     }
 
@@ -383,6 +393,9 @@ impl DefineType {
         if self.is_rune() && other.is_byte() {
             return true;
         }
+        if self.is_numeric() && other.is_numeric() {
+            return true;
+        }
         if self.is_spec() {
             let (_, inner, _, _) = self.as_spec().unwrap();
             return other == &inner.strip_type();
@@ -400,7 +413,7 @@ impl DefineType {
             Self::Byte => Ok((u8::MIN as i128, u8::MAX as i128)),
             Self::Int8 => Ok((i8::MIN as i128, i8::MAX as i128)),
             Self::Int16 => Ok((i16::MIN as i128, i16::MAX as i128)),
-            Self::Int32 => Ok((i32::MIN as i128, i32::MAX as i128)),
+            Self::Int32 | Self::Rune => Ok((i32::MIN as i128, i32::MAX as i128)),
             Self::Int64 => Ok((i64::MIN as i128, i64::MAX as i128)),
             Self::Uint => Ok((usize::MIN as i128, usize::MAX as i128)),
             Self::Uint8 => Ok((u8::MIN as i128, u8::MAX as i128)),
@@ -421,7 +434,7 @@ impl DefineType {
             Self::Byte => Ok((u8::MIN as usize, u8::MAX as usize)),
             Self::Int8 => Ok((i8::MIN as usize, i8::MAX as usize)),
             Self::Int16 => Ok((i16::MIN as usize, i16::MAX as usize)),
-            Self::Int32 => Ok((i32::MIN as usize, i32::MAX as usize)),
+            Self::Int32 | Self::Rune => Ok((i32::MIN as usize, i32::MAX as usize)),
             Self::Int64 => Ok((i64::MIN as usize, i64::MAX as usize)),
             Self::Uint => Ok((usize::MIN, usize::MAX)),
             Self::Uint8 => Ok((u8::MIN as usize, u8::MAX as usize)),
@@ -442,7 +455,7 @@ impl DefineType {
             Self::Byte => Ok((u8::MIN as isize, u8::MAX as isize)),
             Self::Int8 => Ok((i8::MIN as isize, i8::MAX as isize)),
             Self::Int16 => Ok((i16::MIN as isize, i16::MAX as isize)),
-            Self::Int32 => Ok((i32::MIN as isize, i32::MAX as isize)),
+            Self::Int32 | Self::Rune => Ok((i32::MIN as isize, i32::MAX as isize)),
             Self::Int64 => Ok((i64::MIN as isize, i64::MAX as isize)),
             Self::Uint => Ok((usize::MIN as isize, usize::MAX as isize)),
             Self::Uint8 => Ok((u8::MIN as isize, u8::MAX as isize)),

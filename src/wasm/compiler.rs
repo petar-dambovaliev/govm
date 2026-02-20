@@ -272,6 +272,7 @@ pub struct WasmCompiler {
     panicking_global: u32,
     panic_value_ptr_global: u32,
     panic_value_len_global: u32,
+    map_iter_counter_global: u32,
     oom_func_idx: u32,
 
     functions: Vec<FuncInfo>,
@@ -339,6 +340,7 @@ impl WasmCompiler {
             panicking_global: 0,
             panic_value_ptr_global: 0,
             panic_value_len_global: 0,
+            map_iter_counter_global: 0,
             oom_func_idx: 0,
 
             functions: Vec::new(),
@@ -573,6 +575,17 @@ impl WasmCompiler {
         self.next_global_idx += 1;
 
         self.panic_value_len_global = self.next_global_idx;
+        self.global_section.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+        self.next_global_idx += 1;
+
+        self.map_iter_counter_global = self.next_global_idx;
         self.global_section.global(
             GlobalType {
                 val_type: ValType::I32,
@@ -1187,11 +1200,15 @@ impl WasmCompiler {
                             Operator::Quo => Some(ConstValue::I64(a.checked_div(*b)?)),
                             Operator::Rem => Some(ConstValue::I64(a.checked_rem(*b)?)),
                             Operator::Shl => {
-                                if *b < 0 || *b > 63 { return None; }
+                                if *b < 0 { return None; }
+                                if *b >= 64 { return Some(ConstValue::I64(0)); }
                                 Some(ConstValue::I64(a.checked_shl(*b as u32)?))
                             }
                             Operator::Shr => {
-                                if *b < 0 || *b > 63 { return None; }
+                                if *b < 0 { return None; }
+                                if *b >= 64 {
+                                    return Some(ConstValue::I64(if *a < 0 { -1 } else { 0 }));
+                                }
                                 Some(ConstValue::I64(a.checked_shr(*b as u32)?))
                             }
                             Operator::And => Some(ConstValue::I64(a & b)),
@@ -2696,8 +2713,8 @@ impl WasmCompiler {
                                 out.push(Instruction::LocalGet(total));
                                 out.push(Instruction::LocalSet(len_local));
                             } else {
-                                return Err(Error::InternalError(format!(
-                                    "compound assignment {:?} not supported on string variables",
+                                return Err(Error::TypeError(format!(
+                                    "operator {:?} not defined for string (only += is valid for string concatenation)",
                                     assign.op
                                 )));
                             }
@@ -4333,9 +4350,11 @@ impl WasmCompiler {
         let entry_size = Self::map_entry_size(mti.key_size, mti.val_size) as i32;
 
         let idx_local = locals.add_local("__rm_idx", ValType::I32);
+        let count_local = locals.add_local("__rm_count", ValType::I32);
         let cap_local = locals.add_local("__rm_cap", ValType::I32);
         let data_local = locals.add_local("__rm_data", ValType::I32);
         let entry_local = locals.add_local("__rm_entry", ValType::I32);
+        let slot_local = locals.add_local("__rm_slot", ValType::I32);
 
         // Load capacity and data_ptr from map header
         out.push(Instruction::LocalGet(map_local));
@@ -4345,23 +4364,50 @@ impl WasmCompiler {
         out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(data_local));
 
+        // Randomize starting index: start = counter % cap (avoid div-by-zero)
+        out.push(Instruction::LocalGet(cap_local));
         out.push(Instruction::I32Const(0));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Result(ValType::I32)));
+        {
+            out.push(Instruction::GlobalGet(self.map_iter_counter_global));
+            out.push(Instruction::LocalGet(cap_local));
+            out.push(Instruction::I32RemU);
+        }
+        out.push(Instruction::Else);
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::End);
         out.push(Instruction::LocalSet(idx_local));
+
+        // Bump the global counter for next map iteration
+        out.push(Instruction::GlobalGet(self.map_iter_counter_global));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::GlobalSet(self.map_iter_counter_global));
+
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(count_local));
 
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
 
         self.loop_depth.push((label, 0, false, true));
 
-        // Check idx < cap
-        out.push(Instruction::LocalGet(idx_local));
+        // Check count < cap
+        out.push(Instruction::LocalGet(count_local));
         out.push(Instruction::LocalGet(cap_local));
         out.push(Instruction::I32GeU);
         out.push(Instruction::BrIf(1));
 
-        // entry = data + idx * entry_size
-        out.push(Instruction::LocalGet(data_local));
+        // slot = idx % cap (wrap around)
         out.push(Instruction::LocalGet(idx_local));
+        out.push(Instruction::LocalGet(cap_local));
+        out.push(Instruction::I32RemU);
+        out.push(Instruction::LocalSet(slot_local));
+
+        // entry = data + slot * entry_size
+        out.push(Instruction::LocalGet(data_local));
+        out.push(Instruction::LocalGet(slot_local));
         out.push(Instruction::I32Const(entry_size));
         out.push(Instruction::I32Mul);
         out.push(Instruction::I32Add);
@@ -4374,11 +4420,15 @@ impl WasmCompiler {
         out.push(Instruction::I32Ne);
         out.push(Instruction::If(BlockType::Empty));
         {
-            // Increment and continue
+            // Increment idx and count, continue
             out.push(Instruction::LocalGet(idx_local));
             out.push(Instruction::I32Const(1));
             out.push(Instruction::I32Add);
             out.push(Instruction::LocalSet(idx_local));
+            out.push(Instruction::LocalGet(count_local));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::LocalSet(count_local));
             out.push(Instruction::Br(1)); // back to loop
         }
         out.push(Instruction::End);
@@ -4418,11 +4468,15 @@ impl WasmCompiler {
             }
         }
 
-        // Increment before body
+        // Increment idx and count before body
         out.push(Instruction::LocalGet(idx_local));
         out.push(Instruction::I32Const(1));
         out.push(Instruction::I32Add);
         out.push(Instruction::LocalSet(idx_local));
+        out.push(Instruction::LocalGet(count_local));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(count_local));
 
         self.compile_block(&range.body, out, locals, result_types)?;
 
@@ -4569,6 +4623,17 @@ impl WasmCompiler {
                 default_case = Some(case);
             } else {
                 non_default_cases.push(case);
+            }
+        }
+
+        // Validate fallthrough: cannot appear in the last case clause when there is no
+        // subsequent clause to fall into.
+        let all_clauses = &switch.block.body;
+        if let Some(last_clause) = all_clauses.last() {
+            if last_clause.body.iter().any(|s| Self::is_fallthrough_stmt(s)) {
+                return Err(Error::SyntaxError(
+                    "cannot fallthrough final case of switch".to_string(),
+                ));
             }
         }
 
@@ -10031,28 +10096,27 @@ impl WasmCompiler {
                                         // Actually, since we already compiled args, we need to work with what's on the stack.
                                         // For now, handle the common case: no extra args besides receiver.
                                         let embed_func_idx = fi.wasm_func_idx;
-                                        let n_extra_args = call.args.len();
-                                        if n_extra_args == 0 && *embed_offset == 0 {
+                                        let wasm_params: Vec<_> = fi.params.iter()
+                                            .skip(1) // skip receiver
+                                            .map(|(_, wt)| wt.to_val_type())
+                                            .collect();
+                                        if wasm_params.is_empty() && *embed_offset == 0 {
                                             out.push(Instruction::Call(embed_func_idx));
                                         } else {
-                                            // Save extra args, adjust receiver, restore args, call
                                             let mut saved = Vec::new();
-                                            for j in (0..n_extra_args).rev() {
-                                                let arg_vt = self.infer_val_type(&call.args[j], locals);
+                                            for (j, vt) in wasm_params.iter().enumerate().rev() {
                                                 let tmp = locals.add_local(
                                                     &format!("__embed_arg_{}_{}", j, locals.locals.len()),
-                                                    arg_vt
+                                                    *vt
                                                 );
                                                 out.push(Instruction::LocalSet(tmp));
-                                                saved.push((tmp, arg_vt));
+                                                saved.push(tmp);
                                             }
-                                            // Adjust receiver on stack
                                             if *embed_offset > 0 {
                                                 out.push(Instruction::I32Const(*embed_offset as i32));
                                                 out.push(Instruction::I32Add);
                                             }
-                                            // Restore args in order
-                                            for (tmp, _) in saved.iter().rev() {
+                                            for tmp in saved.iter().rev() {
                                                 out.push(Instruction::LocalGet(*tmp));
                                             }
                                             out.push(Instruction::Call(embed_func_idx));
