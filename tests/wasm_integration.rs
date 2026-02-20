@@ -26656,3 +26656,206 @@ func Run() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 10, "nested calls with stack-allocated structs should work");
 }
+
+#[test]
+fn test_addr_of_struct_escaping_via_return() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func MakePointPtr() int {
+    p := &Point{X: 55, Y: 66}
+    return p.X + p.Y
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "MakePointPtr")
+        .expect("MakePointPtr not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 121, "addr-of Point literal should work correctly");
+}
+
+#[test]
+fn test_multiple_non_escaping_structs_same_function() {
+    let source = r#"
+package main
+
+type Vec2 struct {
+    X int
+    Y int
+}
+
+func MultiStruct() int {
+    a := Vec2{X: 1, Y: 2}
+    b := Vec2{X: 10, Y: 20}
+    c := Vec2{X: 100, Y: 200}
+    return a.X + a.Y + b.X + b.Y + c.X + c.Y
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "MultiStruct")
+        .expect("MultiStruct not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 333, "multiple non-escaping structs should all work correctly");
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("memory export not found");
+    let data = memory.data(&store);
+
+    let stack_region = &data[1024..65536];
+    let found_1 = stack_region.windows(8).any(|w| {
+        i64::from_le_bytes(w.try_into().unwrap()) == 1
+    });
+    let found_100 = stack_region.windows(8).any(|w| {
+        i64::from_le_bytes(w.try_into().unwrap()) == 100
+    });
+    assert!(found_1, "first struct should be in stack region");
+    assert!(found_100, "third struct should be in stack region");
+}
+
+#[test]
+fn test_struct_allocated_inside_loop() {
+    let source = r#"
+package main
+
+type Acc struct {
+    Total int
+}
+
+func LoopStruct() int {
+    sum := 0
+    for i := 0; i < 5; i++ {
+        a := Acc{Total: i * 10}
+        sum = sum + a.Total
+    }
+    return sum
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "LoopStruct")
+        .expect("LoopStruct not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    // 0 + 10 + 20 + 30 + 40 = 100
+    assert_eq!(val, 100, "struct allocated inside loop should work correctly");
+}
+
+#[test]
+fn test_closure_captures_local_var_escapes() {
+    let source = r#"
+package main
+
+type Config struct {
+    Val int
+}
+
+func ClosureCapture() int {
+    x := 42
+    c := Config{Val: x}
+    f := func() int {
+        return x
+    }
+    return f() + c.Val
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "ClosureCapture")
+        .expect("ClosureCapture not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 84, "closure capturing local should work correctly");
+}
+
+#[test]
+fn test_stack_reset_with_struct_allocation() {
+    let source = r#"
+package main
+
+type Rec struct {
+    A int
+    B int
+}
+
+func StackAlloc() int {
+    r := Rec{A: 7, B: 8}
+    return r.A + r.B
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "StackAlloc")
+        .expect("StackAlloc not found");
+
+    let val1 = func.call(&mut store, ()).expect("first call failed");
+    assert_eq!(val1, 15);
+
+    let reset_fn = instance
+        .get_typed_func::<(), ()>(&mut store, "reset")
+        .expect("reset not found");
+    reset_fn.call(&mut store, ()).expect("reset failed");
+
+    store.set_fuel(1_000_000).expect("set fuel failed");
+    let val2 = func.call(&mut store, ()).expect("second call after reset failed");
+    assert_eq!(val2, 15, "stack-allocated struct should work identically after reset");
+}

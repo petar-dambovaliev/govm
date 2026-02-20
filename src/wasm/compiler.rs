@@ -2041,6 +2041,7 @@ impl WasmCompiler {
                 }
             }
             ast::Statement::Range(range_stmt) => {
+                Self::escape_scan_call_args(&range_stmt.expr, escaping);
                 for s in &range_stmt.body.list {
                     Self::escape_scan_stmt(s, escaping, assignments);
                 }
@@ -2053,6 +2054,9 @@ impl WasmCompiler {
             ast::Statement::Switch(sw) => {
                 if let Some(init) = &sw.init {
                     Self::escape_scan_stmt(init, escaping, assignments);
+                }
+                if let Some(tag) = &sw.tag {
+                    Self::escape_scan_call_args(tag, escaping);
                 }
                 for clause in &sw.block.body {
                     for s in clause.body.iter() {
@@ -2122,6 +2126,13 @@ impl WasmCompiler {
             ast::Expression::Operation(op) if op.y.is_none() => {
                 Self::mark_expr_escaping(&op.x, escaping);
             }
+            ast::Expression::Selector(sel) => Self::mark_expr_escaping(&sel.x, escaping),
+            ast::Expression::Index(idx) => {
+                if let Some(ref left) = idx.left {
+                    Self::mark_expr_escaping(left, escaping);
+                }
+            }
+            ast::Expression::Slice(sl) => Self::mark_expr_escaping(&sl.left, escaping),
             _ => {}
         }
     }
@@ -2158,6 +2169,21 @@ impl WasmCompiler {
                 Self::collect_free_vars_block(&fl.body, &mut HashSet::new(), &mut captured);
                 for name in &captured {
                     escaping.insert(name.clone());
+                }
+            }
+            ast::Expression::Selector(sel) => Self::escape_scan_call_args(&sel.x, escaping),
+            ast::Expression::Index(idx) => {
+                if let Some(ref left) = idx.left {
+                    Self::escape_scan_call_args(left, escaping);
+                }
+                Self::escape_scan_call_args(&idx.index, escaping);
+            }
+            ast::Expression::Slice(sl) => {
+                Self::escape_scan_call_args(&sl.left, escaping);
+                for opt_idx in &sl.index {
+                    if let Some(e) = opt_idx {
+                        Self::escape_scan_call_args(e, escaping);
+                    }
                 }
             }
             _ => {}
@@ -2218,6 +2244,16 @@ impl WasmCompiler {
             }
             ast::Statement::Range(range_stmt) => {
                 Self::collect_free_vars_expr(&range_stmt.expr, bound, free);
+                let is_define = range_stmt.op.as_ref()
+                    .map_or(false, |(_, op)| matches!(op, Operator::Define));
+                if is_define {
+                    if let Some(ast::Expression::Ident(k)) = &range_stmt.key {
+                        bound.insert(k.name.clone());
+                    }
+                    if let Some(ast::Expression::Ident(v)) = &range_stmt.value {
+                        bound.insert(v.name.clone());
+                    }
+                }
                 Self::collect_free_vars_block(&range_stmt.body, bound, free);
             }
             ast::Statement::Block(block) => {
@@ -3863,7 +3899,17 @@ impl WasmCompiler {
                                     if matches!(comp.typ.as_ref(),
                                         ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name))
                             );
-                            if is_struct_lit {
+                            let is_addr_of_struct_lit = matches!(
+                                &assign.right[i],
+                                ast::Expression::Operation(op)
+                                    if op.y.is_none()
+                                        && matches!(op.op, Operator::And)
+                                        && matches!(op.x.as_ref(),
+                                            ast::Expression::CompositeLit(comp)
+                                                if matches!(comp.typ.as_ref(),
+                                                    ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name)))
+                            );
+                            if is_struct_lit || is_addr_of_struct_lit {
                                 self.stack_alloc_target = Some(ident.name.clone());
                             }
                         }
@@ -6892,7 +6938,17 @@ impl WasmCompiler {
                                         if matches!(comp.typ.as_ref(),
                                             ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name))
                                 );
-                                if is_struct_lit {
+                                let is_addr_of_struct_lit = matches!(
+                                    &spec.values[i],
+                                    ast::Expression::Operation(op)
+                                        if op.y.is_none()
+                                            && matches!(op.op, Operator::And)
+                                            && matches!(op.x.as_ref(),
+                                                ast::Expression::CompositeLit(comp)
+                                                    if matches!(comp.typ.as_ref(),
+                                                        ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name)))
+                                );
+                                if is_struct_lit || is_addr_of_struct_lit {
                                     self.stack_alloc_target = Some(ident.name.clone());
                                 }
                             }
@@ -6928,13 +6984,14 @@ impl WasmCompiler {
                                     let size = sd.total_size as i32;
                                     let used_stack = if let Some(sf) = &self.current_stack_frame {
                                         if let Some(sl) = sf.find(&ident.name) {
-                                            let fb = sf.frame_base_local.unwrap();
-                                            out.push(Instruction::LocalGet(fb));
-                                            if sl.offset > 0 {
-                                                out.push(Instruction::I32Const(sl.offset as i32));
-                                                out.push(Instruction::I32Add);
-                                            }
-                                            true
+                                            if let Some(fb) = sf.frame_base_local {
+                                                out.push(Instruction::LocalGet(fb));
+                                                if sl.offset > 0 {
+                                                    out.push(Instruction::I32Const(sl.offset as i32));
+                                                    out.push(Instruction::I32Add);
+                                                }
+                                                true
+                                            } else { false }
                                         } else { false }
                                     } else { false };
                                     if !used_stack {
@@ -13631,13 +13688,16 @@ impl WasmCompiler {
         let used_stack = if let Some(ref target) = self.stack_alloc_target.take() {
             if let Some(sf) = &self.current_stack_frame {
                 if let Some(sl) = sf.find(target) {
-                    let fb = sf.frame_base_local.unwrap();
-                    out.push(Instruction::LocalGet(fb));
-                    if sl.offset > 0 {
-                        out.push(Instruction::I32Const(sl.offset as i32));
-                        out.push(Instruction::I32Add);
+                    if let Some(fb) = sf.frame_base_local {
+                        out.push(Instruction::LocalGet(fb));
+                        if sl.offset > 0 {
+                            out.push(Instruction::I32Const(sl.offset as i32));
+                            out.push(Instruction::I32Add);
+                        }
+                        true
+                    } else {
+                        false
                     }
-                    true
                 } else {
                     false
                 }
