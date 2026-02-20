@@ -49,6 +49,7 @@ struct StructFieldDef {
     name: String,
     wasm_type: WasmType,
     offset: u32,
+    go_type_tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +97,8 @@ struct MapTypeInfo {
 
 struct LocalAlloc {
     params: Vec<(String, ValType)>,
-    locals: Vec<(String, ValType)>,
+    locals: Vec<(String, ValType, u32)>,
+    scope_depth: u32,
     var_types: HashMap<String, String>,
     closure_info: HashMap<String, (u32, u32)>,
     slice_elem_types: HashMap<String, ValType>,
@@ -111,6 +113,7 @@ impl LocalAlloc {
         Self {
             params,
             locals: Vec::new(),
+            scope_depth: 0,
             var_types: HashMap::new(),
             closure_info: HashMap::new(),
             slice_elem_types: HashMap::new(),
@@ -125,9 +128,17 @@ impl LocalAlloc {
         self.params.len() as u32
     }
 
+    fn push_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn pop_scope(&mut self) {
+        self.scope_depth = self.scope_depth.saturating_sub(1);
+    }
+
     fn add_local(&mut self, name: &str, vt: ValType) -> u32 {
         let idx = self.param_count() + self.locals.len() as u32;
-        self.locals.push((name.to_string(), vt));
+        self.locals.push((name.to_string(), vt, self.scope_depth));
         idx
     }
 
@@ -137,9 +148,21 @@ impl LocalAlloc {
                 return Some(i as u32);
             }
         }
-        for (i, (n, _)) in self.locals.iter().enumerate() {
-            if n == name {
+        for (i, (n, _, depth)) in self.locals.iter().enumerate().rev() {
+            if n == name && *depth <= self.scope_depth {
                 return Some(self.param_count() + i as u32);
+            }
+        }
+        None
+    }
+
+    fn find_at_current_scope(&self, name: &str) -> Option<u32> {
+        for (i, (n, _, depth)) in self.locals.iter().enumerate().rev() {
+            if n == name && *depth == self.scope_depth {
+                return Some(self.param_count() + i as u32);
+            }
+            if n == name && *depth < self.scope_depth {
+                return None;
             }
         }
         None
@@ -151,8 +174,8 @@ impl LocalAlloc {
                 return Some(*vt);
             }
         }
-        for (n, vt) in &self.locals {
-            if n == name {
+        for (n, vt, depth) in self.locals.iter().rev() {
+            if n == name && *depth <= self.scope_depth {
                 return Some(*vt);
             }
         }
@@ -160,7 +183,7 @@ impl LocalAlloc {
     }
 
     fn local_types(&self) -> Vec<(u32, ValType)> {
-        self.locals.iter().map(|(_, vt)| (1, *vt)).collect()
+        self.locals.iter().map(|(_, vt, _)| (1, *vt)).collect()
     }
 
     fn set_var_struct_type(&mut self, name: &str, type_name: &str) {
@@ -174,8 +197,8 @@ impl LocalAlloc {
     fn all_entries(&self) -> Vec<(String, ValType)> {
         self.params
             .iter()
-            .chain(self.locals.iter())
             .cloned()
+            .chain(self.locals.iter().map(|(n, vt, _)| (n.clone(), *vt)))
             .collect()
     }
 }
@@ -695,6 +718,7 @@ impl WasmCompiler {
                             name: embed_name,
                             wasm_type: WasmType::I32,
                             offset: embed_offset,
+                            go_type_tag: None,
                         });
                         for inner_field in &inner_def.fields {
                             let abs_offset = embed_offset + inner_field.offset;
@@ -702,6 +726,7 @@ impl WasmCompiler {
                                 name: inner_field.name.clone(),
                                 wasm_type: inner_field.wasm_type,
                                 offset: abs_offset,
+                                go_type_tag: inner_field.go_type_tag.clone(),
                             });
                         }
                         offset += inner_def.total_size;
@@ -717,6 +742,14 @@ impl WasmCompiler {
                 field.name.iter().map(|n| n.name.clone()).collect()
             };
 
+            let go_type_tag = match &field.typ {
+                ast::Expression::TypeSlice(_) => Some("__slice".to_string()),
+                ast::Expression::TypeMap(_) => Some("__map".to_string()),
+                ast::Expression::Ident(id) if id.name == "string" => Some("__string".to_string()),
+                ast::Expression::TypePointer(_) => Some("__ptr".to_string()),
+                _ => None,
+            };
+
             for name in &names {
                 if wasm_types.len() == 1 {
                     let wt = wasm_types[0];
@@ -727,6 +760,7 @@ impl WasmCompiler {
                         name: name.clone(),
                         wasm_type: wt,
                         offset,
+                        go_type_tag: go_type_tag.clone(),
                     });
                     offset += size;
                 } else {
@@ -742,6 +776,7 @@ impl WasmCompiler {
                             },
                             wasm_type: wt,
                             offset,
+                            go_type_tag: if i == 0 { go_type_tag.clone() } else { None },
                         });
                         offset += size;
                     }
@@ -842,9 +877,7 @@ impl WasmCompiler {
                 LitKind::Integer => Self::parse_go_int(&lit.value).ok().map(ConstValue::I64),
                 LitKind::Float => lit.value.parse::<f64>().ok().map(ConstValue::F64),
                 LitKind::String => {
-                    let s = lit.value.trim_matches('"');
-                    let bytes = Self::unescape_go_string(s);
-                    String::from_utf8(bytes).ok().map(ConstValue::Str)
+                    Self::extract_string_content(&lit.value).map(ConstValue::Str)
                 }
                 LitKind::Char => {
                     let s = lit.value.trim_matches('\'');
@@ -1228,6 +1261,13 @@ impl WasmCompiler {
 
         // Track struct types and signedness for parameters
         for field in &decl.typ.params.list {
+            if let ast::Expression::TypeSlice(slice_type) = &field.typ {
+                let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                for name_ident in &field.name {
+                    locals.set_var_struct_type(&name_ident.name, "__slice");
+                    locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
+                }
+            }
             if let ast::Expression::Ident(type_ident) = &field.typ {
                 if self.struct_defs.contains_key(&type_ident.name) {
                     for name_ident in &field.name {
@@ -1370,9 +1410,11 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        locals.push_scope();
         for stmt in &block.list {
             self.compile_statement(stmt, out, locals, result_types)?;
         }
+        locals.pop_scope();
         Ok(())
     }
 
@@ -1400,7 +1442,7 @@ impl WasmCompiler {
                     }
                 }
                 self.compile_expression(&expr_stmt.expr, out, locals)?;
-                let wasm_types = self.expression_result_count(&expr_stmt.expr);
+                let wasm_types = self.expression_result_count(&expr_stmt.expr, Some(locals));
                 for _ in 0..wasm_types {
                     out.push(Instruction::Drop);
                 }
@@ -1425,6 +1467,11 @@ impl WasmCompiler {
                 self.compile_decl_stmt(decl_stmt, out, locals)
             }
             ast::Statement::Defer(defer) => {
+                if self.loop_depth.iter().any(|(_, _, _, is_loop)| *is_loop) {
+                    return Err(Error::InternalError(
+                        "defer inside a loop is not supported; move the defer outside the loop or refactor".to_string(),
+                    ));
+                }
                 // Compile arguments eagerly at the defer site
                 let mut arg_locals = Vec::new();
                 for arg in &defer.call.args {
@@ -1538,6 +1585,18 @@ impl WasmCompiler {
                     ast::Statement::Range(range) => {
                         self.compile_range_labeled(
                             range, out, locals, result_types,
+                            Some(labeled.name.name.clone()),
+                        )
+                    }
+                    ast::Statement::Switch(sw) => {
+                        self.compile_switch_labeled(
+                            sw, out, locals, result_types,
+                            Some(labeled.name.name.clone()),
+                        )
+                    }
+                    ast::Statement::TypeSwitch(ts) => {
+                        self.compile_type_switch_labeled(
+                            ts, out, locals, result_types,
                             Some(labeled.name.name.clone()),
                         )
                     }
@@ -1678,7 +1737,11 @@ impl WasmCompiler {
                         ValType::I32
                     };
 
-                    let local_idx = locals.add_local(&ident.name, vt);
+                    let local_idx = if let Some(existing) = locals.find_at_current_scope(&ident.name) {
+                        existing
+                    } else {
+                        locals.add_local(&ident.name, vt)
+                    };
 
                     if i < assign.right.len() {
                         // Track struct type from composite literals
@@ -1836,6 +1899,8 @@ impl WasmCompiler {
                             if let ast::Expression::TypeArray(arr_type) = comp.typ.as_ref() {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
                                     Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                } else if matches!(arr_type.len.as_ref(), ast::Expression::Ellipsis(_)) {
+                                    comp.val.values.len() as u32
                                 } else { 0 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
@@ -2473,7 +2538,7 @@ impl WasmCompiler {
             out.push(Instruction::LocalSet(base_ptr_local));
         } else {
             // Check how many values the expression pushed
-            let expr_count = self.expression_result_count(&range.expr);
+            let expr_count = self.expression_result_count(&range.expr, Some(locals));
             if expr_count >= 3 {
                 // Slice: (ptr, len, cap) -> store cap, len, ptr
                 out.push(Instruction::Drop); // cap
@@ -3200,6 +3265,26 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn compile_type_switch_labeled(
+        &mut self,
+        ts: &ast::TypeSwitchStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        label: Option<String>,
+    ) -> Result<(), Error> {
+        if label.is_some() {
+            out.push(Instruction::Block(BlockType::Empty));
+            self.loop_depth.push((label, 0, false, false));
+        }
+        let r = self.compile_type_switch(ts, out, locals, result_types);
+        if self.loop_depth.last().map_or(false, |e| !e.3 && e.0.is_some()) {
+            self.loop_depth.pop();
+            out.push(Instruction::End);
+        }
+        r
+    }
+
     fn compile_type_switch(
         &mut self,
         ts: &ast::TypeSwitchStmt,
@@ -3592,6 +3677,75 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn emit_string_eq_from_locals(
+        tag_ptr: u32,
+        tag_len: u32,
+        case_ptr: u32,
+        case_len: u32,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) {
+        let result = locals.add_local(
+            &format!("__sw_seq_r_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        let idx = locals.add_local(
+            &format!("__sw_seq_i_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::LocalSet(result));
+        out.push(Instruction::LocalGet(tag_len));
+        out.push(Instruction::LocalGet(case_len));
+        out.push(Instruction::I32Ne);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(result));
+        out.push(Instruction::Else);
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Block(BlockType::Empty));
+        out.push(Instruction::Loop(BlockType::Empty));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::LocalGet(tag_len));
+        out.push(Instruction::I32GeU);
+        out.push(Instruction::BrIf(1));
+        out.push(Instruction::LocalGet(tag_ptr));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        out.push(Instruction::LocalGet(case_ptr));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        out.push(Instruction::I32Ne);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(result));
+        out.push(Instruction::Br(2));
+        out.push(Instruction::End);
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Br(0));
+        out.push(Instruction::End); // loop
+        out.push(Instruction::End); // block
+        out.push(Instruction::End); // else
+        out.push(Instruction::LocalGet(result));
+    }
+
+    fn compile_switch_labeled(
+        &mut self,
+        switch: &ast::SwitchStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        label: Option<String>,
+    ) -> Result<(), Error> {
+        self.compile_switch_inner(switch, out, locals, result_types, label)
+    }
+
     fn compile_switch(
         &mut self,
         switch: &ast::SwitchStmt,
@@ -3599,17 +3753,48 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        self.compile_switch_inner(switch, out, locals, result_types, None)
+    }
+
+    fn compile_switch_inner(
+        &mut self,
+        switch: &ast::SwitchStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        label: Option<String>,
+    ) -> Result<(), Error> {
         if let Some(init) = &switch.init {
             self.compile_statement(init, out, locals, result_types)?;
         }
 
+        let is_string_tag = switch.tag.as_ref().map_or(false, |t| self.is_string_expr(t, locals));
+
+        let tag_str_ptr: Option<u32>;
+        let tag_str_len: Option<u32>;
+
         let (tag_local, tag_vt) = if let Some(tag) = &switch.tag {
-            let vt = self.infer_val_type(tag, locals);
-            let local = locals.add_local("__switch_tag", vt);
-            self.compile_expression(tag, out, locals)?;
-            out.push(Instruction::LocalSet(local));
-            (Some(local), vt)
+            if is_string_tag {
+                let ptr_l = locals.add_local("__switch_tag_ptr", ValType::I32);
+                let len_l = locals.add_local("__switch_tag_len", ValType::I32);
+                self.compile_expression(tag, out, locals)?;
+                out.push(Instruction::LocalSet(len_l));
+                out.push(Instruction::LocalSet(ptr_l));
+                tag_str_ptr = Some(ptr_l);
+                tag_str_len = Some(len_l);
+                (None, ValType::I32)
+            } else {
+                tag_str_ptr = None;
+                tag_str_len = None;
+                let vt = self.infer_val_type(tag, locals);
+                let local = locals.add_local("__switch_tag", vt);
+                self.compile_expression(tag, out, locals)?;
+                out.push(Instruction::LocalSet(local));
+                (Some(local), vt)
+            }
         } else {
+            tag_str_ptr = None;
+            tag_str_len = None;
             (None, ValType::I32)
         };
 
@@ -3652,7 +3837,7 @@ impl WasmCompiler {
         });
 
         out.push(Instruction::Block(BlockType::Empty));
-        self.loop_depth.push((None, 0, false, false));
+        self.loop_depth.push((label, 0, false, false));
 
         if has_fallthrough {
             let matched = locals.add_local("__sw_matched", ValType::I32);
@@ -3665,7 +3850,23 @@ impl WasmCompiler {
             for case in non_default_cases.iter() {
                 let mut first = true;
                 for expr in &case.list {
-                    if let Some(tag_l) = tag_local {
+                    if is_string_tag {
+                        let cp = locals.add_local(
+                            &format!("__sw_cp_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        let cl = locals.add_local(
+                            &format!("__sw_cl_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        self.compile_expression(expr, out, locals)?;
+                        out.push(Instruction::LocalSet(cl));
+                        out.push(Instruction::LocalSet(cp));
+                        Self::emit_string_eq_from_locals(
+                            tag_str_ptr.unwrap(), tag_str_len.unwrap(),
+                            cp, cl, out, locals,
+                        );
+                    } else if let Some(tag_l) = tag_local {
                         out.push(Instruction::LocalGet(tag_l));
                         self.compile_expression(expr, out, locals)?;
                         let case_vt = self.infer_val_type(expr, locals);
@@ -3730,7 +3931,23 @@ impl WasmCompiler {
             for (i, case) in non_default_cases.iter().enumerate() {
                 let mut first = true;
                 for expr in &case.list {
-                    if let Some(tag_l) = tag_local {
+                    if is_string_tag {
+                        let cp = locals.add_local(
+                            &format!("__sw_cp_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        let cl = locals.add_local(
+                            &format!("__sw_cl_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        self.compile_expression(expr, out, locals)?;
+                        out.push(Instruction::LocalSet(cl));
+                        out.push(Instruction::LocalSet(cp));
+                        Self::emit_string_eq_from_locals(
+                            tag_str_ptr.unwrap(), tag_str_len.unwrap(),
+                            cp, cl, out, locals,
+                        );
+                    } else if let Some(tag_l) = tag_local {
                         out.push(Instruction::LocalGet(tag_l));
                         self.compile_expression(expr, out, locals)?;
                         let case_vt = self.infer_val_type(expr, locals);
@@ -3872,12 +4089,25 @@ impl WasmCompiler {
         let inner_extra = self.loop_depth[innermost].1;
 
         let mut intermediate_depth: u32 = 0;
-        for i in (target_idx + 1..=innermost).rev() {
-            let entry = &self.loop_depth[i];
+
+        if innermost > target_idx {
+            // Add block levels for the innermost entry (its internal depth
+            // is already accounted for by inner_extra, so exclude entry.1).
+            let entry = &self.loop_depth[innermost];
             if entry.3 {
                 intermediate_depth += 2 + entry.2 as u32;
             } else {
-                intermediate_depth += 1 + entry.1;
+                intermediate_depth += 1;
+            }
+
+            // Add full contribution for entries between target and innermost
+            for i in (target_idx + 1..innermost).rev() {
+                let entry = &self.loop_depth[i];
+                if entry.3 {
+                    intermediate_depth += 2 + entry.2 as u32 + entry.1;
+                } else {
+                    intermediate_depth += 1 + entry.1;
+                }
             }
         }
 
@@ -3889,7 +4119,7 @@ impl WasmCompiler {
                     let depth = inner_extra + intermediate_depth + target_has_post + 1;
                     out.push(Instruction::Br(depth));
                 } else {
-                    let depth = inner_extra + intermediate_depth + target.1;
+                    let depth = inner_extra + intermediate_depth;
                     out.push(Instruction::Br(depth));
                 }
             }
@@ -4342,8 +4572,7 @@ impl WasmCompiler {
                 out.push(Instruction::F64Const(val));
             }
             LitKind::String => {
-                let s = lit.value.trim_matches('"');
-                let bytes = Self::unescape_go_string(s);
+                let bytes = Self::extract_string_bytes(&lit.value);
                 let len = bytes.len() as i32;
 
                 out.push(Instruction::I32Const(len));
@@ -4420,6 +4649,26 @@ impl WasmCompiler {
             }
         }
         Ok(())
+    }
+
+    fn extract_string_bytes(lit_value: &str) -> Vec<u8> {
+        if lit_value.starts_with('`') {
+            let s = lit_value.trim_matches('`');
+            s.as_bytes().to_vec()
+        } else {
+            let s = lit_value.trim_matches('"');
+            Self::unescape_go_string(s)
+        }
+    }
+
+    fn extract_string_content(lit_value: &str) -> Option<String> {
+        if lit_value.starts_with('`') {
+            Some(lit_value.trim_matches('`').to_string())
+        } else {
+            let s = lit_value.trim_matches('"');
+            let bytes = Self::unescape_go_string(s);
+            String::from_utf8(bytes).ok()
+        }
     }
 
     fn unescape_go_string(s: &str) -> Vec<u8> {
@@ -4898,6 +5147,32 @@ impl WasmCompiler {
         Ok(())
     }
 
+    fn is_selector_slice_field(&self, sel: &ast::Selector, locals: &LocalAlloc) -> bool {
+        if let ast::Expression::Ident(recv) = sel.x.as_ref() {
+            if let Some(type_name) = locals.get_var_struct_type(&recv.name) {
+                if let Some(struct_def) = self.struct_defs.get(type_name) {
+                    if let Some(field) = struct_def.find_field(&sel.sel.name) {
+                        return field.go_type_tag.as_deref() == Some("__slice");
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn is_selector_map_field(&self, sel: &ast::Selector, locals: &LocalAlloc) -> bool {
+        if let ast::Expression::Ident(recv) = sel.x.as_ref() {
+            if let Some(type_name) = locals.get_var_struct_type(&recv.name) {
+                if let Some(struct_def) = self.struct_defs.get(type_name) {
+                    if let Some(field) = struct_def.find_field(&sel.sel.name) {
+                        return field.go_type_tag.as_deref() == Some("__map");
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn is_string_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         match expr {
             ast::Expression::BasicLit(lit) => lit.kind == LitKind::String,
@@ -5183,6 +5458,26 @@ impl WasmCompiler {
                     ValType::F32 => out.push(Instruction::F32Load(mem_arg)),
                     ValType::F64 => out.push(Instruction::F64Load(mem_arg)),
                     _ => out.push(Instruction::I32Load(mem_arg)),
+                }
+            }
+            Operator::Xor => {
+                let vt = self.infer_val_type(&op.x, locals);
+                self.compile_expression(&op.x, out, locals)?;
+                match vt {
+                    ValType::I64 => {
+                        out.push(Instruction::I64Const(-1));
+                        out.push(Instruction::I64Xor);
+                    }
+                    ValType::I32 => {
+                        out.push(Instruction::I32Const(-1));
+                        out.push(Instruction::I32Xor);
+                    }
+                    _ => {
+                        return Err(Error::InternalError(format!(
+                            "unsupported type for unary bitwise complement: {:?}",
+                            vt
+                        )));
+                    }
                 }
             }
             Operator::And => {
@@ -5701,6 +5996,28 @@ impl WasmCompiler {
         }
 
         if !done {
+            if let ast::Expression::Selector(sel) = arg {
+                if self.is_selector_slice_field(sel, locals) {
+                    self.compile_expression(arg, out, locals)?;
+                    out.push(Instruction::I32Load(MemArg {
+                        offset: 4,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    done = true;
+                } else if self.is_selector_map_field(sel, locals) {
+                    self.compile_expression(arg, out, locals)?;
+                    out.push(Instruction::I32Load(MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    done = true;
+                }
+            }
+        }
+
+        if !done {
             // Non-string Slice expressions produce a header pointer; load len from header[4]
             let is_non_string_slice = matches!(arg, ast::Expression::Slice(_))
                 && !self.is_string_expr(arg, locals);
@@ -5714,7 +6031,7 @@ impl WasmCompiler {
                     memory_index: 0,
                 }));
             } else {
-                let result_count = self.expression_result_count(arg);
+                let result_count = self.expression_result_count(arg, Some(locals));
                 if result_count >= 3 {
                     out.push(Instruction::Drop); // cap
                     let len_tmp = locals.add_local(
@@ -5782,7 +6099,7 @@ impl WasmCompiler {
                     memory_index: 0,
                 }));
             } else {
-                let result_count = self.expression_result_count(arg);
+                let result_count = self.expression_result_count(arg, Some(locals));
                 if result_count >= 3 {
                     let cap_tmp = locals.add_local(
                         &format!("__cap_tmp_{}", locals.locals.len()),
@@ -6462,12 +6779,20 @@ impl WasmCompiler {
                         return Ok(());
                     }
                     "recover" => {
-                        // Check panicking flag and clear it if set
+                        let recovered = locals.add_local(
+                            &format!("__recover_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::I32Const(0));
+                        out.push(Instruction::LocalSet(recovered));
                         out.push(Instruction::GlobalGet(self.panicking_global));
                         out.push(Instruction::If(BlockType::Empty));
                         out.push(Instruction::I32Const(0));
                         out.push(Instruction::GlobalSet(self.panicking_global));
+                        out.push(Instruction::I32Const(1));
+                        out.push(Instruction::LocalSet(recovered));
                         out.push(Instruction::End);
+                        out.push(Instruction::LocalGet(recovered));
                         return Ok(());
                     }
                     "int" | "int64" => {
@@ -6671,6 +6996,12 @@ impl WasmCompiler {
                                     )));
                                 }
                             }
+                        }
+                        return Ok(());
+                    }
+                    "bool" => {
+                        if let Some(arg) = call.args.first() {
+                            self.compile_expression(arg, out, locals)?;
                         }
                         return Ok(());
                     }
@@ -7129,19 +7460,52 @@ impl WasmCompiler {
                                 "delete() requires 2 arguments: map and key".to_string(),
                             ));
                         }
-                        if let ast::Expression::Ident(map_ident) = &call.args[0] {
-                            let map_name = map_ident.name.clone();
-                            let key_expr = call.args[1].clone();
-                            self.compile_map_delete(&map_name, &key_expr, out, locals)?;
-                        } else {
-                            return Err(Error::InternalError(
-                                "delete() first argument must be a map variable".to_string(),
-                            ));
-                        }
+                        let map_name = match &call.args[0] {
+                            ast::Expression::Ident(id) => id.name.clone(),
+                            ast::Expression::Selector(sel) => {
+                                if let ast::Expression::Ident(recv) = sel.x.as_ref() {
+                                    let synth = format!("{}.{}", recv.name, sel.sel.name);
+                                    if locals.map_types.contains_key(&synth) {
+                                        synth
+                                    } else {
+                                        return Err(Error::InternalError(
+                                            "delete() first argument: map type info not found for selector expression".to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    return Err(Error::InternalError(
+                                        "delete() first argument must be a map variable".to_string(),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(Error::InternalError(
+                                    "delete() first argument must be a map variable".to_string(),
+                                ));
+                            }
+                        };
+                        let key_expr = call.args[1].clone();
+                        self.compile_map_delete(&map_name, &key_expr, out, locals)?;
                         return Ok(());
                     }
                     "clear" => {
                         if let Some(arg) = call.args.first() {
+                            if let ast::Expression::Selector(_sel) = arg {
+                                self.compile_expression(arg, out, locals)?;
+                                let hdr_local = locals.add_local(
+                                    &format!("__clr_sel_hdr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(hdr_local));
+                                out.push(Instruction::LocalGet(hdr_local));
+                                out.push(Instruction::I32Const(0));
+                                out.push(Instruction::I32Store(MemArg {
+                                    offset: 4,
+                                    align: 2,
+                                    memory_index: 0,
+                                }));
+                                return Ok(());
+                            }
                             if let ast::Expression::Ident(ident_arg) = arg {
                                 if let Some(local_idx) = locals.find(&ident_arg.name) {
                                     let struct_type = locals.get_var_struct_type(&ident_arg.name);
@@ -8304,6 +8668,8 @@ impl WasmCompiler {
     ) -> Result<(), Error> {
         let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
             Self::parse_go_int(&lit.value).map_err(|e| Error::SyntaxError(e))? as u32
+        } else if matches!(arr_type.len.as_ref(), ast::Expression::Ellipsis(_)) {
+            lit_val.values.len() as u32
         } else {
             return Err(Error::InternalError("array length must be a constant".to_string()));
         };
@@ -8773,7 +9139,7 @@ impl WasmCompiler {
             out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
             out.push(Instruction::LocalSet(orig_cap_local));
         } else {
-            let expr_count = self.expression_result_count(&slice.left);
+            let expr_count = self.expression_result_count(&slice.left, Some(locals));
             if expr_count >= 3 {
                 out.push(Instruction::LocalSet(orig_cap_local));
                 out.push(Instruction::LocalSet(orig_len_local));
@@ -10456,6 +10822,12 @@ impl WasmCompiler {
                     out.push(Instruction::LocalGet(*local_idx));
                 }
                 out.push(Instruction::Call(call.func_idx));
+                let n_results = self.functions.iter()
+                    .find(|f| f.wasm_func_idx == call.func_idx)
+                    .map_or(0, |f| f.results.len());
+                for _ in 0..n_results {
+                    out.push(Instruction::Drop);
+                }
             }
         }
     }
@@ -10784,7 +11156,7 @@ impl WasmCompiler {
                         "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32" | "bool" | "uintptr" => ValType::I32,
                         "len" | "cap" => ValType::I64,
-                        "make" | "append" | "new" | "complex" => ValType::I32,
+                        "make" | "append" | "new" | "complex" | "recover" => ValType::I32,
                         "copy" => ValType::I64,
                         "string" => ValType::I32,
                         "real" => {
@@ -10956,7 +11328,8 @@ impl WasmCompiler {
             }
             ast::Statement::Block(block) => Self::block_always_returns(&block.list),
             ast::Statement::For(for_stmt) => {
-                for_stmt.cond.is_none() && !Self::block_contains_break(&for_stmt.body.list)
+                for_stmt.cond.is_none()
+                    && !Self::block_contains_break(&for_stmt.body.list, None)
             }
             ast::Statement::Switch(sw) => {
                 let has_default = sw.block.body.iter().any(|c| c.tok == Keyword::Default);
@@ -10972,7 +11345,17 @@ impl WasmCompiler {
                 }
                 ts.block.body.iter().all(|c| Self::case_body_terminates(&c.body))
             }
-            ast::Statement::Label(labeled) => Self::stmt_always_returns(&labeled.stmt),
+            ast::Statement::Label(labeled) => {
+                if let ast::Statement::For(for_stmt) = labeled.stmt.as_ref() {
+                    for_stmt.cond.is_none()
+                        && !Self::block_contains_break(
+                            &for_stmt.body.list,
+                            Some(&labeled.name.name),
+                        )
+                } else {
+                    Self::stmt_always_returns(&labeled.stmt)
+                }
+            }
             _ => false,
         }
     }
@@ -10986,27 +11369,94 @@ impl WasmCompiler {
         false
     }
 
-    fn block_contains_break(stmts: &[ast::Statement]) -> bool {
+    fn block_contains_break(stmts: &[ast::Statement], for_label: Option<&str>) -> bool {
         for stmt in stmts {
             match stmt {
-                ast::Statement::Branch(b) if b.key == Keyword::Break && b.ident.is_none() => {
-                    return true;
+                ast::Statement::Branch(b) if b.key == Keyword::Break => {
+                    if b.ident.is_none() {
+                        return true;
+                    }
+                    if let (Some(brk_label), Some(fl)) = (&b.ident, for_label) {
+                        if brk_label.name == fl {
+                            return true;
+                        }
+                    }
                 }
                 ast::Statement::If(if_stmt) => {
-                    if Self::block_contains_break(&if_stmt.body.list) {
+                    if Self::block_contains_break(&if_stmt.body.list, for_label) {
                         return true;
                     }
                     if let Some(ref els) = if_stmt.else_ {
                         if let ast::Statement::Block(block) = els.as_ref() {
-                            if Self::block_contains_break(&block.list) {
+                            if Self::block_contains_break(&block.list, for_label) {
                                 return true;
                             }
                         }
                     }
                 }
                 ast::Statement::Block(block) => {
-                    if Self::block_contains_break(&block.list) {
+                    if Self::block_contains_break(&block.list, for_label) {
                         return true;
+                    }
+                }
+                ast::Statement::Switch(sw) if for_label.is_some() => {
+                    for case in &sw.block.body {
+                        if Self::block_contains_labeled_break(&case.body, for_label.unwrap()) {
+                            return true;
+                        }
+                    }
+                }
+                ast::Statement::TypeSwitch(ts) if for_label.is_some() => {
+                    for case in &ts.block.body {
+                        if Self::block_contains_labeled_break(&case.body, for_label.unwrap()) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn block_contains_labeled_break(stmts: &[ast::Statement], label: &str) -> bool {
+        for stmt in stmts {
+            match stmt {
+                ast::Statement::Branch(b)
+                    if b.key == Keyword::Break
+                        && b.ident.as_ref().map_or(false, |id| id.name == label) =>
+                {
+                    return true;
+                }
+                ast::Statement::If(if_stmt) => {
+                    if Self::block_contains_labeled_break(&if_stmt.body.list, label) {
+                        return true;
+                    }
+                    if let Some(ref els) = if_stmt.else_ {
+                        if let ast::Statement::Block(block) = els.as_ref() {
+                            if Self::block_contains_labeled_break(&block.list, label) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                ast::Statement::Block(block) => {
+                    if Self::block_contains_labeled_break(&block.list, label) {
+                        return true;
+                    }
+                }
+                ast::Statement::Switch(sw) => {
+                    for case in &sw.block.body {
+                        if Self::block_contains_labeled_break(&case.body, label) {
+                            return true;
+                        }
+                    }
+                }
+                ast::Statement::TypeSwitch(ts) => {
+                    for case in &ts.block.body {
+                        if Self::block_contains_labeled_break(&case.body, label) {
+                            return true;
+                        }
                     }
                 }
                 _ => {}
@@ -11061,20 +11511,22 @@ impl WasmCompiler {
         }
     }
 
-    fn expression_result_count(&self, expr: &ast::Expression) -> usize {
+    fn expression_result_count(&self, expr: &ast::Expression, locals: Option<&LocalAlloc>) -> usize {
         match expr {
             ast::Expression::Call(call) => {
                 if let ast::Expression::Ident(ident) = call.func.as_ref() {
                     match ident.name.as_str() {
-                        "panic" | "println" | "print" | "delete" | "clear" | "recover" => 0,
+                        "panic" | "println" | "print" | "delete" | "clear" => 0,
+                        "recover" => 1,
                         "len" | "cap" | "copy" | "make" | "append"
                         | "int" | "int64" | "uint" | "uint64"
                         | "float64" | "float32"
                         | "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32"
-                        | "string" | "bool"
+                        | "bool"
                         | "new" | "min" | "max"
                         | "complex" | "real" | "imag" => 1,
+                        "string" => 2,
                         _ => {
                             if let Some(fi) =
                                 self.functions.iter().find(|f| f.name == ident.name)
@@ -11086,11 +11538,27 @@ impl WasmCompiler {
                         }
                     }
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
-                    if let ast::Expression::Ident(_pkg) = sel.x.as_ref() {
+                    if let ast::Expression::Ident(_recv_ident) = sel.x.as_ref() {
                         match sel.sel.name.as_str() {
                             "Log" => 0,
                             "QueryID" | "Database" | "Schema" | "User" | "Config" => 2,
-                            _ => 1,
+                            _ => {
+                                if let Some(loc) = locals {
+                                    if let Some(qualified) = self.resolve_selector_method_name(sel, loc) {
+                                        if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                                            return fi.results.len();
+                                        }
+                                    }
+                                }
+                                let method_name = &sel.sel.name;
+                                if let Some(fi) = self.functions.iter().find(|f| {
+                                    f.name.ends_with(&format!(".{}", method_name))
+                                }) {
+                                    fi.results.len()
+                                } else {
+                                    1
+                                }
+                            }
                         }
                     } else {
                         1
@@ -11114,15 +11582,39 @@ impl WasmCompiler {
         }
     }
 
-    fn call_return_val_types(&self, expr: &ast::Expression, _locals: &LocalAlloc) -> Vec<ValType> {
+    fn call_return_val_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<ValType> {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
                     return fi.results.iter().map(|wt| wt.to_val_type()).collect();
                 }
             }
+            if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
+                    if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                        return fi.results.iter().map(|wt| wt.to_val_type()).collect();
+                    }
+                }
+            }
         }
         vec![]
+    }
+
+    fn resolve_selector_method_name(&self, sel: &ast::Selector, locals: &LocalAlloc) -> Option<String> {
+        if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
+            if let Some(type_name) = locals.get_var_struct_type(&recv_ident.name) {
+                let resolved = self.resolve_type_name(type_name);
+                let qualified = format!("{}.{}", resolved, sel.sel.name);
+                if self.functions.iter().any(|f| f.name == qualified) {
+                    return Some(qualified);
+                }
+            }
+            let qualified = format!("{}.{}", recv_ident.name, sel.sel.name);
+            if self.functions.iter().any(|f| f.name == qualified) {
+                return Some(qualified);
+            }
+        }
+        None
     }
 
     fn compile_multi_return_define(
@@ -11145,6 +11637,7 @@ impl WasmCompiler {
         temps.reverse();
 
         // Assign from temps into named locals in forward order
+        let is_define = assign.op == Operator::Define;
         for (i, left) in assign.left.iter().enumerate() {
             if let ast::Expression::Ident(ident) = left {
                 if ident.name == "_" {
@@ -11152,7 +11645,15 @@ impl WasmCompiler {
                 }
                 let vt = ret_types[i];
                 let (_, tmp, _) = temps[i];
-                let local_idx = locals.add_local(&ident.name, vt);
+                let local_idx = if is_define {
+                    if let Some(existing) = locals.find_at_current_scope(&ident.name) {
+                        existing
+                    } else {
+                        locals.add_local(&ident.name, vt)
+                    }
+                } else {
+                    locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, vt))
+                };
                 out.push(Instruction::LocalGet(tmp));
                 out.push(Instruction::LocalSet(local_idx));
             }
