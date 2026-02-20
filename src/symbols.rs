@@ -431,50 +431,6 @@ impl DefineType {
         }
     }
 
-    pub fn integer_max_usize(&self) -> Result<(usize, usize), Error> {
-        match &self {
-            Self::Int => Ok((isize::MIN as usize, isize::MAX as usize)),
-            Self::Byte => Ok((u8::MIN as usize, u8::MAX as usize)),
-            Self::Int8 => Ok((i8::MIN as usize, i8::MAX as usize)),
-            Self::Int16 => Ok((i16::MIN as usize, i16::MAX as usize)),
-            Self::Int32 | Self::Rune => Ok((i32::MIN as usize, i32::MAX as usize)),
-            Self::Int64 => Ok((i64::MIN as usize, i64::MAX as usize)),
-            Self::Uint => Ok((usize::MIN, usize::MAX)),
-            Self::Uint8 => Ok((u8::MIN as usize, u8::MAX as usize)),
-            Self::Uint16 => Ok((u16::MIN as usize, u16::MAX as usize)),
-            Self::Uint32 => Ok((u32::MIN as usize, u32::MAX as usize)),
-            Self::Uint64 => Ok((u64::MIN as usize, u64::MAX as usize)),
-            Self::Uintptr => Ok((u32::MIN as usize, u32::MAX as usize)),
-            Self::Qualified(_, inner) => inner.integer_max_usize(),
-            _ => Err(Error::InternalError(format!(
-                "integer_max_usize called on non-integer type: {:#?}",
-                self
-            ))),
-        }
-    }
-
-    pub fn integer_max_isize(&self) -> Result<(isize, isize), Error> {
-        match &self {
-            Self::Int => Ok((isize::MIN, isize::MAX)),
-            Self::Byte => Ok((u8::MIN as isize, u8::MAX as isize)),
-            Self::Int8 => Ok((i8::MIN as isize, i8::MAX as isize)),
-            Self::Int16 => Ok((i16::MIN as isize, i16::MAX as isize)),
-            Self::Int32 | Self::Rune => Ok((i32::MIN as isize, i32::MAX as isize)),
-            Self::Int64 => Ok((i64::MIN as isize, i64::MAX as isize)),
-            Self::Uint => Ok((usize::MIN as isize, usize::MAX as isize)),
-            Self::Uint8 => Ok((u8::MIN as isize, u8::MAX as isize)),
-            Self::Uint16 => Ok((u16::MIN as isize, u16::MAX as isize)),
-            Self::Uint32 => Ok((u32::MIN as isize, u32::MAX as isize)),
-            Self::Uint64 => Ok((u64::MIN as isize, u64::MAX as isize)),
-            Self::Uintptr => Ok((u32::MIN as isize, u32::MAX as isize)),
-            Self::Qualified(_, inner) => inner.integer_max_isize(),
-            _ => Err(Error::InternalError(format!(
-                "integer_max_isize called on non-integer type: {:#?}",
-                self
-            ))),
-        }
-    }
-
     pub fn is_integer(&self) -> bool {
         match &self {
             Self::Int | Self::Byte | Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64

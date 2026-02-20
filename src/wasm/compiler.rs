@@ -1973,6 +1973,8 @@ impl WasmCompiler {
                 _ => false,
             };
 
+            let is_string_param = matches!(&field.typ, ast::Expression::Ident(id) if id.name == "string");
+
             let field_wasm_types = self.field_to_wasm_types(field);
             if field.name.is_empty() {
                 for wt in &field_wasm_types {
@@ -1980,15 +1982,20 @@ impl WasmCompiler {
                     param_names.push(format!("_param{}", param_names.len()));
                 }
             } else {
-                for (i, ident) in field.name.iter().enumerate() {
-                    if i < field_wasm_types.len() {
-                        param_types.push(field_wasm_types[i].to_val_type());
-                    } else if !field_wasm_types.is_empty() {
-                        param_types.push(field_wasm_types[0].to_val_type());
-                    } else {
+                for ident in field.name.iter() {
+                    if is_string_param {
                         param_types.push(ValType::I32);
+                        param_names.push(ident.name.clone());
+                        param_types.push(ValType::I32);
+                        param_names.push(format!("{}__str_len", ident.name));
+                    } else {
+                        if !field_wasm_types.is_empty() {
+                            param_types.push(field_wasm_types[0].to_val_type());
+                        } else {
+                            param_types.push(ValType::I32);
+                        }
+                        param_names.push(ident.name.clone());
                     }
-                    param_names.push(ident.name.clone());
                     if is_iface_param {
                         param_types.push(ValType::I32);
                         param_names.push(format!("{}__type_id", ident.name));
@@ -2154,6 +2161,12 @@ impl WasmCompiler {
                 if type_ident.name == "string" {
                     for name_ident in &field.name {
                         locals.set_var_struct_type(&name_ident.name, "__string");
+                        let ptr_idx = locals.find(&name_ident.name).unwrap_or(0);
+                        let len_name = format!("{}__str_len", name_ident.name);
+                        let len_idx = locals.find(&len_name).unwrap_or_else(|| {
+                            locals.add_local(&len_name, ValType::I32)
+                        });
+                        locals.string_locals.insert(name_ident.name.clone(), (ptr_idx, len_idx));
                     }
                 }
                 if Self::is_unsigned_type_name(&type_ident.name) {
@@ -2660,6 +2673,30 @@ impl WasmCompiler {
                 }
             }
         } else {
+            // When returning a single slice variable but the function signature
+            // expects 3 values (ptr, len, cap), expand the header pointer.
+            if ret.ret.len() == 1 && result_types.len() == 3 {
+                if let ast::Expression::Ident(ident) = &ret.ret[0] {
+                    if locals.get_var_struct_type(&ident.name) == Some("__slice") {
+                        self.compile_expression(&ret.ret[0], out, locals)?;
+                        let hdr = locals.add_local(
+                            &format!("__ret_slice_hdr_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(hdr));
+                        out.push(Instruction::LocalGet(hdr));
+                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalGet(hdr));
+                        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalGet(hdr));
+                        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+                        self.emit_deferred_calls(out);
+                        out.push(Instruction::Return);
+                        return Ok(());
+                    }
+                }
+            }
+
             for (i, expr) in ret.ret.iter().enumerate() {
                 let is_iface_return = result_go_types.get(i)
                     .map_or(false, |gt| self.is_iface_go_type(gt));
@@ -3898,7 +3935,10 @@ impl WasmCompiler {
         result_types: &[ValType],
         label: Option<String>,
     ) -> Result<(), Error> {
-        // Detect range over function (Go 1.23+ iterator protocol) — not supported
+        // Reject range over a bare function name (Go 1.23+ iterator protocol).
+        // NOTE: this only catches local functions by name; qualified iterators
+        // (e.g. iter.Seq) are not detected here because Go 1.23 range-over-func
+        // is out of scope for this compiler.
         if let ast::Expression::Ident(fn_ident) = &range.expr {
             if self.functions.iter().any(|f| f.name == fn_ident.name && f.recv_type.is_none()) {
                 return Err(Error::SyntaxError(format!(
@@ -3906,10 +3946,6 @@ impl WasmCompiler {
                     fn_ident.name
                 )));
             }
-        }
-        if let ast::Expression::Call(_) = &range.expr {
-            // Could be a function returning an iterator; this is also not supported
-            // (normal function calls returning slices/maps are fine and handled below)
         }
 
         // Check for map range
@@ -5507,8 +5543,14 @@ impl WasmCompiler {
                         self.compile_expression(expr, out, locals)?;
                         out.push(Instruction::LocalSet(cl));
                         out.push(Instruction::LocalSet(cp));
+                        let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                            "switch string tag pointer local missing".to_string(),
+                        ))?;
+                        let slen = tag_str_len.ok_or_else(|| Error::InternalError(
+                            "switch string tag length local missing".to_string(),
+                        ))?;
                         Self::emit_string_eq_from_locals(
-                            tag_str_ptr.unwrap(), tag_str_len.unwrap(),
+                            sptr, slen,
                             cp, cl, out, locals,
                         );
                     } else if let Some(tag_l) = tag_local {
@@ -5586,8 +5628,14 @@ impl WasmCompiler {
                         self.compile_expression(expr, out, locals)?;
                         out.push(Instruction::LocalSet(cl));
                         out.push(Instruction::LocalSet(cp));
+                        let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                            "switch string tag pointer local missing".to_string(),
+                        ))?;
+                        let slen = tag_str_len.ok_or_else(|| Error::InternalError(
+                            "switch string tag length local missing".to_string(),
+                        ))?;
                         Self::emit_string_eq_from_locals(
-                            tag_str_ptr.unwrap(), tag_str_len.unwrap(),
+                            sptr, slen,
                             cp, cl, out, locals,
                         );
                     } else if let Some(tag_l) = tag_local {
@@ -6402,7 +6450,7 @@ impl WasmCompiler {
 
     fn unescape_go_string(s: &str) -> Vec<u8> {
         let mut result = Vec::new();
-        let mut chars = s.chars();
+        let mut chars = s.chars().peekable();
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 match chars.next() {
@@ -6412,7 +6460,6 @@ impl WasmCompiler {
                     Some('\\') => result.push(b'\\'),
                     Some('"') => result.push(b'"'),
                     Some('\'') => result.push(b'\''),
-                    Some('0') => result.push(0),
                     Some('a') => result.push(0x07),
                     Some('b') => result.push(0x08),
                     Some('f') => result.push(0x0C),
@@ -6420,6 +6467,41 @@ impl WasmCompiler {
                     Some('x') => {
                         let hex: String = chars.by_ref().take(2).collect();
                         if let Ok(val) = u8::from_str_radix(&hex, 16) {
+                            result.push(val);
+                        }
+                    }
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Ok(val) = u32::from_str_radix(&hex, 16) {
+                            if let Some(c) = char::from_u32(val) {
+                                let mut buf = [0u8; 4];
+                                result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                            }
+                        }
+                    }
+                    Some('U') => {
+                        let hex: String = chars.by_ref().take(8).collect();
+                        if let Ok(val) = u32::from_str_radix(&hex, 16) {
+                            if let Some(c) = char::from_u32(val) {
+                                let mut buf = [0u8; 4];
+                                result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                            }
+                        }
+                    }
+                    Some(d) if d.is_ascii_digit() && d < '8' => {
+                        let mut octal = String::new();
+                        octal.push(d);
+                        for _ in 0..2 {
+                            if let Some(&c) = chars.peek() {
+                                if c.is_ascii_digit() && c < '8' {
+                                    octal.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        if let Ok(val) = u8::from_str_radix(&octal, 8) {
                             result.push(val);
                         }
                     }
@@ -6925,6 +7007,7 @@ impl WasmCompiler {
         }
         false
     }
+
 
     fn is_string_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         match expr {
@@ -12467,10 +12550,13 @@ impl WasmCompiler {
                     }
                 };
                 if let Some(lv) = inner_lit_val {
+                    let resolved_name = elem_type_name.clone().ok_or_else(|| Error::InternalError(
+                        "slice composite literal: could not determine element type name".to_string(),
+                    ))?;
                     let synth_comp = ast::CompositeLit {
                         typ: Box::new(ast::Expression::Ident(ast::Ident {
                             pos: 0,
-                            name: elem_type_name.clone().unwrap(),
+                            name: resolved_name,
                         })),
                         val: lv.clone(),
                     };
