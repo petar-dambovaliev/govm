@@ -106,6 +106,7 @@ struct MapTypeInfo {
     is_string_key: bool,
     is_string_val: bool,
     val_struct_type: Option<String>,
+    nested_map_val_type: Option<Box<MapTypeInfo>>,
 }
 
 struct LocalAlloc {
@@ -120,10 +121,12 @@ struct LocalAlloc {
     method_expr_vars: std::collections::HashSet<String>,
     slice_elem_types: HashMap<String, ValType>,
     slice_elem_struct_types: HashMap<String, String>,
+    nested_slice_inner_elem_types: HashMap<String, ValType>,
     string_locals: HashMap<String, (u32, u32)>,
     unsigned_vars: std::collections::HashSet<String>,
     map_types: HashMap<String, MapTypeInfo>,
     array_info: HashMap<String, (ValType, u32)>, // (elem_type, array_length)
+    nested_array_inner_info: HashMap<String, (ValType, u32)>, // inner (elem_type, inner_length) for [M][N]T
     rune_slices: std::collections::HashSet<String>,
 }
 
@@ -141,10 +144,12 @@ impl LocalAlloc {
             method_expr_vars: std::collections::HashSet::new(),
             slice_elem_types: HashMap::new(),
             slice_elem_struct_types: HashMap::new(),
+            nested_slice_inner_elem_types: HashMap::new(),
             string_locals: HashMap::new(),
             unsigned_vars: std::collections::HashSet::new(),
             map_types: HashMap::new(),
             array_info: HashMap::new(),
+            nested_array_inner_info: HashMap::new(),
             rune_slices: std::collections::HashSet::new(),
         }
     }
@@ -989,6 +994,60 @@ impl WasmCompiler {
                     Self::collect_ident_refs(l, refs);
                 }
                 Self::collect_ident_refs(&idx.index, refs);
+            }
+            ast::Expression::CompositeLit(comp) => {
+                Self::collect_ident_refs(&comp.typ, refs);
+                for kv in &comp.val.values {
+                    if let ast::Element::Expr(e) = &kv.val {
+                        Self::collect_ident_refs(e, refs);
+                    }
+                }
+            }
+            ast::Expression::Star(star) => Self::collect_ident_refs(&star.right, refs),
+            ast::Expression::Slice(sl) => {
+                Self::collect_ident_refs(&sl.left, refs);
+                for idx_opt in &sl.index {
+                    if let Some(e) = idx_opt {
+                        Self::collect_ident_refs(e, refs);
+                    }
+                }
+            }
+            ast::Expression::TypeAssert(ta) => Self::collect_ident_refs(&ta.left, refs),
+            ast::Expression::FuncLit(fl) => {
+                for stmt in &fl.body.list {
+                    Self::collect_stmt_ident_refs(stmt, refs);
+                }
+            }
+            ast::Expression::List(exprs) => {
+                for e in exprs {
+                    Self::collect_ident_refs(e, refs);
+                }
+            }
+            ast::Expression::Invar(inv) => Self::collect_ident_refs(&inv.expr, refs),
+            _ => {}
+        }
+    }
+
+    fn collect_stmt_ident_refs(stmt: &ast::Statement, refs: &mut Vec<String>) {
+        match stmt {
+            ast::Statement::Expr(es) => Self::collect_ident_refs(&es.expr, refs),
+            ast::Statement::Return(ret) => {
+                for e in &ret.ret {
+                    Self::collect_ident_refs(e, refs);
+                }
+            }
+            ast::Statement::Assign(a) => {
+                for e in &a.right {
+                    Self::collect_ident_refs(e, refs);
+                }
+            }
+            ast::Statement::Block(block) => {
+                for s in &block.list {
+                    Self::collect_stmt_ident_refs(s, refs);
+                }
+            }
+            ast::Statement::If(if_stmt) => {
+                Self::collect_ident_refs(&if_stmt.cond, refs);
             }
             _ => {}
         }
@@ -1965,6 +2024,10 @@ impl WasmCompiler {
                 for name_ident in &field.name {
                     locals.set_var_struct_type(&name_ident.name, "__slice");
                     locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
+                    if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                        let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                        locals.nested_slice_inner_elem_types.insert(name_ident.name.clone(), inner_vt);
+                    }
                     if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                         if self.struct_defs.contains_key(&el_id.name) {
                             locals.slice_elem_struct_types.insert(name_ident.name.clone(), el_id.name.clone());
@@ -2661,9 +2724,10 @@ impl WasmCompiler {
                                             "__map",
                                         );
                                         let (kv, ks, vv, vs, sk, sv, vst) = self.map_key_val_types(map_type);
+                                        let nested = self.build_nested_map_type_info(map_type);
                                         locals.map_types.insert(
                                             ident.name.clone(),
-                                            MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst },
+                                            MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst, nested_map_val_type: nested },
                                         );
                                     } else {
                                         locals.set_var_struct_type(
@@ -2679,6 +2743,10 @@ impl WasmCompiler {
                                             elem_vt,
                                         );
                                         if let Some(ast::Expression::TypeSlice(slice_type)) = call_expr.args.first() {
+                                            if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                                                let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                                                locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
+                                            }
                                             if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                                                 if self.struct_defs.contains_key(&el_id.name) {
                                                     locals.slice_elem_struct_types.insert(ident.name.clone(), el_id.name.clone());
@@ -2773,6 +2841,10 @@ impl WasmCompiler {
                                 locals.set_var_struct_type(&ident.name, "__slice");
                                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
                                 locals.slice_elem_types.insert(ident.name.clone(), elem_vt);
+                                if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                                    let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                                    locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
+                                }
                                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                                     if el_id.name == "rune" || el_id.name == "int32" {
                                         locals.rune_slices.insert(ident.name.clone());
@@ -2784,9 +2856,10 @@ impl WasmCompiler {
                             } else if let ast::Expression::TypeMap(map_type) = comp.typ.as_ref() {
                                 locals.set_var_struct_type(&ident.name, "__map");
                                 let (kv, ks, vv, vs, sk, sv, vst) = self.map_key_val_types(map_type);
+                                let nested = self.build_nested_map_type_info(map_type);
                                 locals.map_types.insert(
                                     ident.name.clone(),
-                                    MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst },
+                                    MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst, nested_map_val_type: nested },
                                 );
                             } else if let ast::Expression::Ident(type_ident) = comp.typ.as_ref() {
                                 if let Some(underlying) = self.named_composite_types.get(&type_ident.name).cloned() {
@@ -2814,6 +2887,9 @@ impl WasmCompiler {
                                 if let ast::Expression::Ident(src_ident) = &*sl.left {
                                     if let Some(&evtype) = locals.slice_elem_types.get(&src_ident.name) {
                                         locals.slice_elem_types.insert(ident.name.clone(), evtype);
+                                    }
+                                    if let Some(&inner_vt) = locals.nested_slice_inner_elem_types.get(&src_ident.name) {
+                                        locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
                                     }
                                     if let Some(st) = locals.slice_elem_struct_types.get(&src_ident.name).cloned() {
                                         locals.slice_elem_struct_types.insert(ident.name.clone(), st);
@@ -3432,6 +3508,26 @@ impl WasmCompiler {
 
                         self.compile_expression(&star.right, out, locals)?;
                         let deref_vt = self.infer_deref_type(&star.right, locals);
+                        let (_, align) = Self::elem_size_and_align(deref_vt);
+
+                        out.push(Instruction::LocalGet(rhs_tmp));
+                        Self::emit_typed_coerce(rhs_vt, deref_vt, out)?;
+                        Self::emit_typed_store(deref_vt, 0, align, out);
+                    }
+                    ast::Expression::Operation(op) if op.op == Operator::Star && op.y.is_none() => {
+                        let rhs_vt = if i < assign.right.len() {
+                            self.infer_val_type(&assign.right[i], locals)
+                        } else {
+                            ValType::I64
+                        };
+                        let rhs_tmp = locals.add_local(
+                            &format!("__deref_rhs_{}", locals.locals.len()),
+                            rhs_vt,
+                        );
+                        out.push(Instruction::LocalSet(rhs_tmp));
+
+                        self.compile_expression(&op.x, out, locals)?;
+                        let deref_vt = self.infer_deref_type(&op.x, locals);
                         let (_, align) = Self::elem_size_and_align(deref_vt);
 
                         out.push(Instruction::LocalGet(rhs_tmp));
@@ -5545,6 +5641,10 @@ impl WasmCompiler {
                                 locals.set_var_struct_type(&ident.name, "__slice");
                                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
                                 locals.slice_elem_types.insert(ident.name.clone(), elem_vt);
+                                if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                                    let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                                    locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
+                                }
                                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                                     if self.struct_defs.contains_key(&el_id.name) {
                                         locals.slice_elem_struct_types.insert(ident.name.clone(), el_id.name.clone());
@@ -5553,10 +5653,25 @@ impl WasmCompiler {
                             } else if let ast::Expression::TypeMap(map_type) = typ {
                                 locals.set_var_struct_type(&ident.name, "__map");
                                 let (kv, ks, vv, vs, sk, sv, vst) = self.map_key_val_types(map_type);
+                                let nested = self.build_nested_map_type_info(map_type);
                                 locals.map_types.insert(
                                     ident.name.clone(),
-                                    MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst },
+                                    MapTypeInfo { key_vt: kv, val_vt: vv, key_size: ks, val_size: vs, is_string_key: sk, is_string_val: sv, val_struct_type: vst, nested_map_val_type: nested },
                                 );
+                            } else if let ast::Expression::TypeArray(arr_type) = typ {
+                                let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
+                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                } else { 0 };
+                                let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                                locals.set_var_struct_type(&ident.name, "__array");
+                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                                if let ast::Expression::TypeArray(inner_arr) = arr_type.typ.as_ref() {
+                                    let inner_len = if let ast::Expression::BasicLit(lit) = inner_arr.len.as_ref() {
+                                        Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                    } else { 0 };
+                                    let inner_elem_vt = Self::infer_array_elem_vt(&inner_arr.typ);
+                                    locals.nested_array_inner_info.insert(ident.name.clone(), (inner_elem_vt, inner_len));
+                                }
                             } else if let ast::Expression::Ident(type_ident) = typ {
                                 if type_ident.name == "string" {
                                     is_string = true;
@@ -5688,6 +5803,26 @@ impl WasmCompiler {
                                 out.push(Instruction::I32Const(0));
                                 out.push(Instruction::I32Const(size));
                                 out.push(Instruction::MemoryFill(0));
+                            } else if let ast::Expression::TypeArray(arr_type) = typ {
+                                let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
+                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                } else { 0 };
+                                let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                                let (elem_size, _) = Self::elem_size_and_align(elem_vt);
+                                let total_bytes = if let Some(&(inner_elem_vt, inner_len)) = locals.nested_array_inner_info.get(&ident.name) {
+                                    let (inner_elem_size, _) = Self::elem_size_and_align(inner_elem_vt);
+                                    (arr_len * inner_len * inner_elem_size as u32) as i32
+                                } else {
+                                    (arr_len as i32) * elem_size
+                                };
+                                if total_bytes > 0 {
+                                    out.push(Instruction::I32Const(total_bytes));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    out.push(Instruction::LocalTee(local_idx));
+                                    out.push(Instruction::I32Const(0));
+                                    out.push(Instruction::I32Const(total_bytes));
+                                    out.push(Instruction::MemoryFill(0));
+                                }
                             }
                         }
                     }
@@ -8172,6 +8307,20 @@ impl WasmCompiler {
             None
         };
         (key_vt, key_size, val_vt, val_size, is_string_key, is_string_val, val_struct)
+    }
+
+    fn build_nested_map_type_info(&self, map_type: &ast::MapType) -> Option<Box<MapTypeInfo>> {
+        if let ast::Expression::TypeMap(inner_map) = map_type.val.as_ref() {
+            let (kv, ks, vv, vs, sk, sv, vst) = self.map_key_val_types(inner_map);
+            let nested = self.build_nested_map_type_info(inner_map);
+            Some(Box::new(MapTypeInfo {
+                key_vt: kv, val_vt: vv, key_size: ks, val_size: vs,
+                is_string_key: sk, is_string_val: sv, val_struct_type: vst,
+                nested_map_val_type: nested,
+            }))
+        } else {
+            None
+        }
     }
 
     fn map_entry_size(key_size: u32, val_size: u32) -> u32 {
@@ -11623,6 +11772,7 @@ impl WasmCompiler {
             None
         };
         locals.set_var_struct_type(&tmp_name, "__map");
+        let nested = self.build_nested_map_type_info(map_type);
         locals.map_types.insert(tmp_name.clone(), MapTypeInfo {
             key_vt,
             val_vt,
@@ -11631,6 +11781,7 @@ impl WasmCompiler {
             is_string_key,
             is_string_val,
             val_struct_type,
+            nested_map_val_type: nested,
         });
 
         // Insert each key-value pair
@@ -13315,6 +13466,25 @@ impl WasmCompiler {
             }
         }
 
+        // Chained map indexing: m[k1][k2] where m is map[K]map[K2]V2
+        if let ast::Expression::Index(outer_idx) = left {
+            if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
+                if locals.get_var_struct_type(&outer_ident.name) == Some("__map") {
+                    if let Some(inner_mti) = locals.map_types.get(&outer_ident.name)
+                        .and_then(|mti| mti.nested_map_val_type.clone())
+                    {
+                        self.compile_map_get(&outer_ident.name.clone(), &outer_idx.index, out, locals)?;
+                        let tmp_name = format!("__chained_map_{}", locals.locals.len());
+                        let tmp_local = locals.add_local(&tmp_name, ValType::I32);
+                        out.push(Instruction::LocalSet(tmp_local));
+                        locals.set_var_struct_type(&tmp_name, "__map");
+                        locals.map_types.insert(tmp_name.clone(), *inner_mti);
+                        return self.compile_map_get(&tmp_name, &idx.index, out, locals);
+                    }
+                }
+            }
+        }
+
         // String indexing: s[i] returns a byte (i32)
         if self.is_string_expr(left, locals) {
             self.compile_expression(left, out, locals)?;
@@ -13347,6 +13517,64 @@ impl WasmCompiler {
                 memory_index: 0,
             }));
             return Ok(());
+        }
+
+        // Multi-dimensional array indexing: a[i][j] where a is [M][N]T
+        if let ast::Expression::Index(outer_idx) = left {
+            if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
+                if let Some(&(inner_elem_vt, inner_len)) = locals.nested_array_inner_info.get(&outer_ident.name) {
+                    if let Some(&(_, outer_len)) = locals.array_info.get(&outer_ident.name) {
+                        let (inner_elem_size, inner_align) = Self::elem_size_and_align(inner_elem_vt);
+                        let inner_array_bytes = inner_len as i32 * inner_elem_size;
+
+                        self.compile_expression(&ast::Expression::Ident(outer_ident.clone()), out, locals)?;
+                        let base = locals.add_local(&format!("__mdarr_b_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalSet(base));
+
+                        // Compile outer index
+                        self.compile_expression(&outer_idx.index, out, locals)?;
+                        let oidx_vt = self.infer_val_type(&outer_idx.index, locals);
+                        if oidx_vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+                        let oidx_local = locals.add_local(&format!("__mdarr_oi_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalTee(oidx_local));
+
+                        // Bounds check outer
+                        out.push(Instruction::I32Const(outer_len as i32));
+                        out.push(Instruction::I32GeU);
+                        out.push(Instruction::If(BlockType::Empty));
+                        out.push(Instruction::Unreachable);
+                        out.push(Instruction::End);
+
+                        // Compile inner index
+                        self.compile_expression(&idx.index, out, locals)?;
+                        let iidx_vt = self.infer_val_type(&idx.index, locals);
+                        if iidx_vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+                        let iidx_local = locals.add_local(&format!("__mdarr_ii_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalTee(iidx_local));
+
+                        // Bounds check inner
+                        out.push(Instruction::I32Const(inner_len as i32));
+                        out.push(Instruction::I32GeU);
+                        out.push(Instruction::If(BlockType::Empty));
+                        out.push(Instruction::Unreachable);
+                        out.push(Instruction::End);
+
+                        // addr = base + outer_idx * inner_array_bytes + inner_idx * elem_size
+                        out.push(Instruction::LocalGet(base));
+                        out.push(Instruction::LocalGet(oidx_local));
+                        out.push(Instruction::I32Const(inner_array_bytes));
+                        out.push(Instruction::I32Mul);
+                        out.push(Instruction::I32Add);
+                        out.push(Instruction::LocalGet(iidx_local));
+                        out.push(Instruction::I32Const(inner_elem_size));
+                        out.push(Instruction::I32Mul);
+                        out.push(Instruction::I32Add);
+
+                        Self::emit_typed_load(inner_elem_vt, 0, inner_align, out);
+                        return Ok(());
+                    }
+                }
+            }
         }
 
         // Array indexing: a[i] with bounds check
@@ -13421,7 +13649,8 @@ impl WasmCompiler {
                             out.push(Instruction::Unreachable);
                             out.push(Instruction::End);
 
-                            let inner_elem_vt = ValType::I64;
+                            let inner_elem_vt = locals.nested_slice_inner_elem_types
+                                .get(&outer_ident.name).copied().unwrap_or(ValType::I64);
                             let (inner_elem_size, inner_align) = Self::elem_size_and_align(inner_elem_vt);
                             out.push(Instruction::LocalGet(inner_data));
                             out.push(Instruction::LocalGet(idx_local));
@@ -13537,6 +13766,57 @@ impl WasmCompiler {
         let left = idx.left.as_deref().ok_or_else(|| {
             Error::InternalError("index expression missing left operand".to_string())
         })?;
+
+        // Multi-dimensional array element store: a[i][j] = val
+        if let ast::Expression::Index(outer_idx) = left {
+            if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
+                if let Some(&(inner_elem_vt, inner_len)) = locals.nested_array_inner_info.get(&outer_ident.name) {
+                    if let Some(&(_, outer_len)) = locals.array_info.get(&outer_ident.name) {
+                        let (inner_elem_size, inner_align) = Self::elem_size_and_align(inner_elem_vt);
+                        let inner_array_bytes = inner_len as i32 * inner_elem_size;
+
+                        self.compile_expression(&ast::Expression::Ident(outer_ident.clone()), out, locals)?;
+                        let base = locals.add_local(&format!("__mdarrs_b_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalSet(base));
+
+                        self.compile_expression(&outer_idx.index, out, locals)?;
+                        let oidx_vt = self.infer_val_type(&outer_idx.index, locals);
+                        if oidx_vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+                        let oidx_local = locals.add_local(&format!("__mdarrs_oi_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalTee(oidx_local));
+
+                        out.push(Instruction::I32Const(outer_len as i32));
+                        out.push(Instruction::I32GeU);
+                        out.push(Instruction::If(BlockType::Empty));
+                        out.push(Instruction::Unreachable);
+                        out.push(Instruction::End);
+
+                        self.compile_expression(&idx.index, out, locals)?;
+                        let iidx_vt = self.infer_val_type(&idx.index, locals);
+                        if iidx_vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+                        let iidx_local = locals.add_local(&format!("__mdarrs_ii_{}", locals.locals.len()), ValType::I32);
+                        out.push(Instruction::LocalTee(iidx_local));
+
+                        out.push(Instruction::I32Const(inner_len as i32));
+                        out.push(Instruction::I32GeU);
+                        out.push(Instruction::If(BlockType::Empty));
+                        out.push(Instruction::Unreachable);
+                        out.push(Instruction::End);
+
+                        out.push(Instruction::LocalGet(base));
+                        out.push(Instruction::LocalGet(oidx_local));
+                        out.push(Instruction::I32Const(inner_array_bytes));
+                        out.push(Instruction::I32Mul);
+                        out.push(Instruction::I32Add);
+                        out.push(Instruction::LocalGet(iidx_local));
+                        out.push(Instruction::I32Const(inner_elem_size));
+                        out.push(Instruction::I32Mul);
+                        out.push(Instruction::I32Add);
+                        return Ok((inner_elem_vt, inner_align));
+                    }
+                }
+            }
+        }
 
         // Array element store
         if let ast::Expression::Ident(ident) = left {
@@ -14192,6 +14472,10 @@ impl WasmCompiler {
                 locals.set_var_struct_type(var_name, "__slice");
                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
                 locals.slice_elem_types.insert(var_name.to_string(), elem_vt);
+                if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                    let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                    locals.nested_slice_inner_elem_types.insert(var_name.to_string(), inner_vt);
+                }
                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                     if self.struct_defs.contains_key(&el_id.name) {
                         locals.slice_elem_struct_types.insert(var_name.to_string(), el_id.name.clone());
@@ -14212,6 +14496,7 @@ impl WasmCompiler {
                 let val_struct_type = if let ast::Expression::Ident(vid) = map_type.val.as_ref() {
                     if self.struct_defs.contains_key(&vid.name) { Some(vid.name.clone()) } else { None }
                 } else { None };
+                let nested = self.build_nested_map_type_info(map_type);
                 locals.map_types.insert(var_name.to_string(), MapTypeInfo {
                     key_vt,
                     val_vt,
@@ -14220,6 +14505,7 @@ impl WasmCompiler {
                     is_string_key,
                     is_string_val,
                     val_struct_type,
+                    nested_map_val_type: nested,
                 });
             }
             ast::Expression::TypeArray(arr_type) => {
@@ -14499,6 +14785,13 @@ impl WasmCompiler {
                         .get(&ident.name)
                         .copied()
                         .unwrap_or(ValType::I64)
+                } else if let Some(ast::Expression::Index(outer_idx)) = idx.left.as_deref() {
+                    if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
+                        if let Some(&inner_vt) = locals.nested_slice_inner_elem_types.get(&outer_ident.name) {
+                            return inner_vt;
+                        }
+                    }
+                    ValType::I64
                 } else {
                     ValType::I64
                 }
