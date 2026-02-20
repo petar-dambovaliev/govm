@@ -162,6 +162,7 @@ pub enum DefineType {
     Uint16,
     Uint32,
     Uint64,
+    Uintptr,
     Complex64,
     Complex128,
     Bool,
@@ -226,6 +227,7 @@ impl Display for DefineType {
             Self::Uint16 => "uint16".to_string(),
             Self::Uint32 => "uint32".to_string(),
             Self::Uint64 => "uint64".to_string(),
+            Self::Uintptr => "uintptr".to_string(),
             Self::Bool => "bool".to_string(),
             Self::Float32 => "float32".to_string(),
             Self::Float64 => "float64".to_string(),
@@ -420,6 +422,7 @@ impl DefineType {
             Self::Uint16 => Ok((u16::MIN as i128, u16::MAX as i128)),
             Self::Uint32 => Ok((u32::MIN as i128, u32::MAX as i128)),
             Self::Uint64 => Ok((u64::MIN as i128, u64::MAX as i128)),
+            Self::Uintptr => Ok((u32::MIN as i128, u32::MAX as i128)),
             Self::Qualified(_, inner) => inner.integer_range_i128(),
             _ => Err(Error::InternalError(format!(
                 "integer_range_i128 called on non-integer type: {:#?}",
@@ -441,6 +444,7 @@ impl DefineType {
             Self::Uint16 => Ok((u16::MIN as usize, u16::MAX as usize)),
             Self::Uint32 => Ok((u32::MIN as usize, u32::MAX as usize)),
             Self::Uint64 => Ok((u64::MIN as usize, u64::MAX as usize)),
+            Self::Uintptr => Ok((u32::MIN as usize, u32::MAX as usize)),
             Self::Qualified(_, inner) => inner.integer_max_usize(),
             _ => Err(Error::InternalError(format!(
                 "integer_max_usize called on non-integer type: {:#?}",
@@ -462,6 +466,7 @@ impl DefineType {
             Self::Uint16 => Ok((u16::MIN as isize, u16::MAX as isize)),
             Self::Uint32 => Ok((u32::MIN as isize, u32::MAX as isize)),
             Self::Uint64 => Ok((u64::MIN as isize, u64::MAX as isize)),
+            Self::Uintptr => Ok((u32::MIN as isize, u32::MAX as isize)),
             Self::Qualified(_, inner) => inner.integer_max_isize(),
             _ => Err(Error::InternalError(format!(
                 "integer_max_isize called on non-integer type: {:#?}",
@@ -474,7 +479,7 @@ impl DefineType {
         match &self {
             Self::Int | Self::Byte | Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64
             | Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64
-            | Self::Rune => true,
+            | Self::Uintptr | Self::Rune => true,
             Self::Qualified(_, inner) => inner.is_integer(),
             _ => false,
         }
@@ -492,7 +497,7 @@ impl DefineType {
         match &self {
             Self::Int | Self::Byte | Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64
             | Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64
-            | Self::Float32 | Self::Float64
+            | Self::Uintptr | Self::Float32 | Self::Float64
             | Self::Rune => true,
             Self::Qualified(_, inner) => inner.is_numeric(),
             _ => false,

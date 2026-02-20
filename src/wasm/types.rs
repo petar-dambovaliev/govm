@@ -30,7 +30,7 @@ pub fn define_type_to_wasm(dt: &DefineType) -> Vec<WasmType> {
     match dt {
         DefineType::Bool | DefineType::Byte | DefineType::Int8 | DefineType::Int16
         | DefineType::Int32 | DefineType::Uint8 | DefineType::Uint16 | DefineType::Uint32
-        | DefineType::Rune => vec![WasmType::I32],
+        | DefineType::Uintptr | DefineType::Rune => vec![WasmType::I32],
 
         DefineType::Int | DefineType::Int64 | DefineType::Uint | DefineType::Uint64 => {
             vec![WasmType::I64]

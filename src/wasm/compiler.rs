@@ -107,6 +107,8 @@ fn aligned_capture_env_offset(captures: &[CapturedVar], next_vt: ValType) -> u32
 struct ClosureCaptureState {
     outer_locals: Vec<(String, ValType)>,
     captures: Vec<CapturedVar>,
+    outer_closure_info: HashMap<String, (u32, u32)>,
+    outer_closure_env_captures: HashMap<String, Vec<(String, u32, ValType)>>,
 }
 
 #[derive(Clone)]
@@ -3100,6 +3102,13 @@ impl WasmCompiler {
                             }
                         }
 
+                        if let ast::Expression::FuncLit(_) = &assign.right[i] {
+                            locals.closure_info.insert(
+                                ident.name.clone(),
+                                (self.next_func_idx, u32::MAX),
+                            );
+                        }
+
                         self.compile_expression(&assign.right[i], out, locals)?;
                         if is_iface_from_call {
                             let wrapper = locals.add_local(
@@ -3226,6 +3235,14 @@ impl WasmCompiler {
                         }
                     }
                 } else if i < assign.right.len() {
+                    if let ast::Expression::Ident(lhs_ident) = left {
+                        if let ast::Expression::FuncLit(_) = &assign.right[i] {
+                            locals.closure_info.insert(
+                                lhs_ident.name.clone(),
+                                (self.next_func_idx, u32::MAX),
+                            );
+                        }
+                    }
                     self.compile_expression(&assign.right[i], out, locals)?;
                 }
 
@@ -6957,6 +6974,13 @@ impl WasmCompiler {
 
     fn is_unsigned_type_name(name: &str) -> bool {
         matches!(name, "uint" | "uint64" | "uint32" | "uint8" | "uint16" | "byte" | "uintptr")
+    }
+
+    fn find_captured_closure(&self, name: &str) -> Option<(u32, u32, Vec<(String, u32, ValType)>)> {
+        let cc = self.closure_captures.as_ref()?;
+        let (func_idx, env_local) = cc.outer_closure_info.get(name)?;
+        let env_captures = cc.outer_closure_env_captures.get(name).cloned().unwrap_or_default();
+        Some((*func_idx, *env_local, env_captures))
     }
 
     fn find_or_add_capture(&mut self, name: &str) -> Option<(u32, ValType)> {
@@ -10827,6 +10851,36 @@ impl WasmCompiler {
                         self.compile_expression(arg, out, locals)?;
                     }
                     out.push(Instruction::Call(func_idx));
+                } else if let Some((cap_func_idx, cap_env_local, cap_env_captures)) = self.find_captured_closure(&ident.name) {
+                    if !cap_env_captures.is_empty() {
+                        for (cap_name, env_offset, vt) in &cap_env_captures {
+                            if let Some(outer_local) = locals.find(cap_name) {
+                                out.push(Instruction::LocalGet(cap_env_local));
+                                out.push(Instruction::LocalGet(outer_local));
+                                let (_, align) = Self::elem_size_and_align(*vt);
+                                Self::emit_typed_store(*vt, *env_offset as u64, align, out);
+                            }
+                        }
+                    }
+                    if cap_env_local != u32::MAX {
+                        out.push(Instruction::LocalGet(cap_env_local));
+                    } else {
+                        out.push(Instruction::I32Const(0));
+                    }
+                    for arg in &call.args {
+                        self.compile_expression(arg, out, locals)?;
+                    }
+                    out.push(Instruction::Call(cap_func_idx));
+                    if !cap_env_captures.is_empty() {
+                        for (cap_name, env_offset, vt) in &cap_env_captures {
+                            if let Some(outer_local) = locals.find(cap_name) {
+                                out.push(Instruction::LocalGet(cap_env_local));
+                                let (_, align) = Self::elem_size_and_align(*vt);
+                                Self::emit_typed_load(*vt, *env_offset as u64, align, out);
+                                out.push(Instruction::LocalSet(outer_local));
+                            }
+                        }
+                    }
                 } else {
                     for arg in &call.args {
                         self.compile_expression(arg, out, locals)?;
@@ -10988,10 +11042,42 @@ impl WasmCompiler {
                             out.push(Instruction::F64Max);
                             return Ok(());
                         }
+                        ("math", "Trunc") => {
+                            if call.args.is_empty() {
+                                return Err(Error::InternalError(
+                                    "math.Trunc requires 1 argument".to_string(),
+                                ));
+                            }
+                            self.compile_expression(&call.args[0], out, locals)?;
+                            out.push(Instruction::F64Trunc);
+                            return Ok(());
+                        }
+                        ("math", "Round") => {
+                            if call.args.is_empty() {
+                                return Err(Error::InternalError(
+                                    "math.Round requires 1 argument".to_string(),
+                                ));
+                            }
+                            self.compile_expression(&call.args[0], out, locals)?;
+                            out.push(Instruction::F64Nearest);
+                            return Ok(());
+                        }
                         ("math", func_name) => {
                             return Err(Error::InternalError(format!(
                                 "unsupported math function: math.{}",
                                 func_name
+                            )));
+                        }
+                        (pkg, func_name)
+                            if matches!(
+                                pkg,
+                                "strings" | "strconv" | "sort" | "unicode"
+                                    | "bytes" | "errors" | "encoding" | "fmt"
+                            ) =>
+                        {
+                            return Err(Error::InternalError(format!(
+                                "{}.{} is not yet implemented; stdlib functions will be available in a future release",
+                                pkg, func_name
                             )));
                         }
                         _ => {}
@@ -11841,6 +11927,8 @@ impl WasmCompiler {
         self.closure_captures = Some(ClosureCaptureState {
             outer_locals: outer_snapshot,
             captures: Vec::new(),
+            outer_closure_info: outer_locals.closure_info.clone(),
+            outer_closure_env_captures: outer_locals.closure_env_captures.clone(),
         });
 
         let saved_named_returns = std::mem::replace(&mut self.named_returns, named_returns.clone());
