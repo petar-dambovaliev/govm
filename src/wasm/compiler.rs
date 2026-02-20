@@ -68,6 +68,7 @@ enum ConstValue {
     F64(f64),
     Bool(bool),
     Str(String),
+    Complex128(f64, f64),
 }
 
 impl StructDef {
@@ -310,6 +311,9 @@ pub struct WasmCompiler {
     init_func_indices: Vec<u32>,
     start_func_idx: Option<u32>,
 
+    // Deferred global variable initializers (non-constant or string expressions)
+    global_var_inits: Vec<(String, ast::Expression, ValType)>,
+
     // Generics support: store uncompiled generic function declarations
     generic_funcs: HashMap<String, ast::FuncDecl>,
     // Generic type definitions: type Pair[T any] struct { ... }
@@ -372,6 +376,8 @@ impl WasmCompiler {
 
             init_func_indices: Vec::new(),
             start_func_idx: None,
+
+            global_var_inits: Vec::new(),
 
             generic_funcs: HashMap::new(),
             generic_types: HashMap::new(),
@@ -515,10 +521,12 @@ impl WasmCompiler {
         self.register_builtin_types();
         self.prescan_type_declarations(file);
 
-        for decl in &file.decl {
+        let sorted_decls = Self::sort_declarations_by_deps(&file.decl);
+        for decl in &sorted_decls {
             self.compile_declaration(decl)?;
         }
 
+        self.emit_global_var_init_function()?;
         self.emit_init_function();
 
         self.build_manifest(file)?;
@@ -756,6 +764,67 @@ impl WasmCompiler {
         });
     }
 
+    fn emit_global_var_init_function(&mut self) -> Result<(), Error> {
+        let inits = std::mem::take(&mut self.global_var_inits);
+        if inits.is_empty() {
+            return Ok(());
+        }
+
+        let type_idx = self.next_type_idx;
+        self.type_section.ty().function(vec![], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.function_section.function(type_idx);
+        self.next_func_idx += 1;
+
+        let param_entries: Vec<(String, ValType)> = Vec::new();
+        let mut locals = LocalAlloc::new(param_entries);
+        let mut body: Vec<Instruction<'static>> = Vec::new();
+
+        for (var_name, init_expr, _vt) in &inits {
+            let is_string_global = self.global_vars.contains_key(&format!("{}_1", var_name));
+
+            if is_string_global {
+                self.compile_expression(init_expr, &mut body, &mut locals)?;
+                let len_tmp = locals.add_local(
+                    &format!("__ginit_len_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                let ptr_tmp = locals.add_local(
+                    &format!("__ginit_ptr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                body.push(Instruction::LocalSet(len_tmp));
+                body.push(Instruction::LocalSet(ptr_tmp));
+
+                let (ptr_global, _) = self.global_vars[var_name];
+                let (len_global, _) = self.global_vars[&format!("{}_1", var_name)];
+                body.push(Instruction::LocalGet(ptr_tmp));
+                body.push(Instruction::GlobalSet(ptr_global));
+                body.push(Instruction::LocalGet(len_tmp));
+                body.push(Instruction::GlobalSet(len_global));
+            } else {
+                self.compile_expression(init_expr, &mut body, &mut locals)?;
+                let (global_idx, _) = self.global_vars[var_name];
+                body.push(Instruction::GlobalSet(global_idx));
+            }
+        }
+
+        body.push(Instruction::End);
+
+        let mut func = Function::new(locals.local_types());
+        for instr in &body {
+            func.instruction(instr);
+        }
+        self.code_section.function(&func);
+
+        // Insert before user init() functions
+        self.init_func_indices.insert(0, func_idx);
+
+        Ok(())
+    }
+
     fn emit_init_function(&mut self) {
         if self.init_func_indices.is_empty() {
             return;
@@ -892,6 +961,175 @@ impl WasmCompiler {
                 self.iface_defs.insert(name.clone(), methods);
             }
         }
+    }
+
+    fn collect_ident_refs(expr: &ast::Expression, refs: &mut Vec<String>) {
+        match expr {
+            ast::Expression::Ident(id) => {
+                if !matches!(id.name.as_str(), "true" | "false" | "nil" | "iota") {
+                    refs.push(id.name.clone());
+                }
+            }
+            ast::Expression::Operation(op) => {
+                Self::collect_ident_refs(&op.x, refs);
+                if let Some(ref y) = op.y {
+                    Self::collect_ident_refs(y, refs);
+                }
+            }
+            ast::Expression::Call(call) => {
+                Self::collect_ident_refs(&call.func, refs);
+                for arg in &call.args {
+                    Self::collect_ident_refs(arg, refs);
+                }
+            }
+            ast::Expression::Paren(p) => Self::collect_ident_refs(&p.expr, refs),
+            ast::Expression::Selector(sel) => Self::collect_ident_refs(&sel.x, refs),
+            ast::Expression::Index(idx) => {
+                if let Some(ref l) = idx.left {
+                    Self::collect_ident_refs(l, refs);
+                }
+                Self::collect_ident_refs(&idx.index, refs);
+            }
+            _ => {}
+        }
+    }
+
+    fn sort_declarations_by_deps(decls: &[ast::Declaration]) -> Vec<ast::Declaration> {
+        let mut var_decl_indices: Vec<usize> = Vec::new();
+        let mut const_decl_indices: Vec<usize> = Vec::new();
+        let mut other_indices: Vec<usize> = Vec::new();
+
+        // Collect names defined by each var/const decl
+        let mut all_var_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut all_const_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (i, decl) in decls.iter().enumerate() {
+            match decl {
+                ast::Declaration::Variable(var_decl) => {
+                    var_decl_indices.push(i);
+                    for spec in &var_decl.specs {
+                        for name in &spec.name {
+                            all_var_names.insert(name.name.clone());
+                        }
+                    }
+                }
+                ast::Declaration::Const(const_decl) => {
+                    const_decl_indices.push(i);
+                    for spec in &const_decl.specs {
+                        for name in &spec.name {
+                            all_const_names.insert(name.name.clone());
+                        }
+                    }
+                }
+                _ => {
+                    other_indices.push(i);
+                }
+            }
+        }
+
+        // If no variable declarations or only one, no sorting needed
+        if var_decl_indices.len() <= 1 {
+            return decls.to_vec();
+        }
+
+        // Build dependency graph for variable declarations
+        let global_names: std::collections::HashSet<&String> =
+            all_var_names.iter().chain(all_const_names.iter()).collect();
+
+        let mut var_deps: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut idx_map: HashMap<String, usize> = HashMap::new();
+        for (order, &di) in var_decl_indices.iter().enumerate() {
+            if let ast::Declaration::Variable(var_decl) = &decls[di] {
+                for spec in &var_decl.specs {
+                    for name in &spec.name {
+                        idx_map.insert(name.name.clone(), order);
+                    }
+                }
+            }
+        }
+
+        for (order, &di) in var_decl_indices.iter().enumerate() {
+            let mut deps = Vec::new();
+            if let ast::Declaration::Variable(var_decl) = &decls[di] {
+                for spec in &var_decl.specs {
+                    for val in &spec.values {
+                        let mut refs = Vec::new();
+                        Self::collect_ident_refs(val, &mut refs);
+                        for r in &refs {
+                            if global_names.contains(r) {
+                                if let Some(&dep_order) = idx_map.get(r) {
+                                    if dep_order != order {
+                                        deps.push(dep_order);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            var_deps.push((order, deps));
+        }
+
+        // Topological sort (Kahn's algorithm)
+        let n = var_decl_indices.len();
+        let mut in_degree = vec![0usize; n];
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (node, deps) in &var_deps {
+            for &dep in deps {
+                adj[dep].push(*node);
+                in_degree[*node] += 1;
+            }
+        }
+
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        for i in 0..n {
+            if in_degree[i] == 0 {
+                queue.push_back(i);
+            }
+        }
+
+        let mut sorted_var_order: Vec<usize> = Vec::new();
+        while let Some(node) = queue.pop_front() {
+            sorted_var_order.push(node);
+            for &next in &adj[node] {
+                in_degree[next] -= 1;
+                if in_degree[next] == 0 {
+                    queue.push_back(next);
+                }
+            }
+        }
+
+        // If there's a cycle, fall back to original order
+        if sorted_var_order.len() != n {
+            return decls.to_vec();
+        }
+
+        // Build the result: types/consts first (in original order), then sorted vars, then functions
+        let mut result: Vec<ast::Declaration> = Vec::with_capacity(decls.len());
+
+        // First: type and const declarations in original order
+        for &i in &other_indices {
+            if matches!(&decls[i], ast::Declaration::Type(_)) {
+                result.push(decls[i].clone());
+            }
+        }
+        for &i in &const_decl_indices {
+            result.push(decls[i].clone());
+        }
+
+        // Then: sorted variable declarations
+        for &order in &sorted_var_order {
+            result.push(decls[var_decl_indices[order]].clone());
+        }
+
+        // Finally: function declarations in original order
+        for &i in &other_indices {
+            if matches!(&decls[i], ast::Declaration::Function(_)) {
+                result.push(decls[i].clone());
+            }
+        }
+
+        result
     }
 
     fn compile_declaration(&mut self, decl: &ast::Declaration) -> Result<(), Error> {
@@ -1046,6 +1284,81 @@ impl WasmCompiler {
     }
 
     fn compile_global_var(&mut self, spec: &ast::VarSpec) -> Result<(), Error> {
+        // Check for composite types (struct, slice, map) that need heap allocation
+        let is_composite_type = spec.typ.as_ref().map_or(false, |t| {
+            matches!(t, ast::Expression::TypeSlice(_) | ast::Expression::TypeMap(_) | ast::Expression::TypeArray(_))
+                || matches!(t, ast::Expression::Ident(id) if {
+                    self.struct_defs.contains_key(&id.name)
+                    || self.named_composite_types.contains_key(&id.name)
+                })
+        }) || spec.values.first().map_or(false, |v| {
+            matches!(v, ast::Expression::CompositeLit(_))
+        });
+
+        if is_composite_type {
+            // Composite globals are I32 pointers to heap-allocated data
+            for name in &spec.name {
+                let global_idx = self.next_global_idx;
+                self.global_section.global(
+                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                    &ConstExpr::i32_const(0),
+                );
+                self.next_global_idx += 1;
+                self.global_vars.insert(name.name.clone(), (global_idx, ValType::I32));
+
+                // Track the struct type for selector access
+                if let Some(type_expr) = &spec.typ {
+                    if let ast::Expression::Ident(type_id) = type_expr {
+                        if self.struct_defs.contains_key(&type_id.name) {
+                            // Will be tracked at usage site via global_var_struct_types
+                        }
+                    }
+                }
+
+                if let Some(val) = spec.values.first() {
+                    self.global_var_inits.push((name.name.clone(), val.clone(), ValType::I32));
+                }
+            }
+            return Ok(());
+        }
+
+        let is_string_type = spec.typ.as_ref().map_or(false, |t| {
+            matches!(t, ast::Expression::Ident(id) if id.name == "string")
+        }) || spec.values.first().map_or(false, |v| {
+            matches!(v, ast::Expression::BasicLit(lit) if lit.kind == LitKind::String)
+                || matches!(v, ast::Expression::Operation(op) if {
+                    let is_str_const = self.try_eval_const_expr(v);
+                    matches!(is_str_const, Some(ConstValue::Str(_)))
+                })
+        });
+
+        if is_string_type {
+            // Strings are (ptr, len) pairs; use two i32 globals and defer initialization
+            for name in &spec.name {
+                let ptr_idx = self.next_global_idx;
+                self.global_section.global(
+                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                    &ConstExpr::i32_const(0),
+                );
+                self.next_global_idx += 1;
+
+                let len_idx = self.next_global_idx;
+                self.global_section.global(
+                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                    &ConstExpr::i32_const(0),
+                );
+                self.next_global_idx += 1;
+
+                self.global_vars.insert(name.name.clone(), (ptr_idx, ValType::I32));
+                self.global_vars.insert(format!("{}_1", name.name), (len_idx, ValType::I32));
+
+                if let Some(val) = spec.values.first() {
+                    self.global_var_inits.push((name.name.clone(), val.clone(), ValType::I32));
+                }
+            }
+            return Ok(());
+        }
+
         let vt = if let Some(type_expr) = &spec.typ {
             self.expr_to_val_type(type_expr)
         } else if let Some(val) = spec.values.first() {
@@ -1059,6 +1372,8 @@ impl WasmCompiler {
         } else {
             None
         };
+
+        let has_non_const_init = spec.values.first().is_some() && const_init.is_none();
 
         for name in &spec.name {
             let global_idx = self.next_global_idx;
@@ -1083,6 +1398,12 @@ impl WasmCompiler {
             );
             self.next_global_idx += 1;
             self.global_vars.insert(name.name.clone(), (global_idx, vt));
+
+            if has_non_const_init {
+                if let Some(val) = spec.values.first() {
+                    self.global_var_inits.push((name.name.clone(), val.clone(), vt));
+                }
+            }
         }
 
         Ok(())
@@ -1160,6 +1481,10 @@ impl WasmCompiler {
                     let s = lit.value.trim_matches('\'');
                     Self::unescape_go_char(s).ok().map(|c| ConstValue::I64(c as i64))
                 }
+                LitKind::Imag => {
+                    let num_str = lit.value.trim_end_matches('i');
+                    num_str.parse::<f64>().ok().map(|v| ConstValue::Complex128(0.0, v))
+                }
                 _ => None,
             },
             ast::Expression::Ident(ident) => match ident.name.as_str() {
@@ -1175,6 +1500,7 @@ impl WasmCompiler {
                         Operator::Sub => match inner {
                             ConstValue::I64(v) => v.checked_neg().map(ConstValue::I64),
                             ConstValue::F64(v) => Some(ConstValue::F64(-v)),
+                            ConstValue::Complex128(r, i) => Some(ConstValue::Complex128(-r, -i)),
                             _ => None,
                         },
                         Operator::Add => Some(inner),
@@ -1292,6 +1618,51 @@ impl WasmCompiler {
                             _ => None,
                         }
                     }
+                    // Complex constant arithmetic: 1 + 2i, complex + complex, etc.
+                    (ConstValue::Complex128(ar, ai), ConstValue::Complex128(br, bi)) => {
+                        match op.op {
+                            Operator::Add => Some(ConstValue::Complex128(ar + br, ai + bi)),
+                            Operator::Sub => Some(ConstValue::Complex128(ar - br, ai - bi)),
+                            Operator::Star => Some(ConstValue::Complex128(ar * br - ai * bi, ar * bi + ai * br)),
+                            Operator::Equal => Some(ConstValue::Bool(ar == br && ai == bi)),
+                            Operator::NotEqual => Some(ConstValue::Bool(ar != br || ai != bi)),
+                            _ => None,
+                        }
+                    }
+                    (ConstValue::I64(a), ConstValue::Complex128(br, bi)) => {
+                        let ar = *a as f64;
+                        match op.op {
+                            Operator::Add => Some(ConstValue::Complex128(ar + br, *bi)),
+                            Operator::Sub => Some(ConstValue::Complex128(ar - br, -bi)),
+                            Operator::Star => Some(ConstValue::Complex128(ar * br, ar * bi)),
+                            _ => None,
+                        }
+                    }
+                    (ConstValue::Complex128(ar, ai), ConstValue::I64(b)) => {
+                        let br = *b as f64;
+                        match op.op {
+                            Operator::Add => Some(ConstValue::Complex128(ar + br, *ai)),
+                            Operator::Sub => Some(ConstValue::Complex128(ar - br, *ai)),
+                            Operator::Star => Some(ConstValue::Complex128(ar * br, ai * br)),
+                            _ => None,
+                        }
+                    }
+                    (ConstValue::F64(a), ConstValue::Complex128(br, bi)) => {
+                        match op.op {
+                            Operator::Add => Some(ConstValue::Complex128(a + br, *bi)),
+                            Operator::Sub => Some(ConstValue::Complex128(a - br, -bi)),
+                            Operator::Star => Some(ConstValue::Complex128(a * br, a * bi)),
+                            _ => None,
+                        }
+                    }
+                    (ConstValue::Complex128(ar, ai), ConstValue::F64(b)) => {
+                        match op.op {
+                            Operator::Add => Some(ConstValue::Complex128(ar + b, *ai)),
+                            Operator::Sub => Some(ConstValue::Complex128(ar - b, *ai)),
+                            Operator::Star => Some(ConstValue::Complex128(ar * b, ai * b)),
+                            _ => None,
+                        }
+                    }
                     _ => None,
                 }
             }
@@ -1318,6 +1689,7 @@ impl WasmCompiler {
                             ConstValue::F64(_) => ValType::F64,
                             ConstValue::Bool(_) => ValType::I32,
                             ConstValue::Str(_) => ValType::I32,
+                            ConstValue::Complex128(_, _) => ValType::I32,
                         };
                     }
                     ValType::I64
@@ -2877,21 +3249,40 @@ impl WasmCompiler {
                                 }
                             }
                         } else if let Some(&(global_idx, vt)) = self.global_vars.get(&ident.name) {
-                            match assign.op {
-                                Operator::Assign => {
-                                    out.push(Instruction::GlobalSet(global_idx));
-                                }
-                                _ => {
-                                    let is_unsigned = locals.unsigned_vars.contains(&ident.name);
-                                    let tmp = locals.add_local(
-                                        &format!("__gca_tmp_{}", locals.locals.len()),
-                                        vt,
-                                    );
-                                    out.push(Instruction::LocalSet(tmp));
-                                    out.push(Instruction::GlobalGet(global_idx));
-                                    out.push(Instruction::LocalGet(tmp));
-                                    self.emit_compound_op(&assign.op, vt, is_unsigned, out)?;
-                                    out.push(Instruction::GlobalSet(global_idx));
+                            let len_key = format!("{}_1", ident.name);
+                            if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
+                                // String global: stack has (ptr, len)
+                                let len_tmp = locals.add_local(
+                                    &format!("__gsa_len_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                let ptr_tmp = locals.add_local(
+                                    &format!("__gsa_ptr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(len_tmp));
+                                out.push(Instruction::LocalSet(ptr_tmp));
+                                out.push(Instruction::LocalGet(ptr_tmp));
+                                out.push(Instruction::GlobalSet(global_idx));
+                                out.push(Instruction::LocalGet(len_tmp));
+                                out.push(Instruction::GlobalSet(len_global_idx));
+                            } else {
+                                match assign.op {
+                                    Operator::Assign => {
+                                        out.push(Instruction::GlobalSet(global_idx));
+                                    }
+                                    _ => {
+                                        let is_unsigned = locals.unsigned_vars.contains(&ident.name);
+                                        let tmp = locals.add_local(
+                                            &format!("__gca_tmp_{}", locals.locals.len()),
+                                            vt,
+                                        );
+                                        out.push(Instruction::LocalSet(tmp));
+                                        out.push(Instruction::GlobalGet(global_idx));
+                                        out.push(Instruction::LocalGet(tmp));
+                                        self.emit_compound_op(&assign.op, vt, is_unsigned, out)?;
+                                        out.push(Instruction::GlobalSet(global_idx));
+                                    }
                                 }
                             }
                         }
@@ -3227,6 +3618,20 @@ impl WasmCompiler {
         result_types: &[ValType],
         label: Option<String>,
     ) -> Result<(), Error> {
+        // Detect range over function (Go 1.23+ iterator protocol) — not supported
+        if let ast::Expression::Ident(fn_ident) = &range.expr {
+            if self.functions.iter().any(|f| f.name == fn_ident.name && f.recv_type.is_none()) {
+                return Err(Error::SyntaxError(format!(
+                    "range over function ('for range {}') is not supported; range-over-function iterators (Go 1.23+) are not implemented",
+                    fn_ident.name
+                )));
+            }
+        }
+        if let ast::Expression::Call(_) = &range.expr {
+            // Could be a function returning an iterator; this is also not supported
+            // (normal function calls returning slices/maps are fine and handled below)
+        }
+
         // Check for map range
         if let ast::Expression::Ident(map_ident) = &range.expr {
             if locals.get_var_struct_type(&map_ident.name) == Some("__map") {
@@ -5739,12 +6144,40 @@ impl WasmCompiler {
                     out.push(Instruction::LocalGet(ptr_local));
                     out.push(Instruction::I32Const(len));
                 }
+                ConstValue::Complex128(real, imag) => {
+                    let total_size: i32 = 16;
+                    let float_align: u32 = 3;
+                    let ptr_local = locals.add_local(
+                        &format!("__const_cmplx_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::I32Const(total_size));
+                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                    out.push(Instruction::LocalSet(ptr_local));
+
+                    out.push(Instruction::LocalGet(ptr_local));
+                    out.push(Instruction::F64Const(*real));
+                    out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+
+                    out.push(Instruction::LocalGet(ptr_local));
+                    out.push(Instruction::F64Const(*imag));
+                    out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+
+                    out.push(Instruction::LocalGet(ptr_local));
+                }
             }
             return Ok(());
         }
 
         if let Some(&(global_idx, _vt)) = self.global_vars.get(&ident.name) {
-            out.push(Instruction::GlobalGet(global_idx));
+            // String globals use two globals: ptr (global_idx) and len (global_idx+1)
+            let len_key = format!("{}_1", ident.name);
+            if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
+                out.push(Instruction::GlobalGet(global_idx));
+                out.push(Instruction::GlobalGet(len_global_idx));
+            } else {
+                out.push(Instruction::GlobalGet(global_idx));
+            }
             return Ok(());
         }
 
@@ -6065,6 +6498,7 @@ impl WasmCompiler {
             }
             ast::Expression::Ident(ident) => {
                 locals.get_var_struct_type(&ident.name) == Some("__string")
+                    || self.global_vars.contains_key(&format!("{}_1", ident.name))
             }
             ast::Expression::Paren(p) => self.is_string_expr(&p.expr, locals),
             ast::Expression::Operation(op) if op.op == Operator::Add && op.y.is_some() => {
@@ -6613,31 +7047,80 @@ impl WasmCompiler {
                 self.compile_expression(&op.x, out, locals)?;
             }
             Operator::Sub => {
-                let vt = self.infer_val_type(&op.x, locals);
-                match vt {
-                    ValType::I64 => {
-                        out.push(Instruction::I64Const(0));
-                        self.compile_expression(&op.x, out, locals)?;
-                        out.push(Instruction::I64Sub);
-                    }
-                    ValType::F64 => {
-                        self.compile_expression(&op.x, out, locals)?;
-                        out.push(Instruction::F64Neg);
-                    }
-                    ValType::I32 => {
-                        out.push(Instruction::I32Const(0));
-                        self.compile_expression(&op.x, out, locals)?;
-                        out.push(Instruction::I32Sub);
-                    }
-                    ValType::F32 => {
-                        self.compile_expression(&op.x, out, locals)?;
+                if self.is_complex_expr(&op.x, locals) {
+                    let is_c64 = self.is_complex64_expr(&op.x, locals);
+                    let (total_size, float_align, imag_offset): (i32, u32, u64) =
+                        if is_c64 { (8, 2, 4) } else { (16, 3, 8) };
+
+                    self.compile_expression(&op.x, out, locals)?;
+                    let src_ptr = locals.add_local(
+                        &format!("__cneg_src_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::LocalSet(src_ptr));
+
+                    out.push(Instruction::I32Const(total_size));
+                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                    let res_ptr = locals.add_local(
+                        &format!("__cneg_res_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::LocalSet(res_ptr));
+
+                    // Negate real part
+                    out.push(Instruction::LocalGet(res_ptr));
+                    out.push(Instruction::LocalGet(src_ptr));
+                    if is_c64 {
+                        out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
                         out.push(Instruction::F32Neg);
+                        out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                    } else {
+                        out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::F64Neg);
+                        out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
                     }
-                    _ => {
-                        return Err(Error::InternalError(format!(
-                            "unsupported type for unary negation: {:?}",
-                            vt
-                        )));
+
+                    // Negate imaginary part
+                    out.push(Instruction::LocalGet(res_ptr));
+                    out.push(Instruction::LocalGet(src_ptr));
+                    if is_c64 {
+                        out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::F32Neg);
+                        out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                    } else {
+                        out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::F64Neg);
+                        out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                    }
+
+                    out.push(Instruction::LocalGet(res_ptr));
+                } else {
+                    let vt = self.infer_val_type(&op.x, locals);
+                    match vt {
+                        ValType::I64 => {
+                            out.push(Instruction::I64Const(0));
+                            self.compile_expression(&op.x, out, locals)?;
+                            out.push(Instruction::I64Sub);
+                        }
+                        ValType::F64 => {
+                            self.compile_expression(&op.x, out, locals)?;
+                            out.push(Instruction::F64Neg);
+                        }
+                        ValType::I32 => {
+                            out.push(Instruction::I32Const(0));
+                            self.compile_expression(&op.x, out, locals)?;
+                            out.push(Instruction::I32Sub);
+                        }
+                        ValType::F32 => {
+                            self.compile_expression(&op.x, out, locals)?;
+                            out.push(Instruction::F32Neg);
+                        }
+                        _ => {
+                            return Err(Error::InternalError(format!(
+                                "unsupported type for unary negation: {:?}",
+                                vt
+                            )));
+                        }
                     }
                 }
             }
@@ -11417,10 +11900,23 @@ impl WasmCompiler {
             out.push(Instruction::LocalGet(ptr_local));
             self.compile_expression(elem_expr, out, locals)?;
 
-            let vt = field_wasm_type
+            let target_vt = field_wasm_type
                 .map(|wt| wt.to_val_type())
                 .unwrap_or_else(|| self.infer_val_type(elem_expr, locals));
-            match vt {
+            let expr_vt = self.infer_val_type(elem_expr, locals);
+
+            // Coerce expression type to field type if needed
+            if expr_vt != target_vt {
+                match (expr_vt, target_vt) {
+                    (ValType::I64, ValType::I32) => out.push(Instruction::I32WrapI64),
+                    (ValType::I32, ValType::I64) => out.push(Instruction::I64ExtendI32S),
+                    (ValType::F64, ValType::F32) => out.push(Instruction::F32DemoteF64),
+                    (ValType::F32, ValType::F64) => out.push(Instruction::F64PromoteF32),
+                    _ => {}
+                }
+            }
+
+            match target_vt {
                 ValType::I64 => out.push(Instruction::I64Store(MemArg {
                     offset,
                     align: 3,
@@ -13852,6 +14348,7 @@ impl WasmCompiler {
                             ConstValue::F64(_) => ValType::F64,
                             ConstValue::Bool(_) => ValType::I32,
                             ConstValue::Str(_) => ValType::I32,
+                            ConstValue::Complex128(_, _) => ValType::I32,
                         };
                     }
                     if let Some(&(_idx, vt)) = self.global_vars.get(&ident.name) {
