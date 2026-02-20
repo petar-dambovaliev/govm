@@ -235,8 +235,8 @@ impl Scanner {
             return Ok(tok_cnt);
         }
 
-        // caller make sure here is at least one character
-        let next0_char = self.next_char(0).unwrap();
+        let next0_char = self.next_char(0)
+            .ok_or_else(|| self.error("unexpected end of input"))?;
         let next1_is_digits = matches!(self.next_char(1), Some('0'..='9'));
         let next0_char_op = Operator::from_str(&next0_char.to_string()).ok();
 

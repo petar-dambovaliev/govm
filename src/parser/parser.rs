@@ -22,14 +22,14 @@ pub struct Parser {
 
 impl Parser {
     /// parse input source to `ast::File`, path will be \<input\>
-    pub fn from<S: AsRef<str>>(s: S) -> Self {
+    pub fn from<S: AsRef<str>>(s: S) -> Result<Self> {
         let mut parser = Parser {
             scan: Scanner::from(s),
             ..Default::default()
         };
 
-        parser.next().expect("unexpected new Parser error");
-        parser
+        parser.next()?;
+        Ok(parser)
     }
 
     /// read file content and parse to `ast::File`
@@ -138,9 +138,10 @@ impl Parser {
         self.prev_pos
     }
 
-    fn goback(&mut self, prev: (usize, bool)) {
+    fn goback(&mut self, prev: (usize, bool)) -> Result<()> {
         self.scan.goback(prev);
-        self.current = self.scan_next().unwrap();
+        self.current = self.scan_next()?;
+        Ok(())
     }
 
     fn scan_next(&mut self) -> Result<Option<(usize, Token)>> {
@@ -440,7 +441,7 @@ impl Parser {
 
                 let (pname, ptype) = extract(x, self.current_is(Operator::Comma));
                 if pname.is_some() && (ptype.is_some() || !self.current_is(Operator::BarackRight)) {
-                    self.goback(start);
+                    self.goback(start)?;
                     let params = self.type_parameters()?;
                     let alias = self.skipped(Operator::Assign)?;
                     let typ = self.type_()?;
@@ -453,7 +454,7 @@ impl Parser {
                     });
                 }
 
-                self.goback(start2); // TODO: how to avoid this
+                self.goback(start2)?; // TODO: how to avoid this
                 let len = Box::new(self.parse_next_level_expr()?);
                 let pos1 = self.expect(Operator::BarackRight)?;
                 let typ = Box::new(self.type_()?);
@@ -848,7 +849,7 @@ impl Parser {
                 }
             }
 
-            self.goback(start);
+            self.goback(start)?;
             methods.list.push(ast::Field {
                 tag: None,
                 name: vec![],
@@ -2415,7 +2416,7 @@ mod test {
 
     #[test]
     fn parse_package() -> Result<()> {
-        let pkg = |s| Parser::from(s).parse_package();
+        let pkg = |s| Parser::from(s)?.parse_package();
 
         pkg("package main")?;
         pkg("package\n\nmain")?;
@@ -2430,7 +2431,7 @@ mod test {
 
     #[test]
     fn parse_imports() -> Result<()> {
-        let import = |s: &str| Parser::from(s).parse_import_decl();
+        let import = |s: &str| Parser::from(s)?.parse_import_decl();
 
         import("import ()")?;
         import("import `aa`")?;
@@ -2449,7 +2450,7 @@ mod test {
 
     #[test]
     fn parse_decl() -> Result<()> {
-        let vars = |s| Parser::from(s).parse_decl(Parser::parse_var_spec);
+        let vars = |s| Parser::from(s)?.parse_decl(Parser::parse_var_spec);
 
         vars("var a int")?;
         vars("var a = 1")?;
@@ -2463,7 +2464,7 @@ mod test {
 
         assert!(vars("var a, b;").is_err());
 
-        let consts = |s| Parser::from(s).parse_decl(Parser::parse_const_spec);
+        let consts = |s| Parser::from(s)?.parse_decl(Parser::parse_const_spec);
 
         consts("const a = 1")?;
         consts("const a int64 = 1")?;
@@ -2478,7 +2479,7 @@ mod test {
 
     #[test]
     fn parse_func_decl() -> Result<()> {
-        let func = |s| Parser::from(s).parse_func_decl();
+        let func = |s| Parser::from(s)?.parse_func_decl();
 
         func("func a()")?;
         func("func a(x int) int")?;
@@ -2515,7 +2516,7 @@ mod test {
 
     #[test]
     fn parse_type_decl() -> Result<()> {
-        let typ = |s| Parser::from(s).parse_decl(Parser::parse_type_spec);
+        let typ = |s| Parser::from(s)?.parse_decl(Parser::parse_type_spec);
 
         typ("type n [2]int")?;
         typ("type a [sz(k{})]T")?;
@@ -2533,7 +2534,7 @@ mod test {
 
     #[test]
     fn parse_parameters() -> Result<()> {
-        let params = |s| Parser::from(s).parameters();
+        let params = |s| Parser::from(s)?.parameters();
 
         params("()")?;
         params("(S[T])")?;
@@ -2553,7 +2554,7 @@ mod test {
         params("(a, b int, z float64, opt ...T)")?;
 
         let check = |s| {
-            let mut ps = Parser::from(s);
+            let mut ps = Parser::from(s)?;
             let params = ps.parameters()?;
             ps.check_field_list(params, true)
         };
@@ -2565,7 +2566,7 @@ mod test {
         assert!(check("(...int, ...bool)").is_err());
         assert!(check("(a, b, c, d ...int)").is_err());
 
-        let ret_params = |s| Parser::from(s).parse_result();
+        let ret_params = |s| Parser::from(s)?.parse_result();
 
         ret_params("(int)")?;
         ret_params("(a int)")?;
@@ -2573,7 +2574,7 @@ mod test {
         ret_params("(a int, b bool)")?;
 
         let check = |s| {
-            let mut ps = Parser::from(s);
+            let mut ps = Parser::from(s)?;
             let params = ps.parameters()?;
             ps.check_field_list(params, false)
         };
@@ -2587,7 +2588,7 @@ mod test {
 
     #[test]
     fn parse_expr() -> Result<()> {
-        let expr = |s| Parser::from(s).expression();
+        let expr = |s| Parser::from(s)?.expression();
 
         expr("a + b")?;
         expr("a % b")?;
@@ -2619,7 +2620,7 @@ mod test {
 
     #[test]
     fn parse_operand() -> Result<()> {
-        let operand = |s| Parser::from(s).operand();
+        let operand = |s| Parser::from(s)?.operand();
 
         operand("a.b")?;
         operand("`Hola`")?;
@@ -2636,7 +2637,7 @@ mod test {
 
     #[test]
     fn parse_slice_index() -> Result<()> {
-        let slice = |s| Parser::from(s).parse_slice_index_or_type_inst();
+        let slice = |s| Parser::from(s)?.parse_slice_index_or_type_inst();
 
         slice("[a]")?;
         slice("[:]")?;
@@ -2656,7 +2657,7 @@ mod test {
 
     #[test]
     fn parse_func_type() -> Result<()> {
-        let func = |s| Parser::from(s).func_type();
+        let func = |s| Parser::from(s)?.func_type();
 
         func("func()")?;
         func("func(x int) int")?;
@@ -2677,7 +2678,7 @@ mod test {
 
     #[test]
     fn parse_interface_type() -> Result<()> {
-        let interface = |s| Parser::from(s).parse_interface_type();
+        let interface = |s| Parser::from(s)?.parse_interface_type();
 
         interface("
         interface {
@@ -2721,7 +2722,7 @@ mod test {
 
     #[test]
     fn parse_struct_type() -> Result<()> {
-        let struct_ = |s| Parser::from(s).struct_type();
+        let struct_ = |s| Parser::from(s)?.struct_type();
 
         struct_("struct {}")?;
         struct_("struct {T1}")?;
@@ -2751,7 +2752,7 @@ mod test {
 
     #[test]
     fn parse_stmt() -> Result<()> {
-        let stmt = |s| Parser::from(s).parse_stmt();
+        let stmt = |s| Parser::from(s)?.parse_stmt();
 
         stmt("a <- b{c: c, d: d}")?;
         stmt("if err != nil { return }")?;
@@ -2766,7 +2767,7 @@ mod test {
 
     #[test]
     fn parse_assign_stmt() -> Result<()> {
-        let assign = |s| Parser::from(s).parse_simple_stmt();
+        let assign = |s| Parser::from(s)?.parse_simple_stmt();
 
         assign("x = 1")?;
         assign("*p = f()")?;
@@ -2788,7 +2789,7 @@ mod test {
 
     #[test]
     fn parse_for_stmt() -> Result<()> {
-        let stmt = |s| Parser::from(s).parse_for_stmt();
+        let stmt = |s| Parser::from(s)?.parse_for_stmt();
 
         stmt("for range ch {};")?;
         stmt("for x := range ch {};")?;
@@ -2805,7 +2806,7 @@ mod test {
 
     #[test]
     fn parse_select_stmt() -> Result<()> {
-        let select = |s| Parser::from(s).parse_select_stmt();
+        let select = |s| Parser::from(s)?.parse_select_stmt();
 
         select(
             "select {
@@ -2822,7 +2823,7 @@ mod test {
 
     #[test]
     fn parse_switch_stmt() -> Result<()> {
-        let switch = |s| Parser::from(s).parse_switch_stmt();
+        let switch = |s| Parser::from(s)?.parse_switch_stmt();
 
         switch("switch x {}")?;
         switch("switch x;x.(type) {}")?;
@@ -2854,7 +2855,7 @@ mod test {
 
     #[test]
     fn parse_if_stmt() -> Result<()> {
-        let stmt = |s| Parser::from(s).parse_if_stmt();
+        let stmt = |s| Parser::from(s)?.parse_if_stmt();
 
         stmt("if a > 0 {};")?;
         stmt("if true {{}};")?;

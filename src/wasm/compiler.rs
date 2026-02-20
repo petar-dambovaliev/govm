@@ -406,6 +406,10 @@ impl WasmCompiler {
         } else if let Some(digits) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
             i64::from_str_radix(digits, 16)
                 .map_err(|e| format!("invalid hex literal '{}': {}", s, e))
+        } else if s.starts_with('0') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit()) {
+            // Legacy octal: 0600, 0777, etc. (leading zero without o/O prefix)
+            i64::from_str_radix(&s[1..], 8)
+                .map_err(|e| format!("invalid octal literal '{}': {}", s, e))
         } else {
             s.parse::<i64>()
                 .map_err(|e| format!("invalid integer literal '{}': {}", s, e))
@@ -4304,6 +4308,10 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
         if branch.key == Keyword::Goto {
+            // goto is intentionally excluded: WASM uses structured control flow (block/loop/if)
+            // which cannot directly represent arbitrary jumps. While goto could be emulated with
+            // a loop+switch dispatch, it is rarely used in practice and not worth the complexity
+            // for UDF workloads.
             return Err(Error::InternalError(
                 "goto is not supported in WASM UDFs".to_string(),
             ));
@@ -4964,7 +4972,8 @@ impl WasmCompiler {
     fn extract_string_bytes(lit_value: &str) -> Vec<u8> {
         if lit_value.starts_with('`') {
             let s = lit_value.trim_matches('`');
-            s.as_bytes().to_vec()
+            // Go spec: carriage return characters inside raw string literals are discarded
+            s.bytes().filter(|&b| b != b'\r').collect()
         } else {
             let s = lit_value.trim_matches('"');
             Self::unescape_go_string(s)
@@ -4973,7 +4982,8 @@ impl WasmCompiler {
 
     fn extract_string_content(lit_value: &str) -> Option<String> {
         if lit_value.starts_with('`') {
-            Some(lit_value.trim_matches('`').to_string())
+            let s: String = lit_value.trim_matches('`').chars().filter(|&c| c != '\r').collect();
+            Some(s)
         } else {
             let s = lit_value.trim_matches('"');
             let bytes = Self::unescape_go_string(s);
@@ -6870,7 +6880,11 @@ impl WasmCompiler {
 
         let mut done = false;
         if let ast::Expression::Ident(ident) = arg {
-            if locals.get_var_struct_type(&ident.name) == Some("__slice") {
+            if let Some(&(_, arr_len)) = locals.array_info.get(&ident.name) {
+                out.push(Instruction::I32Const(arr_len as i32));
+                done = true;
+            }
+            if !done && locals.get_var_struct_type(&ident.name) == Some("__slice") {
                 self.compile_expression(arg, out, locals)?;
                 out.push(Instruction::I32Load(MemArg {
                     offset: 8,
