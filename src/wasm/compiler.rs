@@ -1016,7 +1016,9 @@ impl WasmCompiler {
         }
 
         let total_size = if offset == 0 {
-            // Empty struct: allocate 1 byte for addressability
+            // Empty struct: zero size per Go spec.
+            // alloc(0) may return the same pointer for distinct values;
+            // the spec allows this for zero-size types.
             0
         } else {
             let align = 8u32;
@@ -4031,6 +4033,14 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        for clause in &ts.block.body {
+            if clause.body.iter().any(|s| Self::contains_fallthrough(s)) {
+                return Err(Error::SyntaxError(
+                    "cannot fallthrough in type switch".to_string(),
+                ));
+            }
+        }
+
         let has_init = ts.init.is_some();
         if has_init {
             locals.push_scope();
@@ -8377,10 +8387,11 @@ impl WasmCompiler {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             let vt = self.infer_val_type(arg, locals);
+                            let is_unsigned = self.is_unsigned_expr(arg, locals);
                             match vt {
                                 ValType::F64 => out.push(Instruction::I64TruncF64S),
                                 ValType::F32 => out.push(Instruction::I64TruncF32S),
-                                ValType::I32 => out.push(Instruction::I64ExtendI32S),
+                                ValType::I32 => out.push(if is_unsigned { Instruction::I64ExtendI32U } else { Instruction::I64ExtendI32S }),
                                 ValType::I64 => {}
                                 _ => {
                                     return Err(Error::InternalError(format!(
@@ -14248,6 +14259,19 @@ impl WasmCompiler {
         match stmt {
             ast::Statement::Branch(b) => b.key == Keyword::FallThrough,
             ast::Statement::Label(labeled) => Self::is_fallthrough_stmt(&labeled.stmt),
+            _ => false,
+        }
+    }
+
+    fn contains_fallthrough(stmt: &ast::Statement) -> bool {
+        match stmt {
+            ast::Statement::Branch(b) => b.key == Keyword::FallThrough,
+            ast::Statement::Label(labeled) => Self::contains_fallthrough(&labeled.stmt),
+            ast::Statement::Block(block) => block.list.iter().any(|s| Self::contains_fallthrough(s)),
+            ast::Statement::If(if_stmt) => {
+                if_stmt.body.list.iter().any(|s| Self::contains_fallthrough(s))
+                    || if_stmt.else_.as_ref().map_or(false, |e| Self::contains_fallthrough(e))
+            }
             _ => false,
         }
     }
