@@ -8131,27 +8131,24 @@ impl WasmCompiler {
                             ));
                         }
                         let r_vt = self.infer_val_type(&call.args[0], locals);
-                        let is_64 = r_vt == ValType::F32;
-                        let total_size: i32 = if is_64 { 8 } else { 16 };
-                        let float_align: u32 = if is_64 { 2 } else { 3 };
+                        let is_complex64 = r_vt == ValType::F32;
+                        let total_size: i32 = if is_complex64 { 8 } else { 16 };
+                        let float_align: u32 = if is_complex64 { 2 } else { 3 };
 
                         self.compile_expression(&call.args[0], out, locals)?;
-                        if !is_64 && r_vt == ValType::F32 {
-                            out.push(Instruction::F64PromoteF32);
-                        }
                         let real_local = locals.add_local(
                             &format!("__cplx_r_{}", locals.locals.len()),
-                            if is_64 { ValType::F32 } else { ValType::F64 },
+                            if is_complex64 { ValType::F32 } else { ValType::F64 },
                         );
                         out.push(Instruction::LocalSet(real_local));
 
                         self.compile_expression(&call.args[1], out, locals)?;
-                        if !is_64 && self.infer_val_type(&call.args[1], locals) == ValType::F32 {
+                        if !is_complex64 && self.infer_val_type(&call.args[1], locals) == ValType::F32 {
                             out.push(Instruction::F64PromoteF32);
                         }
                         let imag_local = locals.add_local(
                             &format!("__cplx_i_{}", locals.locals.len()),
-                            if is_64 { ValType::F32 } else { ValType::F64 },
+                            if is_complex64 { ValType::F32 } else { ValType::F64 },
                         );
                         out.push(Instruction::LocalSet(imag_local));
 
@@ -8166,7 +8163,7 @@ impl WasmCompiler {
                         // Store real part
                         out.push(Instruction::LocalGet(ptr));
                         out.push(Instruction::LocalGet(real_local));
-                        if is_64 {
+                        if is_complex64 {
                             out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
                         } else {
                             out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
@@ -8175,8 +8172,8 @@ impl WasmCompiler {
                         // Store imag part
                         out.push(Instruction::LocalGet(ptr));
                         out.push(Instruction::LocalGet(imag_local));
-                        let imag_offset = if is_64 { 4u64 } else { 8u64 };
-                        if is_64 {
+                        let imag_offset = if is_complex64 { 4u64 } else { 8u64 };
+                        if is_complex64 {
                             out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
                         } else {
                             out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
@@ -8572,6 +8569,18 @@ impl WasmCompiler {
                         }
                         out.push(Instruction::Call(func_info.wasm_func_idx));
                     } else {
+                        // Multi-value call as argument: f(g()) where g() returns
+                        // multiple values matching f's parameter count
+                        if call.args.len() == 1 {
+                            if let ast::Expression::Call(_) = &call.args[0] {
+                                let inner_count = self.expression_result_count(&call.args[0], Some(locals));
+                                if inner_count > 1 && inner_count == func_info.params.len() {
+                                    self.compile_expression(&call.args[0], out, locals)?;
+                                    out.push(Instruction::Call(func_info.wasm_func_idx));
+                                    return Ok(());
+                                }
+                            }
+                        }
                         for arg in &call.args {
                             self.compile_expression(arg, out, locals)?;
                         }
@@ -9464,6 +9473,23 @@ impl WasmCompiler {
         }
         let mut inner_locals = LocalAlloc::new(inner_params);
 
+        // Collect named return variables (same logic as compile_func_decl)
+        let mut named_returns: Vec<(String, ValType)> = Vec::new();
+        for field in &func_lit.typ.result.list {
+            let field_wasm_types = self.field_to_wasm_types(field);
+            for (i, ident) in field.name.iter().enumerate() {
+                let vt = if i < field_wasm_types.len() {
+                    field_wasm_types[i].to_val_type()
+                } else if !field_wasm_types.is_empty() {
+                    field_wasm_types[0].to_val_type()
+                } else {
+                    ValType::I64
+                };
+                let _local_idx = inner_locals.add_local(&ident.name, vt);
+                named_returns.push((ident.name.clone(), vt));
+            }
+        }
+
         // Set up capture state
         let outer_snapshot = outer_locals.all_entries();
         self.closure_captures = Some(ClosureCaptureState {
@@ -9471,11 +9497,17 @@ impl WasmCompiler {
             captures: Vec::new(),
         });
 
+        let saved_named_returns = std::mem::replace(&mut self.named_returns, named_returns.clone());
+        let saved_result_types = std::mem::replace(&mut self.current_result_types, result_types.clone());
+
         let mut body: Vec<Instruction<'static>> = Vec::new();
         self.deferred_calls.push(Vec::new());
         self.compile_block(&func_lit.body, &mut body, &mut inner_locals, &result_types)?;
         self.emit_deferred_calls(&mut body);
         self.deferred_calls.pop();
+
+        self.named_returns = saved_named_returns;
+        self.current_result_types = saved_result_types;
 
         // Extract captures
         let captures = if let Some(cc) = self.closure_captures.take() {
@@ -9528,14 +9560,32 @@ impl WasmCompiler {
 
         self.last_closure_func_idx = Some(func_idx);
 
-        // Default return values if body doesn't return
-        for vt in &result_types {
-            match vt {
-                ValType::I32 => body.push(Instruction::I32Const(0)),
-                ValType::I64 => body.push(Instruction::I64Const(0)),
-                ValType::F32 => body.push(Instruction::F32Const(0.0)),
-                ValType::F64 => body.push(Instruction::F64Const(0.0)),
-                _ => body.push(Instruction::I32Const(0)),
+        // Termination analysis (mirrors compile_func_decl logic)
+        let body_always_returns = Self::block_always_returns(&func_lit.body.list);
+
+        if body_always_returns {
+            if !result_types.is_empty()
+                && body
+                    .last()
+                    .map_or(true, |i| !matches!(i, Instruction::Return))
+            {
+                body.push(Instruction::Unreachable);
+            }
+        } else if result_types.is_empty()
+            || body
+                .last()
+                .map_or(true, |i| !matches!(i, Instruction::Return))
+        {
+            if !named_returns.is_empty() {
+                for (name, _vt) in &named_returns {
+                    if let Some(idx) = inner_locals.find(name) {
+                        body.push(Instruction::LocalGet(idx));
+                    }
+                }
+            } else if !result_types.is_empty() {
+                return Err(Error::SyntaxError(
+                    "missing return in function literal".to_string(),
+                ));
             }
         }
         body.push(Instruction::End);
@@ -12637,6 +12687,13 @@ impl WasmCompiler {
                         | "complex" | "real" | "imag" => 1,
                         "string" => 2,
                         _ => {
+                            if let Some(loc) = locals {
+                                if let Some(&(func_idx, _)) = loc.closure_info.get(&ident.name) {
+                                    if let Some(fi) = self.functions.iter().find(|f| f.wasm_func_idx == func_idx) {
+                                        return fi.results.len();
+                                    }
+                                }
+                            }
                             if let Some(fi) =
                                 self.functions.iter().find(|f| f.name == ident.name)
                             {
