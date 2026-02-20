@@ -92,6 +92,18 @@ fn val_type_byte_size(vt: ValType) -> u32 {
     }
 }
 
+fn aligned_capture_env_offset(captures: &[CapturedVar], next_vt: ValType) -> u32 {
+    let mut offset: u32 = 0;
+    for c in captures {
+        let size = val_type_byte_size(c.val_type);
+        let align = size;
+        offset = (offset + align - 1) & !(align - 1);
+        offset += size;
+    }
+    let next_align = val_type_byte_size(next_vt);
+    (offset + next_align - 1) & !(next_align - 1)
+}
+
 struct ClosureCaptureState {
     outer_locals: Vec<(String, ValType)>,
     captures: Vec<CapturedVar>,
@@ -325,6 +337,9 @@ pub struct WasmCompiler {
     generic_types: HashMap<String, ast::TypeSpec>,
     // Track monomorphized specializations: "FuncName<int,string>" -> func_idx
     monomorphized: HashMap<String, u32>,
+
+    // Map type info stored per struct field: ("StructName", "fieldName") -> MapTypeInfo
+    struct_field_map_types: HashMap<(String, String), MapTypeInfo>,
 }
 
 impl WasmCompiler {
@@ -387,6 +402,7 @@ impl WasmCompiler {
             generic_funcs: HashMap::new(),
             generic_types: HashMap::new(),
             monomorphized: HashMap::new(),
+            struct_field_map_types: HashMap::new(),
         }
     }
 
@@ -1221,6 +1237,7 @@ impl WasmCompiler {
                         let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
                             .insert(spec.name.name.clone(), struct_def);
+                        self.register_struct_field_map_types(&spec.name.name, &struct_type.fields);
                     } else if let ast::Expression::Ident(base_type) = &spec.typ {
                         self.type_aliases.insert(
                             spec.name.name.clone(),
@@ -1235,6 +1252,26 @@ impl WasmCompiler {
                     // Interface types are handled during prescan
                 }
                 Ok(())
+            }
+        }
+    }
+
+    fn register_struct_field_map_types(&mut self, struct_name: &str, fields: &[ast::Field]) {
+        for field in fields {
+            if let ast::Expression::TypeMap(map_type) = &field.typ {
+                let (kv, ks, vv, vs, sk, sv, vst) = self.map_key_val_types(map_type);
+                let nested = self.build_nested_map_type_info(map_type);
+                let mti = MapTypeInfo {
+                    key_vt: kv, val_vt: vv, key_size: ks, val_size: vs,
+                    is_string_key: sk, is_string_val: sv,
+                    val_struct_type: vst, nested_map_val_type: nested,
+                };
+                for name_ident in &field.name {
+                    self.struct_field_map_types.insert(
+                        (struct_name.to_string(), name_ident.name.clone()),
+                        mti.clone(),
+                    );
+                }
             }
         }
     }
@@ -3734,6 +3771,21 @@ impl WasmCompiler {
                 return self.compile_range_map(range, &map_ident.name.clone(), out, locals, result_types, label);
             }
         }
+        if let ast::Expression::Selector(sel) = &range.expr {
+            if self.is_selector_map_field(sel, locals) {
+                if let Some(parent_type) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+                    if let Some(mti) = self.struct_field_map_types.get(&(parent_type, sel.sel.name.clone())).cloned() {
+                        self.compile_expression(&range.expr, out, locals)?;
+                        let tmp_name = format!("__range_map_tmp_{}", locals.locals.len());
+                        let tmp_local = locals.add_local(&tmp_name, ValType::I32);
+                        out.push(Instruction::LocalSet(tmp_local));
+                        locals.set_var_struct_type(&tmp_name, "__map");
+                        locals.map_types.insert(tmp_name.clone(), mti);
+                        return self.compile_range_map(range, &tmp_name, out, locals, result_types, label);
+                    }
+                }
+            }
+        }
 
         let idx_local = locals.add_local("__range_idx", ValType::I32);
         let len_local = locals.add_local("__range_len", ValType::I32);
@@ -3742,6 +3794,8 @@ impl WasmCompiler {
         // Check if the range expression is a slice header variable
         let is_slice_header = if let ast::Expression::Ident(ident) = &range.expr {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
+        } else if let ast::Expression::Selector(sel) = &range.expr {
+            self.is_selector_slice_field(sel, locals)
         } else {
             false
         };
@@ -4186,6 +4240,9 @@ impl WasmCompiler {
                     "int".to_string()
                 }
             }
+            ast::Expression::Operation(op) if op.y.is_none() && op.op == Operator::And => {
+                self.infer_concrete_type_name(&op.x, locals)
+            }
             _ => {
                 let vt = self.infer_val_type(expr, locals);
                 Self::type_id_for_val_type(vt).to_string()
@@ -4307,44 +4364,58 @@ impl WasmCompiler {
             Error::InternalError("type assertion without target type".to_string())
         })?;
 
-        let target_type_name = match target_type.as_ref() {
-            ast::Expression::Ident(ident) => ident.name.clone(),
-            _ => {
-                return Err(Error::InternalError(
-                    "type assertion target must be a named type".to_string(),
-                ));
-            }
+        let target_type_name = Self::extract_type_name_from_expr(target_type).ok_or_else(|| {
+            Error::InternalError("type assertion target must be a named type".to_string())
+        })?;
+
+        // Get the interface variable -- either from a named var or by compiling the expression
+        let (tid_local, data_local) = if let ast::Expression::Ident(ident) = ta.left.as_ref() {
+            let tid = self.get_iface_type_id_local(&ident.name).ok_or_else(|| {
+                Error::InternalError(format!("'{}' is not an interface variable", ident.name))
+            })?;
+            let data = locals.find(&ident.name).ok_or_else(|| {
+                Error::InternalError(format!("variable '{}' not found", ident.name))
+            })?;
+            (tid, data)
+        } else {
+            self.compile_expression(&ta.left, out, locals)?;
+            let wrapper = locals.add_local(
+                &format!("__ta_wrap_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalSet(wrapper));
+
+            let tid = locals.add_local(
+                &format!("__ta_tid_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            let data = locals.add_local(
+                &format!("__ta_data_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalGet(wrapper));
+            out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(tid));
+            out.push(Instruction::LocalGet(wrapper));
+            out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(data));
+            (tid, data)
         };
 
-        // Get the interface variable
-        let iface_var_name = match ta.left.as_ref() {
-            ast::Expression::Ident(ident) => ident.name.clone(),
-            _ => {
-                return Err(Error::InternalError(
-                    "type assertion source must be a variable".to_string(),
-                ));
-            }
-        };
-
-        let tid_local = self.get_iface_type_id_local(&iface_var_name).ok_or_else(|| {
-            Error::InternalError(format!("'{}' is not an interface variable", iface_var_name))
-        })?;
-        let data_local = locals.find(&iface_var_name).ok_or_else(|| {
-            Error::InternalError(format!("variable '{}' not found", iface_var_name))
-        })?;
+        let lookup_type_name = target_type_name.strip_prefix('*').unwrap_or(&target_type_name).to_string();
 
         // Check if target is an interface type
-        if self.iface_defs.contains_key(&target_type_name)
-            || target_type_name == "any"
-            || target_type_name == "error"
+        if self.iface_defs.contains_key(&lookup_type_name)
+            || lookup_type_name == "any"
+            || lookup_type_name == "error"
         {
-            if target_type_name == "any" {
+            if lookup_type_name == "any" {
                 // any always succeeds: pass through the interface value
                 out.push(Instruction::LocalGet(data_local));
                 return Ok(());
             }
 
-            let valid_type_ids = self.types_implementing_interface(&target_type_name);
+            let valid_type_ids = self.types_implementing_interface(&lookup_type_name);
             if valid_type_ids.is_empty() {
                 out.push(Instruction::Unreachable);
                 return Ok(());
@@ -4379,7 +4450,7 @@ impl WasmCompiler {
             return Ok(());
         }
 
-        let target_id = self.get_or_create_type_id(&target_type_name);
+        let target_id = self.get_or_create_type_id(&lookup_type_name);
         let target_vt = Self::val_type_for_type_name(&target_type_name);
 
         // Check type_id matches target
@@ -4410,35 +4481,49 @@ impl WasmCompiler {
             Error::InternalError("type assertion without target type".to_string())
         })?;
 
-        let target_type_name = match target_type.as_ref() {
-            ast::Expression::Ident(ident) => ident.name.clone(),
-            _ => {
-                return Err(Error::InternalError(
-                    "type assertion target must be a named type".to_string(),
-                ));
-            }
+        let target_type_name = Self::extract_type_name_from_expr(target_type).ok_or_else(|| {
+            Error::InternalError("type assertion target must be a named type".to_string())
+        })?;
+
+        let (tid_local, data_local) = if let ast::Expression::Ident(ident) = ta.left.as_ref() {
+            let tid = self.get_iface_type_id_local(&ident.name).ok_or_else(|| {
+                Error::InternalError(format!("'{}' is not an interface variable", ident.name))
+            })?;
+            let data = locals.find(&ident.name).ok_or_else(|| {
+                Error::InternalError(format!("variable '{}' not found", ident.name))
+            })?;
+            (tid, data)
+        } else {
+            self.compile_expression(&ta.left, out, locals)?;
+            let wrapper = locals.add_local(
+                &format!("__taok_wrap_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalSet(wrapper));
+
+            let tid = locals.add_local(
+                &format!("__taok_tid_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            let data = locals.add_local(
+                &format!("__taok_data_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalGet(wrapper));
+            out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(tid));
+            out.push(Instruction::LocalGet(wrapper));
+            out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(data));
+            (tid, data)
         };
 
-        let iface_var_name = match ta.left.as_ref() {
-            ast::Expression::Ident(ident) => ident.name.clone(),
-            _ => {
-                return Err(Error::InternalError(
-                    "type assertion source must be a variable".to_string(),
-                ));
-            }
-        };
-
-        let tid_local = self.get_iface_type_id_local(&iface_var_name).ok_or_else(|| {
-            Error::InternalError(format!("'{}' is not an interface variable", iface_var_name))
-        })?;
-        let data_local = locals.find(&iface_var_name).ok_or_else(|| {
-            Error::InternalError(format!("variable '{}' not found", iface_var_name))
-        })?;
+        let lookup_type_name = target_type_name.strip_prefix('*').unwrap_or(&target_type_name).to_string();
 
         // Check if target is an interface type
-        if self.iface_defs.contains_key(&target_type_name)
-            || target_type_name == "any"
-            || target_type_name == "error"
+        if self.iface_defs.contains_key(&lookup_type_name)
+            || lookup_type_name == "any"
+            || lookup_type_name == "error"
         {
             let val_local = locals.add_local(val_var, ValType::I32);
             let ok_local = locals.add_local(ok_var, ValType::I32);
@@ -4450,7 +4535,7 @@ impl WasmCompiler {
                 ValType::I32,
             );
 
-            if target_type_name == "any" {
+            if lookup_type_name == "any" {
                 // any always succeeds
                 out.push(Instruction::LocalGet(data_local));
                 out.push(Instruction::LocalSet(val_local));
@@ -4462,7 +4547,7 @@ impl WasmCompiler {
                 return Ok(());
             }
 
-            let valid_type_ids = self.types_implementing_interface(&target_type_name);
+            let valid_type_ids = self.types_implementing_interface(&lookup_type_name);
 
             let match_local = locals.add_local(
                 &format!("__taok_imatch_{}", locals.locals.len()),
@@ -4498,7 +4583,7 @@ impl WasmCompiler {
             return Ok(());
         }
 
-        let target_id = self.get_or_create_type_id(&target_type_name);
+        let target_id = self.get_or_create_type_id(&lookup_type_name);
         let target_vt = Self::val_type_for_type_name(&target_type_name);
 
         let val_local = locals.add_local(val_var, target_vt);
@@ -4614,16 +4699,27 @@ impl WasmCompiler {
                 // Build OR of type matches
                 let mut first = true;
                 for case_expr in &clause.list {
-                    if let ast::Expression::Ident(type_ident) = case_expr {
-                        let case_type_id = self.get_or_create_type_id(&type_ident.name);
-                        out.push(Instruction::LocalGet(type_id_tmp));
-                        out.push(Instruction::I32Const(case_type_id as i32));
-                        out.push(Instruction::I32Eq);
+                    let type_name = Self::extract_type_name_from_expr(case_expr);
+                    if let Some(ref tn) = type_name {
+                        if tn == "nil" {
+                            out.push(Instruction::LocalGet(type_id_tmp));
+                            out.push(Instruction::I32Eqz);
+                        } else {
+                            let lookup_name = tn.strip_prefix('*').unwrap_or(tn);
+                            let case_type_id = self.get_or_create_type_id(lookup_name);
+                            out.push(Instruction::LocalGet(type_id_tmp));
+                            out.push(Instruction::I32Const(case_type_id as i32));
+                            out.push(Instruction::I32Eq);
+                        }
                         if !first {
                             out.push(Instruction::I32Or);
                         }
                         first = false;
                     }
+                }
+
+                if first {
+                    out.push(Instruction::I32Const(0));
                 }
 
                 out.push(Instruction::If(BlockType::Empty));
@@ -4633,14 +4729,16 @@ impl WasmCompiler {
 
                     if let Some(ref bind) = bind_name {
                         if clause.list.len() == 1 {
-                            // Single type: bind the concrete typed variable
-                            if let ast::Expression::Ident(type_ident) = &clause.list[0] {
-                                let bind_vt = Self::val_type_for_type_name(&type_ident.name);
-                                let bind_local = locals.add_local(bind, bind_vt);
-                                out.push(Instruction::LocalGet(data_local));
-                                let (_, align) = Self::elem_size_and_align(bind_vt);
-                                Self::emit_typed_load(bind_vt, 0, align, out);
-                                out.push(Instruction::LocalSet(bind_local));
+                            let case_type_name = Self::extract_type_name_from_expr(&clause.list[0]);
+                            if let Some(ref tn) = case_type_name {
+                                if tn != "nil" {
+                                    let bind_vt = Self::val_type_for_type_name(tn);
+                                    let bind_local = locals.add_local(bind, bind_vt);
+                                    out.push(Instruction::LocalGet(data_local));
+                                    let (_, align) = Self::elem_size_and_align(bind_vt);
+                                    Self::emit_typed_load(bind_vt, 0, align, out);
+                                    out.push(Instruction::LocalSet(bind_local));
+                                }
                             }
                         } else {
                             // Multiple types: bind as the interface value (I32 pointer)
@@ -4673,6 +4771,28 @@ impl WasmCompiler {
         }
 
         Ok(())
+    }
+
+    fn extract_type_name_from_expr(expr: &ast::Expression) -> Option<String> {
+        match expr {
+            ast::Expression::Ident(ident) => Some(ident.name.clone()),
+            ast::Expression::Star(star) => {
+                let inner = Self::extract_type_name_from_expr(&star.right)?;
+                Some(format!("*{}", inner))
+            }
+            ast::Expression::TypePointer(ptr) => {
+                let inner = Self::extract_type_name_from_expr(&ptr.typ)?;
+                Some(format!("*{}", inner))
+            }
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    Some(format!("{}.{}", pkg.name, sel.sel.name))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     fn extract_type_switch_guard(
@@ -5858,6 +5978,7 @@ impl WasmCompiler {
                         let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
                             .insert(spec.name.name.clone(), struct_def);
+                        self.register_struct_field_map_types(&spec.name.name, &struct_type.fields);
                     }
                 }
                 Ok(())
@@ -6216,7 +6337,7 @@ impl WasmCompiler {
                 .map(|(i, (_, vt))| (i as u32, *vt));
 
             if let Some((outer_idx, vt)) = found {
-                let env_offset: u32 = cc.captures.iter().map(|c| val_type_byte_size(c.val_type)).sum();
+                let env_offset = aligned_capture_env_offset(&cc.captures, vt);
                 cc.captures.push(CapturedVar {
                     name: ident.name.clone(),
                     val_type: vt,
@@ -6682,7 +6803,7 @@ impl WasmCompiler {
             .map(|(i, (_, vt))| (i as u32, *vt));
 
         if let Some((outer_idx, vt)) = found {
-            let env_offset: u32 = cc.captures.iter().map(|c| val_type_byte_size(c.val_type)).sum();
+            let env_offset = aligned_capture_env_offset(&cc.captures, vt);
             cc.captures.push(CapturedVar {
                 name: name.to_string(),
                 val_type: vt,
@@ -11463,7 +11584,10 @@ impl WasmCompiler {
 
         // In outer function: allocate env and store captures
         if !captures.is_empty() {
-            let env_size: i32 = captures.iter().map(|c| val_type_byte_size(c.val_type) as i32).sum();
+            let env_size: i32 = {
+                let last = captures.last().unwrap();
+                (last.env_offset + val_type_byte_size(last.val_type)) as i32
+            };
             out.push(Instruction::I32Const(env_size));
             out.push(Instruction::Call(self.alloc_func_idx()?));
             let env_local = outer_locals.add_local("__env_ptr_outer", ValType::I32);
@@ -14553,6 +14677,7 @@ impl WasmCompiler {
         if let ast::Expression::TypeStruct(struct_type) = &specialized_type {
             let struct_def = self.compute_struct_def(&struct_type.fields);
             self.struct_defs.insert(mono_name.clone(), struct_def);
+            self.register_struct_field_map_types(&mono_name, &struct_type.fields);
         }
 
         Ok(mono_name)

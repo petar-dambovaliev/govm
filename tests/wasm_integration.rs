@@ -19953,3 +19953,409 @@ func Run() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 1, "interface-to-interface assertion fail: ok=false => 1");
 }
+
+// ==================== Regression: type switch case nil ====================
+
+#[test]
+fn test_type_switch_case_nil() {
+    let source = r#"
+package main
+
+type Stringer interface {
+    String() string
+}
+
+func Run() int {
+    var x Stringer
+    switch x.(type) {
+    case nil:
+        return 1
+    default:
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "type switch case nil should match nil interface");
+}
+
+#[test]
+fn test_type_switch_case_nil_non_nil() {
+    let source = r#"
+package main
+
+type Animal interface {
+    Legs() int
+}
+
+type Dog struct{}
+
+func (d Dog) Legs() int { return 4 }
+
+func Run() int {
+    var a Animal = Dog{}
+    switch a.(type) {
+    case nil:
+        return 0
+    case Dog:
+        return 1
+    default:
+        return 2
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "type switch on non-nil should match concrete type, not nil");
+}
+
+// ==================== Regression: type switch case *T ====================
+
+#[test]
+fn test_type_switch_case_pointer_type() {
+    let source = r#"
+package main
+
+type Shape interface {
+    Area() int
+}
+
+type Circle struct {
+    Radius int
+}
+
+func (c *Circle) Area() int { return c.Radius * c.Radius * 3 }
+
+func Run() int {
+    c := &Circle{Radius: 5}
+    var s Shape = c
+    switch s.(type) {
+    case *Circle:
+        return 1
+    default:
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "type switch case *Circle should match pointer type");
+}
+
+// ==================== Regression: type assertion x.(*T) ====================
+
+#[test]
+fn test_type_assert_pointer_target() {
+    let source = r#"
+package main
+
+type Animal interface {
+    Legs() int
+}
+
+type Dog struct {
+    L int
+}
+
+func (d Dog) Legs() int { return d.L }
+
+type Cat struct {
+    L int
+}
+
+func (c Cat) Legs() int { return c.L }
+
+func Run() int {
+    var a Animal = Dog{L: 4}
+    d := a.(Dog)
+    return d.Legs()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 4, "type assertion x.(T) should extract concrete value");
+}
+
+#[test]
+fn test_type_assert_pointer_comma_ok() {
+    let source = r#"
+package main
+
+type Animal interface {
+    Legs() int
+}
+
+type Dog struct {
+    L int
+}
+
+func (d Dog) Legs() int { return d.L }
+
+type Cat struct {
+    L int
+}
+
+func (c Cat) Legs() int { return c.L }
+
+func Run() int {
+    var a Animal = Dog{L: 4}
+    _, ok := a.(Cat)
+    if ok {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 0, "type assertion comma-ok should return false for wrong type");
+}
+
+// ==================== Regression: type assertion on non-Ident expression ====================
+
+#[test]
+fn test_type_assert_on_function_return() {
+    let source = r#"
+package main
+
+type Valuer interface {
+    Val() int
+}
+
+type Num struct {
+    N int
+}
+
+func (n Num) Val() int { return n.N }
+
+func getValuer() Valuer {
+    return Num{N: 99}
+}
+
+func Run() int {
+    n := getValuer().(Num)
+    return n.Val()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 99, "type assertion on function return should work");
+}
+
+// ==================== Regression: range over struct field slice ====================
+
+#[test]
+fn test_range_over_struct_field_slice() {
+    let source = r#"
+package main
+
+type Container struct {
+    Items []int
+}
+
+func Run() int {
+    c := Container{Items: []int{10, 20, 30}}
+    sum := 0
+    for _, v := range c.Items {
+        sum = sum + v
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 60, "range over struct field slice should sum correctly");
+}
+
+// ==================== Regression: range over struct field map ====================
+
+#[test]
+fn test_range_over_struct_field_map() {
+    let source = r#"
+package main
+
+type Config struct {
+    Data map[string]int
+}
+
+func Run() int {
+    c := Config{Data: map[string]int{"a": 1, "b": 2, "c": 3}}
+    sum := 0
+    for _, v := range c.Data {
+        sum = sum + v
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 6, "range over struct field map should sum values correctly");
+}
+
+// ==================== Regression: closure capture alignment ====================
+
+#[test]
+fn test_closure_capture_i32_then_i64_alignment() {
+    let source = r#"
+package main
+
+func Run() int {
+    a := 1
+    b := int64(1000000000000)
+    f := func() int {
+        return a + int(b)
+    }
+    return f()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1000000000001, "closure capturing i32 then i64 should align correctly");
+}
+
+#[test]
+fn test_closure_capture_mixed_sizes_alignment() {
+    let source = r#"
+package main
+
+func Run() int {
+    a := true
+    b := int64(42)
+    c := 100
+    d := int64(200)
+    f := func() int {
+        result := 0
+        if a {
+            result = result + 1
+        }
+        result = result + int(b) + c + int(d)
+        return result
+    }
+    return f()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 343, "closure with mixed-size captures should produce correct result");
+}
+
+// ==================== Regression: type switch mixed Ident and pointer cases ====================
+
+#[test]
+fn test_type_switch_mixed_ident_and_nil() {
+    let source = r#"
+package main
+
+type Animal interface {
+    Sound() int
+}
+
+type Cat struct{}
+type Dog struct{}
+
+func (c Cat) Sound() int { return 1 }
+func (d Dog) Sound() int { return 2 }
+
+func classify(a Animal) int {
+    switch a.(type) {
+    case nil:
+        return 0
+    case Cat:
+        return 1
+    case Dog:
+        return 2
+    default:
+        return -1
+    }
+}
+
+func Run() int {
+    var nilAnimal Animal
+    result := classify(nilAnimal)
+    result = result + classify(Cat{}) * 10
+    result = result + classify(Dog{}) * 100
+    return result
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 210, "type switch with nil+concrete: nil=0, Cat=10, Dog=200 => 210");
+}
