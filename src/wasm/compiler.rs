@@ -2393,25 +2393,61 @@ impl WasmCompiler {
                     } else if let ast::Expression::Selector(sel) =
                         defer.call.func.as_ref()
                     {
-                        if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
-                            let qname = format!("{}.{}", pkg.name, sel.sel.name);
-                            self.functions
+                        if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
+                            let qname = format!("{}.{}", recv_ident.name, sel.sel.name);
+                            let pkg_func = self.functions
                                 .iter()
                                 .find(|f| f.name == qname)
-                                .map(|f| f.wasm_func_idx)
-                                .or_else(|| {
-                                    if let Some(type_name) = locals.get_var_struct_type(&pkg.name) {
-                                        let method_qname = format!("{}.{}", type_name, sel.sel.name);
-                                        self.functions
-                                            .iter()
-                                            .find(|f| f.name == method_qname)
-                                            .map(|f| f.wasm_func_idx)
-                                    } else {
-                                        None
-                                    }
-                                })
+                                .map(|f| f.wasm_func_idx);
+
+                            if pkg_func.is_some() {
+                                pkg_func
+                            } else if let Some(type_name) = locals.get_var_struct_type(&recv_ident.name).map(|s| s.to_string()) {
+                                let method_qname = format!("{}.{}", type_name, sel.sel.name);
+                                let method_func = self.functions
+                                    .iter()
+                                    .find(|f| f.name == method_qname)
+                                    .map(|f| f.wasm_func_idx);
+                                if let Some(idx) = method_func {
+                                    self.compile_expression(sel.x.as_ref(), out, locals)?;
+                                    let recv_temp = locals.add_local(
+                                        &format!("__defer_recv_{}", locals.locals.len()),
+                                        ValType::I32,
+                                    );
+                                    out.push(Instruction::LocalSet(recv_temp));
+                                    arg_locals.insert(0, (recv_temp, ValType::I32));
+                                    Some(idx)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         } else {
-                            None
+                            // Chained selector: e.g., obj.field.Method()
+                            // Compile the full receiver expression and resolve the method
+                            let recv_type = self.infer_selector_struct_type(sel.x.as_ref(), locals);
+                            if let Some(type_name) = recv_type {
+                                let method_qname = format!("{}.{}", type_name, sel.sel.name);
+                                let method_func = self.functions
+                                    .iter()
+                                    .find(|f| f.name == method_qname)
+                                    .map(|f| f.wasm_func_idx);
+                                if let Some(idx) = method_func {
+                                    self.compile_expression(sel.x.as_ref(), out, locals)?;
+                                    let recv_temp = locals.add_local(
+                                        &format!("__defer_recv_{}", locals.locals.len()),
+                                        ValType::I32,
+                                    );
+                                    out.push(Instruction::LocalSet(recv_temp));
+                                    arg_locals.insert(0, (recv_temp, ValType::I32));
+                                    Some(idx)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         }
                     } else {
                         None
@@ -12148,7 +12184,55 @@ impl WasmCompiler {
 
         for (i, kv) in comp.val.values.iter().enumerate() {
             if let ast::Element::LitValue(nested_lit) = &kv.val {
-                // Nested composite literal: determine inner type from struct field
+                // Check if this is an embedded struct field (should be stored inline)
+                let embed_info = if let Some(ref key) = kv.key {
+                    if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
+                        struct_def.as_ref().and_then(|sd|
+                            sd.embedded_types.iter()
+                                .find(|(name, _)| name == &key_ident.name)
+                                .map(|(name, off)| (name.clone(), *off))
+                        )
+                    } else { None }
+                } else if let Some(ref sd) = struct_def {
+                    if i < sd.fields.len() {
+                        sd.embedded_types.iter()
+                            .find(|(name, _)| name == &sd.fields[i].name)
+                            .map(|(name, off)| (name.clone(), *off))
+                    } else { None }
+                } else { None };
+
+                if let Some((embed_type_name, embed_offset)) = embed_info {
+                    // Embedded struct: write fields inline into the parent struct
+                    let inner_struct_def = self.struct_defs.get(&embed_type_name).cloned();
+
+                    for (j, inner_kv) in nested_lit.values.iter().enumerate() {
+                        if let ast::Element::Expr(inner_expr) = &inner_kv.val {
+                            let (inner_off, fwt) = if let Some(ref ikey) = inner_kv.key {
+                                if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                                    if let Some(ref isd) = inner_struct_def {
+                                        if let Some(f) = isd.find_field(&kid.name) {
+                                            (f.offset as u64, Some(f.wasm_type))
+                                        } else { (j as u64 * 8, None) }
+                                    } else { (j as u64 * 8, None) }
+                                } else { (j as u64 * 8, None) }
+                            } else if let Some(ref isd) = inner_struct_def {
+                                if j < isd.fields.len() {
+                                    (isd.fields[j].offset as u64, Some(isd.fields[j].wasm_type))
+                                } else { (j as u64 * 8, None) }
+                            } else { (j as u64 * 8, None) };
+
+                            let abs_off = embed_offset as u64 + inner_off;
+                            out.push(Instruction::LocalGet(ptr_local));
+                            self.compile_expression(inner_expr, out, locals)?;
+                            let vt = fwt.map(|wt| wt.to_val_type())
+                                .unwrap_or_else(|| self.infer_val_type(inner_expr, locals));
+                            Self::emit_typed_store(vt, abs_off, if vt == ValType::I64 || vt == ValType::F64 { 3 } else { 2 }, out);
+                        }
+                    }
+                    continue;
+                }
+
+                // Non-embedded nested composite literal: allocate separately
                 let inner_type_name = if let Some(ref key) = kv.key {
                     if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
                         struct_def.as_ref().and_then(|sd| sd.find_field(&key_ident.name)).and_then(|_| {
@@ -12241,6 +12325,54 @@ impl WasmCompiler {
                     ));
                 }
             };
+
+            // Check if this is an embedded struct via CompositeLit expression
+            if let ast::Expression::CompositeLit(inner_comp) = elem_expr {
+                let embed_info = if let Some(ref key) = kv.key {
+                    if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
+                        struct_def.as_ref().and_then(|sd|
+                            sd.embedded_types.iter()
+                                .find(|(name, _)| name == &key_ident.name)
+                                .map(|(name, off)| (name.clone(), *off))
+                        )
+                    } else { None }
+                } else if let Some(ref sd) = struct_def {
+                    if i < sd.fields.len() {
+                        sd.embedded_types.iter()
+                            .find(|(name, _)| name == &sd.fields[i].name)
+                            .map(|(name, off)| (name.clone(), *off))
+                    } else { None }
+                } else { None };
+
+                if let Some((embed_type_name, embed_offset)) = embed_info {
+                    let inner_struct_def = self.struct_defs.get(&embed_type_name).cloned();
+                    for (j, inner_kv) in inner_comp.val.values.iter().enumerate() {
+                        if let ast::Element::Expr(inner_expr) = &inner_kv.val {
+                            let (inner_off, fwt) = if let Some(ref ikey) = inner_kv.key {
+                                if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                                    if let Some(ref isd) = inner_struct_def {
+                                        if let Some(f) = isd.find_field(&kid.name) {
+                                            (f.offset as u64, Some(f.wasm_type))
+                                        } else { (j as u64 * 8, None) }
+                                    } else { (j as u64 * 8, None) }
+                                } else { (j as u64 * 8, None) }
+                            } else if let Some(ref isd) = inner_struct_def {
+                                if j < isd.fields.len() {
+                                    (isd.fields[j].offset as u64, Some(isd.fields[j].wasm_type))
+                                } else { (j as u64 * 8, None) }
+                            } else { (j as u64 * 8, None) };
+
+                            let abs_off = embed_offset as u64 + inner_off;
+                            out.push(Instruction::LocalGet(ptr_local));
+                            self.compile_expression(inner_expr, out, locals)?;
+                            let vt = fwt.map(|wt| wt.to_val_type())
+                                .unwrap_or_else(|| self.infer_val_type(inner_expr, locals));
+                            Self::emit_typed_store(vt, abs_off, if vt == ValType::I64 || vt == ValType::F64 { 3 } else { 2 }, out);
+                        }
+                    }
+                    continue;
+                }
+            }
 
             // Determine offset and type from struct layout
             let (offset, field_wasm_type) = if let Some(ref key) = kv.key {
@@ -15362,7 +15494,28 @@ impl WasmCompiler {
                 if_stmt.body.list.iter().any(|s| Self::contains_fallthrough(s))
                     || if_stmt.else_.as_ref().map_or(false, |e| Self::contains_fallthrough(e))
             }
+            ast::Statement::For(for_stmt) => {
+                for_stmt.body.list.iter().any(|s| Self::contains_fallthrough(s))
+            }
+            ast::Statement::Range(range_stmt) => {
+                range_stmt.body.list.iter().any(|s| Self::contains_fallthrough(s))
+            }
             _ => false,
+        }
+    }
+
+    fn infer_selector_struct_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
+        match expr {
+            ast::Expression::Ident(ident) => {
+                locals.get_var_struct_type(&ident.name).map(|s| s.to_string())
+            }
+            ast::Expression::Selector(sel) => {
+                let parent_type = self.infer_selector_struct_type(sel.x.as_ref(), locals)?;
+                let sdef = self.struct_defs.get(&parent_type)?;
+                let field = sdef.fields.iter().find(|f| f.name == sel.sel.name)?;
+                field.go_type_tag.clone()
+            }
+            _ => None,
         }
     }
 
