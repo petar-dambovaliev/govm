@@ -553,7 +553,9 @@ impl Scanner {
         let char_count = numlit.len();
         if self.next_char(char_count) == Some('i') {
             Ok((Token::Literal(LitKind::Imag, numlit + "i"), char_count + 1))
-        } else if numlit.find('.').is_some() {
+        } else if numlit.find('.').is_some()
+            || numlit.contains('p') || numlit.contains('P')
+        {
             Ok((Token::Literal(LitKind::Float, numlit), char_count))
         } else {
             Ok((Token::Literal(LitKind::Integer, numlit), char_count))
