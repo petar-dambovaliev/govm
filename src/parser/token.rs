@@ -311,7 +311,7 @@ impl From<Operator> for TokenKind {
 impl Debug for TokenKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Comment => unreachable!(),
+            Self::Comment => write!(f, "Comment"),
             Self::Keyword(word) => write!(f, "'{}'", word.to_str()),
             Self::Operator(op) => write!(f, "'{}'", op.to_str()),
             Self::Literal(kind) => match kind {

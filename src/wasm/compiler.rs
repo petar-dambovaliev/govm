@@ -3284,6 +3284,25 @@ impl WasmCompiler {
                 }
             }
 
+            // Type assertion comma-ok with =: v, ok = x.(T)
+            if assign.right.len() == 1 && assign.left.len() == 2 {
+                if let ast::Expression::TypeAssert(ta) = &assign.right[0] {
+                    if ta.right.is_some() {
+                        let val_var = if let ast::Expression::Ident(id) = &assign.left[0] {
+                            id.name.clone()
+                        } else {
+                            "__ta_val".to_string()
+                        };
+                        let ok_var = if let ast::Expression::Ident(id) = &assign.left[1] {
+                            id.name.clone()
+                        } else {
+                            "__ta_ok".to_string()
+                        };
+                        return self.compile_type_assert_ok(ta, &val_var, &ok_var, out, locals);
+                    }
+                }
+            }
+
             let needs_parallel = assign.left.len() > 1
                 && assign.right.len() > 1
                 && assign.op == Operator::Assign;
@@ -7535,6 +7554,24 @@ impl WasmCompiler {
                 if let Some(struct_type) = self.get_comparable_struct_type(&op.x, y, locals) {
                     return self.emit_struct_compare(&op.x, y, &struct_type, op.op, out, locals);
                 }
+                if let (Some(lhs_st), Some(_rhs_st)) = (
+                    self.get_struct_type_of_expr(&op.x, locals).map(|s| s.to_string()),
+                    self.get_struct_type_of_expr(y, locals).map(|s| s.to_string()),
+                ) {
+                    if let Some(sdef) = self.struct_defs.get(&lhs_st) {
+                        let uncomparable: Vec<&str> = sdef.fields.iter()
+                            .filter(|f| matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map")))
+                            .map(|f| f.name.as_str())
+                            .collect();
+                        if !uncomparable.is_empty() {
+                            return Err(Error::InternalError(format!(
+                                "struct {} cannot be compared: contains uncomparable field(s): {}",
+                                lhs_st,
+                                uncomparable.join(", ")
+                            )));
+                        }
+                    }
+                }
                 if let Some((elem_vt, arr_len)) = self.get_comparable_array_type(&op.x, y, locals) {
                     return self.emit_array_compare(&op.x, y, elem_vt, arr_len, op.op, out, locals);
                 }
@@ -10783,13 +10820,36 @@ impl WasmCompiler {
                                 "delete() requires 2 arguments: map and key".to_string(),
                             ));
                         }
-                        let map_name = match &call.args[0] {
-                            ast::Expression::Ident(id) => id.name.clone(),
+                        let key_expr = call.args[1].clone();
+                        match &call.args[0] {
+                            ast::Expression::Ident(id) => {
+                                self.compile_map_delete(&id.name, &key_expr, out, locals)?;
+                            }
                             ast::Expression::Selector(sel) => {
                                 if let ast::Expression::Ident(recv) = sel.x.as_ref() {
                                     let synth = format!("{}.{}", recv.name, sel.sel.name);
                                     if locals.map_types.contains_key(&synth) {
-                                        synth
+                                        self.compile_map_delete(&synth, &key_expr, out, locals)?;
+                                    } else if self.is_selector_map_field(sel, locals) {
+                                        if let Some(parent_type) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+                                            if let Some(mti) = self.struct_field_map_types.get(&(parent_type, sel.sel.name.clone())).cloned() {
+                                                self.compile_expression(&call.args[0], out, locals)?;
+                                                let tmp_name = format!("__del_map_tmp_{}", locals.locals.len());
+                                                let tmp_local = locals.add_local(&tmp_name, ValType::I32);
+                                                out.push(Instruction::LocalSet(tmp_local));
+                                                locals.set_var_struct_type(&tmp_name, "__map");
+                                                locals.map_types.insert(tmp_name.clone(), mti);
+                                                self.compile_map_delete(&tmp_name, &key_expr, out, locals)?;
+                                            } else {
+                                                return Err(Error::InternalError(
+                                                    "delete() first argument: map type info not found for struct field".to_string(),
+                                                ));
+                                            }
+                                        } else {
+                                            return Err(Error::InternalError(
+                                                "delete() first argument: could not resolve struct type for selector".to_string(),
+                                            ));
+                                        }
                                     } else {
                                         return Err(Error::InternalError(
                                             "delete() first argument: map type info not found for selector expression".to_string(),
@@ -10797,7 +10857,7 @@ impl WasmCompiler {
                                     }
                                 } else {
                                     return Err(Error::InternalError(
-                                        "delete() first argument must be a map variable".to_string(),
+                                        "delete() first argument must be a map variable or field selector".to_string(),
                                     ));
                                 }
                             }
@@ -10806,9 +10866,7 @@ impl WasmCompiler {
                                     "delete() first argument must be a map variable".to_string(),
                                 ));
                             }
-                        };
-                        let key_expr = call.args[1].clone();
-                        self.compile_map_delete(&map_name, &key_expr, out, locals)?;
+                        }
                         return Ok(());
                     }
                     "clear" => {

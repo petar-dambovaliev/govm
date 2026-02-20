@@ -2108,7 +2108,12 @@ impl Parser {
                         Operator::Assign => {
                             return Err(self.else_error_at(assign.pos, "expect := found ="))
                         }
-                        _ => unreachable!(),
+                        _ => {
+                            return Err(self.else_error_at(
+                                assign.pos,
+                                format!("unexpected operator '{:?}' in type switch guard", assign.op),
+                            ))
+                        }
                     }
             }
             _ => false,
@@ -2242,7 +2247,12 @@ impl Parser {
 
                     let (pos1, expr) = match assign.right.pop() {
                         Some(ast::Expression::Range(ast::RangeExpr { pos, right })) => (pos, right),
-                        _ => unreachable!(),
+                        _ => {
+                            return Err(self.else_error_at(
+                                assign.pos,
+                                "expected range expression on right side of assignment",
+                            ));
+                        }
                     };
 
                     let expr = *expr;
