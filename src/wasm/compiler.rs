@@ -865,7 +865,7 @@ impl WasmCompiler {
         self.next_func_idx += 1;
 
         let mut func = Function::new(vec![]);
-        for &init_idx in &self.init_func_indices.clone() {
+        for &init_idx in &self.init_func_indices {
             func.instruction(&Instruction::Call(init_idx));
         }
         func.instruction(&Instruction::End);
@@ -1750,6 +1750,13 @@ impl WasmCompiler {
                             Operator::Add => Some(ConstValue::Complex128(ar + br, ai + bi)),
                             Operator::Sub => Some(ConstValue::Complex128(ar - br, ai - bi)),
                             Operator::Star => Some(ConstValue::Complex128(ar * br - ai * bi, ar * bi + ai * br)),
+                            Operator::Quo => {
+                                let denom = br * br + bi * bi;
+                                Some(ConstValue::Complex128(
+                                    (ar * br + ai * bi) / denom,
+                                    (ai * br - ar * bi) / denom,
+                                ))
+                            }
                             Operator::Equal => Some(ConstValue::Bool(ar == br && ai == bi)),
                             Operator::NotEqual => Some(ConstValue::Bool(ar != br || ai != bi)),
                             _ => None,
@@ -1761,6 +1768,13 @@ impl WasmCompiler {
                             Operator::Add => Some(ConstValue::Complex128(ar + br, *bi)),
                             Operator::Sub => Some(ConstValue::Complex128(ar - br, -bi)),
                             Operator::Star => Some(ConstValue::Complex128(ar * br, ar * bi)),
+                            Operator::Quo => {
+                                let denom = br * br + bi * bi;
+                                Some(ConstValue::Complex128(
+                                    (ar * br) / denom,
+                                    (-ar * bi) / denom,
+                                ))
+                            }
                             _ => None,
                         }
                     }
@@ -1770,6 +1784,10 @@ impl WasmCompiler {
                             Operator::Add => Some(ConstValue::Complex128(ar + br, *ai)),
                             Operator::Sub => Some(ConstValue::Complex128(ar - br, *ai)),
                             Operator::Star => Some(ConstValue::Complex128(ar * br, ai * br)),
+                            Operator::Quo => {
+                                let denom = br * br;
+                                Some(ConstValue::Complex128(ar * br / denom, ai * br / denom))
+                            }
                             _ => None,
                         }
                     }
@@ -1778,6 +1796,13 @@ impl WasmCompiler {
                             Operator::Add => Some(ConstValue::Complex128(a + br, *bi)),
                             Operator::Sub => Some(ConstValue::Complex128(a - br, -bi)),
                             Operator::Star => Some(ConstValue::Complex128(a * br, a * bi)),
+                            Operator::Quo => {
+                                let denom = br * br + bi * bi;
+                                Some(ConstValue::Complex128(
+                                    (a * br) / denom,
+                                    (-a * bi) / denom,
+                                ))
+                            }
                             _ => None,
                         }
                     }
@@ -1786,6 +1811,7 @@ impl WasmCompiler {
                             Operator::Add => Some(ConstValue::Complex128(ar + b, *ai)),
                             Operator::Sub => Some(ConstValue::Complex128(ar - b, *ai)),
                             Operator::Star => Some(ConstValue::Complex128(ar * b, ai * b)),
+                            Operator::Quo => Some(ConstValue::Complex128(ar / b, ai / b)),
                             _ => None,
                         }
                     }
@@ -3063,10 +3089,6 @@ impl WasmCompiler {
                                 }
                             }
                         }
-
-                        // Track closure assignments
-                        let is_func_lit =
-                            matches!(&assign.right[i], ast::Expression::FuncLit(_));
 
                         self.compile_expression(&assign.right[i], out, locals)?;
                         if is_iface_from_call {
@@ -6200,10 +6222,6 @@ impl WasmCompiler {
             | ast::Expression::TypePointer(_)
             | ast::Expression::IndexList(_)
             | ast::Expression::Ellipsis(_) => Ok(()),
-            _ => Err(Error::InternalError(format!(
-                "unsupported expression in WASM compilation: {:?}",
-                expr
-            ))),
         }
     }
 
@@ -9074,7 +9092,7 @@ impl WasmCompiler {
         call: &ast::Call,
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
-        elem_vt: ValType,
+        _elem_vt: ValType,
         elem_size: i32,
     ) -> Result<(), Error> {
         // Compile source slice (second arg) — get its header pointer
@@ -12204,31 +12222,10 @@ impl WasmCompiler {
                 if let Some((embed_type_name, embed_offset)) = embed_info {
                     // Embedded struct: write fields inline into the parent struct
                     let inner_struct_def = self.struct_defs.get(&embed_type_name).cloned();
-
-                    for (j, inner_kv) in nested_lit.values.iter().enumerate() {
-                        if let ast::Element::Expr(inner_expr) = &inner_kv.val {
-                            let (inner_off, fwt) = if let Some(ref ikey) = inner_kv.key {
-                                if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
-                                    if let Some(ref isd) = inner_struct_def {
-                                        if let Some(f) = isd.find_field(&kid.name) {
-                                            (f.offset as u64, Some(f.wasm_type))
-                                        } else { (j as u64 * 8, None) }
-                                    } else { (j as u64 * 8, None) }
-                                } else { (j as u64 * 8, None) }
-                            } else if let Some(ref isd) = inner_struct_def {
-                                if j < isd.fields.len() {
-                                    (isd.fields[j].offset as u64, Some(isd.fields[j].wasm_type))
-                                } else { (j as u64 * 8, None) }
-                            } else { (j as u64 * 8, None) };
-
-                            let abs_off = embed_offset as u64 + inner_off;
-                            out.push(Instruction::LocalGet(ptr_local));
-                            self.compile_expression(inner_expr, out, locals)?;
-                            let vt = fwt.map(|wt| wt.to_val_type())
-                                .unwrap_or_else(|| self.infer_val_type(inner_expr, locals));
-                            Self::emit_typed_store(vt, abs_off, if vt == ValType::I64 || vt == ValType::F64 { 3 } else { 2 }, out);
-                        }
-                    }
+                    self.compile_embedded_lit_inline(
+                        nested_lit, ptr_local, embed_offset as u64,
+                        inner_struct_def.as_ref(), out, locals,
+                    )?;
                     continue;
                 }
 
@@ -12346,30 +12343,10 @@ impl WasmCompiler {
 
                 if let Some((embed_type_name, embed_offset)) = embed_info {
                     let inner_struct_def = self.struct_defs.get(&embed_type_name).cloned();
-                    for (j, inner_kv) in inner_comp.val.values.iter().enumerate() {
-                        if let ast::Element::Expr(inner_expr) = &inner_kv.val {
-                            let (inner_off, fwt) = if let Some(ref ikey) = inner_kv.key {
-                                if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
-                                    if let Some(ref isd) = inner_struct_def {
-                                        if let Some(f) = isd.find_field(&kid.name) {
-                                            (f.offset as u64, Some(f.wasm_type))
-                                        } else { (j as u64 * 8, None) }
-                                    } else { (j as u64 * 8, None) }
-                                } else { (j as u64 * 8, None) }
-                            } else if let Some(ref isd) = inner_struct_def {
-                                if j < isd.fields.len() {
-                                    (isd.fields[j].offset as u64, Some(isd.fields[j].wasm_type))
-                                } else { (j as u64 * 8, None) }
-                            } else { (j as u64 * 8, None) };
-
-                            let abs_off = embed_offset as u64 + inner_off;
-                            out.push(Instruction::LocalGet(ptr_local));
-                            self.compile_expression(inner_expr, out, locals)?;
-                            let vt = fwt.map(|wt| wt.to_val_type())
-                                .unwrap_or_else(|| self.infer_val_type(inner_expr, locals));
-                            Self::emit_typed_store(vt, abs_off, if vt == ValType::I64 || vt == ValType::F64 { 3 } else { 2 }, out);
-                        }
-                    }
+                    self.compile_embedded_lit_inline(
+                        &inner_comp.val, ptr_local, embed_offset as u64,
+                        inner_struct_def.as_ref(), out, locals,
+                    )?;
                     continue;
                 }
             }
@@ -12425,13 +12402,7 @@ impl WasmCompiler {
 
             // Coerce expression type to field type if needed
             if expr_vt != target_vt {
-                match (expr_vt, target_vt) {
-                    (ValType::I64, ValType::I32) => out.push(Instruction::I32WrapI64),
-                    (ValType::I32, ValType::I64) => out.push(Instruction::I64ExtendI32S),
-                    (ValType::F64, ValType::F32) => out.push(Instruction::F32DemoteF64),
-                    (ValType::F32, ValType::F64) => out.push(Instruction::F64PromoteF32),
-                    _ => {}
-                }
+                Self::emit_typed_coerce(expr_vt, target_vt, out)?;
             }
 
             match target_vt {
@@ -14319,6 +14290,138 @@ impl WasmCompiler {
         )))
     }
 
+    fn compile_embedded_lit_inline(
+        &mut self,
+        lit: &ast::LiteralValue,
+        ptr_local: u32,
+        base_offset: u64,
+        struct_def: Option<&StructDef>,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        for (j, inner_kv) in lit.values.iter().enumerate() {
+            match &inner_kv.val {
+                ast::Element::LitValue(sub_lit) => {
+                    let sub_embed_info = if let Some(ref ikey) = inner_kv.key {
+                        if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                            struct_def.and_then(|sd|
+                                sd.embedded_types.iter()
+                                    .find(|(name, _)| name == &kid.name)
+                                    .map(|(name, off)| (name.clone(), *off))
+                            )
+                        } else { None }
+                    } else {
+                        struct_def.and_then(|sd| {
+                            if j < sd.fields.len() {
+                                sd.embedded_types.iter()
+                                    .find(|(name, _)| name == &sd.fields[j].name)
+                                    .map(|(name, off)| (name.clone(), *off))
+                            } else { None }
+                        })
+                    };
+
+                    if let Some((sub_type_name, sub_offset)) = sub_embed_info {
+                        let sub_def = self.struct_defs.get(&sub_type_name).cloned();
+                        self.compile_embedded_lit_inline(
+                            sub_lit, ptr_local, base_offset + sub_offset as u64,
+                            sub_def.as_ref(), out, locals,
+                        )?;
+                    } else {
+                        let inner_field_name = if let Some(ref ikey) = inner_kv.key {
+                            if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                                Some(kid.name.clone())
+                            } else { None }
+                        } else { None };
+
+                        let sub_type = inner_field_name.and_then(|n| {
+                            struct_def.and_then(|sd| sd.find_field(&n))
+                                .and_then(|f| f.go_type_tag.as_ref())
+                                .and_then(|tag| self.struct_defs.get(tag))
+                                .cloned()
+                        });
+
+                        let sub_off = if let Some(ref ikey) = inner_kv.key {
+                            if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                                struct_def.and_then(|sd| sd.find_field(&kid.name))
+                                    .map(|f| f.offset as u64)
+                                    .unwrap_or(j as u64 * 8)
+                            } else { j as u64 * 8 }
+                        } else {
+                            struct_def.map(|sd| {
+                                if j < sd.fields.len() { sd.fields[j].offset as u64 }
+                                else { j as u64 * 8 }
+                            }).unwrap_or(j as u64 * 8)
+                        };
+
+                        self.compile_embedded_lit_inline(
+                            sub_lit, ptr_local, base_offset + sub_off,
+                            sub_type.as_ref(), out, locals,
+                        )?;
+                    }
+                }
+                ast::Element::Expr(inner_expr) => {
+                    // Handle CompositeLit for embedded sub-structs
+                    if let ast::Expression::CompositeLit(inner_comp) = inner_expr {
+                        let sub_embed_info = if let Some(ref ikey) = inner_kv.key {
+                            if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                                struct_def.and_then(|sd|
+                                    sd.embedded_types.iter()
+                                        .find(|(name, _)| name == &kid.name)
+                                        .map(|(name, off)| (name.clone(), *off))
+                                )
+                            } else { None }
+                        } else {
+                            struct_def.and_then(|sd| {
+                                if j < sd.fields.len() {
+                                    sd.embedded_types.iter()
+                                        .find(|(name, _)| name == &sd.fields[j].name)
+                                        .map(|(name, off)| (name.clone(), *off))
+                                } else { None }
+                            })
+                        };
+
+                        if let Some((sub_type_name, sub_offset)) = sub_embed_info {
+                            let sub_def = self.struct_defs.get(&sub_type_name).cloned();
+                            self.compile_embedded_lit_inline(
+                                &inner_comp.val, ptr_local, base_offset + sub_offset as u64,
+                                sub_def.as_ref(), out, locals,
+                            )?;
+                            continue;
+                        }
+                    }
+
+                    let (inner_off, fwt): (u64, Option<WasmType>) = if let Some(ref ikey) = inner_kv.key {
+                        if let ast::Element::Expr(ast::Expression::Ident(kid)) = ikey {
+                            if let Some(sd) = struct_def {
+                                if let Some(f) = sd.find_field(&kid.name) {
+                                    (f.offset as u64, Some(f.wasm_type))
+                                } else { (j as u64 * 8, None) }
+                            } else { (j as u64 * 8, None) }
+                        } else { (j as u64 * 8, None) }
+                    } else if let Some(sd) = struct_def {
+                        if j < sd.fields.len() {
+                            (sd.fields[j].offset as u64, Some(sd.fields[j].wasm_type))
+                        } else { (j as u64 * 8, None) }
+                    } else { (j as u64 * 8, None) };
+
+                    let abs_off = base_offset + inner_off;
+                    out.push(Instruction::LocalGet(ptr_local));
+                    self.compile_expression(inner_expr, out, locals)?;
+                    let vt = fwt.map(|wt: WasmType| wt.to_val_type())
+                        .unwrap_or_else(|| self.infer_val_type(inner_expr, locals));
+
+                    let target_vt = fwt.map(|wt: WasmType| wt.to_val_type()).unwrap_or(vt);
+                    if vt != target_vt {
+                        Self::emit_typed_coerce(vt, target_vt, out)?;
+                    }
+
+                    Self::emit_typed_store(target_vt, abs_off, if target_vt == ValType::I64 || target_vt == ValType::F64 { 3 } else { 2 }, out);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn emit_typed_store(vt: ValType, offset: u64, align: u32, out: &mut Vec<Instruction<'static>>) {
         match vt {
             ValType::I32 => out.push(Instruction::I32Store(MemArg {
@@ -14938,7 +15041,7 @@ impl WasmCompiler {
         resolved
     }
 
-    fn is_type_alias(&self, name: &str) -> bool {
+    fn _is_type_alias(&self, name: &str) -> bool {
         self.type_aliases
             .get(name)
             .map_or(false, |(_base, is_alias)| *is_alias)
