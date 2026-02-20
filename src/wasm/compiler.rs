@@ -2610,6 +2610,15 @@ impl WasmCompiler {
 
         let result_go_types = self.current_result_go_types.clone();
 
+        // Detect `return f()` where f() returns multiple values
+        let is_multi_return_forward = ret.ret.len() == 1
+            && result_types.len() > 1
+            && matches!(&ret.ret[0], ast::Expression::Call(_))
+            && {
+                let call_ret = self.call_return_val_types(&ret.ret[0], locals);
+                call_ret.len() == result_types.len()
+            };
+
         if ret.ret.is_empty() && !self.named_returns.is_empty() {
             self.emit_deferred_calls(out);
             for (name, _vt) in &self.named_returns.clone() {
@@ -2619,17 +2628,28 @@ impl WasmCompiler {
             }
         } else if !self.named_returns.is_empty() && has_deferred_named_return_captures {
             let named_returns_clone = self.named_returns.clone();
-            for (i, expr) in ret.ret.iter().enumerate() {
-                self.compile_expression(expr, out, locals)?;
-                if let Some(&expected_vt) = result_types.get(i) {
-                    let actual_vt = self.infer_val_type(expr, locals);
-                    if actual_vt != expected_vt {
-                        Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
-                    }
-                }
-                if let Some((name, _vt)) = named_returns_clone.get(i) {
+            if is_multi_return_forward {
+                // `return f()` where f returns multiple values and we have named returns with defer captures.
+                // Compile the call, then store each result into named return locals (in reverse stack order).
+                self.compile_expression(&ret.ret[0], out, locals)?;
+                for (name, _vt) in named_returns_clone.iter().rev() {
                     if let Some(idx) = locals.find(name) {
                         out.push(Instruction::LocalSet(idx));
+                    }
+                }
+            } else {
+                for (i, expr) in ret.ret.iter().enumerate() {
+                    self.compile_expression(expr, out, locals)?;
+                    if let Some(&expected_vt) = result_types.get(i) {
+                        let actual_vt = self.infer_val_type(expr, locals);
+                        if actual_vt != expected_vt {
+                            Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                        }
+                    }
+                    if let Some((name, _vt)) = named_returns_clone.get(i) {
+                        if let Some(idx) = locals.find(name) {
+                            out.push(Instruction::LocalSet(idx));
+                        }
                     }
                 }
             }
@@ -8525,6 +8545,12 @@ impl WasmCompiler {
             ));
         }
 
+        let src_is_string = self.is_string_expr(&call.args[1], locals);
+
+        if src_is_string {
+            return self.compile_builtin_copy_from_string(call, out, locals);
+        }
+
         let elem_vt = if let ast::Expression::Ident(ident) = &call.args[0] {
             locals
                 .slice_elem_types
@@ -8611,6 +8637,91 @@ impl WasmCompiler {
             dst_mem: 0,
             src_mem: 0,
         });
+
+        // Push n as i64 (Go copy returns int)
+        out.push(Instruction::LocalGet(n_local));
+        out.push(Instruction::I64ExtendI32S);
+        Ok(())
+    }
+
+    fn compile_builtin_copy_from_string(
+        &mut self,
+        call: &ast::Call,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        // copy(dst []byte, src string): copy bytes from string into byte slice
+        // Strings are (ptr, len) on the stack; byte slices store each byte as an I32 in 4-byte slots.
+
+        // Compile dst slice header
+        self.compile_expression(&call.args[0], out, locals)?;
+        let dst_hdr = locals.add_local("__cpys_dhdr", ValType::I32);
+        out.push(Instruction::LocalSet(dst_hdr));
+
+        // Compile src string (pushes ptr, len)
+        self.compile_expression(&call.args[1], out, locals)?;
+        let src_len = locals.add_local("__cpys_slen", ValType::I32);
+        let src_ptr = locals.add_local("__cpys_sptr", ValType::I32);
+        out.push(Instruction::LocalSet(src_len));
+        out.push(Instruction::LocalSet(src_ptr));
+
+        // Load dst len
+        let dst_len = locals.add_local("__cpys_dlen", ValType::I32);
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(dst_len));
+
+        // n = min(dst_len, src_len)
+        let n_local = locals.add_local("__cpys_n", ValType::I32);
+        out.push(Instruction::LocalGet(dst_len));
+        out.push(Instruction::LocalGet(src_len));
+        out.push(Instruction::LocalGet(dst_len));
+        out.push(Instruction::LocalGet(src_len));
+        out.push(Instruction::I32LeU);
+        out.push(Instruction::Select);
+        out.push(Instruction::LocalSet(n_local));
+
+        // Load dst data pointer
+        let dst_data = locals.add_local("__cpys_ddata", ValType::I32);
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(dst_data));
+
+        // Loop: copy each byte from string into 4-byte I32 slots
+        let idx = locals.add_local("__cpys_idx", ValType::I32);
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(idx));
+
+        out.push(Instruction::Block(BlockType::Empty));
+        out.push(Instruction::Loop(BlockType::Empty));
+
+        // if idx >= n, break
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::LocalGet(n_local));
+        out.push(Instruction::I32GeU);
+        out.push(Instruction::BrIf(1));
+
+        // dst_data[idx * 4] = (i32) src_ptr[idx]
+        out.push(Instruction::LocalGet(dst_data));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Const(4));
+        out.push(Instruction::I32Mul);
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalGet(src_ptr));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+
+        // idx++
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Br(0));
+
+        out.push(Instruction::End); // loop
+        out.push(Instruction::End); // block
 
         // Push n as i64 (Go copy returns int)
         out.push(Instruction::LocalGet(n_local));
@@ -8871,6 +8982,9 @@ impl WasmCompiler {
 
         // Handle append(s1, s2...) — spread a source slice into the destination
         if call.dots.is_some() && call.args.len() == 2 {
+            if self.is_string_expr(&call.args[1], locals) {
+                return self.compile_builtin_append_spread_string(call, out, locals);
+            }
             return self.compile_builtin_append_spread(call, out, locals, elem_vt, elem_size);
         }
 
@@ -9269,6 +9383,170 @@ impl WasmCompiler {
         out.push(Instruction::I32Const(elem_size));
         out.push(Instruction::I32Mul);
         out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+
+        // Update header: len = new_len
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(new_len));
+        out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+
+        out.push(Instruction::LocalGet(dst_hdr));
+        Ok(())
+    }
+
+    /// Handle `append(dst []byte, src string...)`: append bytes from string into byte slice.
+    fn compile_builtin_append_spread_string(
+        &mut self,
+        call: &ast::Call,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        let elem_size: i32 = 4; // []byte stores each byte in a 4-byte I32 slot
+
+        // Compile source string (pushes ptr, len)
+        self.compile_expression(&call.args[1], out, locals)?;
+        let src_len = locals.add_local("__appstr_slen", ValType::I32);
+        let src_ptr = locals.add_local("__appstr_sptr", ValType::I32);
+        out.push(Instruction::LocalSet(src_len));
+        out.push(Instruction::LocalSet(src_ptr));
+
+        // Compile destination slice (first arg)
+        self.compile_expression(&call.args[0], out, locals)?;
+        let dst_hdr = locals.add_local("__appstr_dhdr", ValType::I32);
+        out.push(Instruction::LocalSet(dst_hdr));
+
+        // Load dst len and cap
+        let dst_len = locals.add_local("__appstr_dlen", ValType::I32);
+        let dst_cap = locals.add_local("__appstr_dcap", ValType::I32);
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(dst_len));
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(dst_cap));
+
+        // new_len = dst_len + src_len
+        let new_len = locals.add_local("__appstr_nlen", ValType::I32);
+        out.push(Instruction::LocalGet(dst_len));
+        out.push(Instruction::LocalGet(src_len));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(new_len));
+
+        // If new_len > cap, grow (same growth logic as append_spread)
+        out.push(Instruction::LocalGet(new_len));
+        out.push(Instruction::LocalGet(dst_cap));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            let new_cap = locals.add_local("__appstr_ncap", ValType::I32);
+            out.push(Instruction::LocalGet(dst_cap));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::I32Add);
+            let cap_plus1 = locals.add_local("__appstr_cp1", ValType::I32);
+            out.push(Instruction::LocalTee(cap_plus1));
+            out.push(Instruction::LocalGet(dst_cap));
+            out.push(Instruction::I32LtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Call(self.oom_func_idx));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+            out.push(Instruction::LocalGet(cap_plus1));
+            out.push(Instruction::I32Const(2));
+            out.push(Instruction::I32Mul);
+            let doubled = locals.add_local("__appstr_dbl", ValType::I32);
+            out.push(Instruction::LocalTee(doubled));
+            out.push(Instruction::LocalGet(cap_plus1));
+            out.push(Instruction::I32LtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Call(self.oom_func_idx));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+            out.push(Instruction::LocalGet(doubled));
+            out.push(Instruction::LocalGet(new_len));
+            out.push(Instruction::LocalGet(doubled));
+            out.push(Instruction::LocalGet(new_len));
+            out.push(Instruction::I32GeU);
+            out.push(Instruction::Select);
+            out.push(Instruction::LocalSet(new_cap));
+
+            let alloc_bytes = locals.add_local("__appstr_abytes", ValType::I32);
+            out.push(Instruction::LocalGet(new_cap));
+            out.push(Instruction::I32Const(elem_size));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::LocalTee(alloc_bytes));
+            out.push(Instruction::I32Const(elem_size));
+            out.push(Instruction::I32DivU);
+            out.push(Instruction::LocalGet(new_cap));
+            out.push(Instruction::I32Ne);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Call(self.oom_func_idx));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+            let new_data = locals.add_local("__appstr_ndata", ValType::I32);
+            out.push(Instruction::LocalGet(alloc_bytes));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(new_data));
+
+            // Copy old data
+            out.push(Instruction::LocalGet(new_data));
+            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalGet(dst_len));
+            out.push(Instruction::I32Const(elem_size));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+
+            // Update header
+            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(new_data));
+            out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(new_cap));
+            out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
+        }
+        out.push(Instruction::End);
+
+        // Copy bytes from string into I32 slots: loop over each byte
+        let dst_data = locals.add_local("__appstr_ddptr", ValType::I32);
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(dst_data));
+
+        let idx = locals.add_local("__appstr_idx", ValType::I32);
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(idx));
+
+        out.push(Instruction::Block(BlockType::Empty));
+        out.push(Instruction::Loop(BlockType::Empty));
+
+        // if idx >= src_len, break
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::LocalGet(src_len));
+        out.push(Instruction::I32GeU);
+        out.push(Instruction::BrIf(1));
+
+        // dst_data[(dst_len + idx) * 4] = (i32) src_ptr[idx]
+        out.push(Instruction::LocalGet(dst_data));
+        out.push(Instruction::LocalGet(dst_len));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Const(elem_size));
+        out.push(Instruction::I32Mul);
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalGet(src_ptr));
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+
+        // idx++
+        out.push(Instruction::LocalGet(idx));
+        out.push(Instruction::I32Const(1));
+        out.push(Instruction::I32Add);
+        out.push(Instruction::LocalSet(idx));
+        out.push(Instruction::Br(0));
+
+        out.push(Instruction::End); // loop
+        out.push(Instruction::End); // block
 
         // Update header: len = new_len
         out.push(Instruction::LocalGet(dst_hdr));
@@ -11080,7 +11358,18 @@ impl WasmCompiler {
                                 pkg, func_name
                             )));
                         }
-                        _ => {}
+                        _ => {
+                            if locals.find(&pkg_ident.name).is_none()
+                                && !self.struct_defs.contains_key(&pkg_ident.name)
+                                && !self.type_registry.contains_key(&pkg_ident.name)
+                                && !self.is_interface_var(&pkg_ident.name, locals)
+                            {
+                                return Err(Error::InternalError(format!(
+                                    "unsupported package function: {}.{}",
+                                    pkg_ident.name, sel.sel.name
+                                )));
+                            }
+                        }
                     }
 
                     // Check if the receiver is an interface variable
@@ -14790,6 +15079,27 @@ impl WasmCompiler {
     fn emit_deferred_calls(&self, out: &mut Vec<Instruction<'static>>) {
         if let Some(scope) = self.deferred_calls.last() {
             for call in scope.iter().rev() {
+                // Write current named return locals into the closure environment
+                // so the deferred closure sees the values set by the return statement.
+                for nrc in &call.named_return_captures {
+                    out.push(Instruction::LocalGet(nrc.env_local));
+                    out.push(Instruction::LocalGet(nrc.named_return_local));
+                    match nrc.val_type {
+                        ValType::I64 => out.push(Instruction::I64Store(MemArg {
+                            offset: nrc.env_offset as u64, align: 3, memory_index: 0,
+                        })),
+                        ValType::F64 => out.push(Instruction::F64Store(MemArg {
+                            offset: nrc.env_offset as u64, align: 3, memory_index: 0,
+                        })),
+                        ValType::F32 => out.push(Instruction::F32Store(MemArg {
+                            offset: nrc.env_offset as u64, align: 2, memory_index: 0,
+                        })),
+                        _ => out.push(Instruction::I32Store(MemArg {
+                            offset: nrc.env_offset as u64, align: 2, memory_index: 0,
+                        })),
+                    }
+                }
+
                 for (local_idx, _vt) in &call.arg_locals {
                     out.push(Instruction::LocalGet(*local_idx));
                 }
