@@ -9419,7 +9419,7 @@ func Run() int {
     s[0] = 1
     s[1] = 2
     clear(s)
-    return len(s)
+    return len(s)*100 + s[0] + s[1] + s[2]
 }
 "#;
     let mut compiler = WasmCompiler::new();
@@ -9431,7 +9431,7 @@ func Run() int {
     let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
     let val = func.call(&mut store, ()).expect("call failed");
-    assert_eq!(val, 0);
+    assert_eq!(val, 500, "clear(slice) should keep length=5 and zero elements");
 }
 
 #[test]
@@ -12258,7 +12258,7 @@ func Run() int {
         .get_typed_func::<(), i64>(&mut store, "Run")
         .expect("Run function not found");
     let result = run_fn.call(&mut store, ()).expect("call failed");
-    assert_eq!(result, 0);
+    assert_eq!(result, 3, "clear(slice field) should keep length=3");
 }
 
 // ==================== Regression: ellipsis array length ====================
@@ -14708,4 +14708,330 @@ func Run() int {
     let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
     assert_eq!(func.call(&mut store, ()).expect("call failed"), 15);
+}
+
+// ==================== Regression: clear(slice) zeroes elements, preserves length ====================
+
+#[test]
+fn test_clear_slice_elements_zeroed() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := []int{10, 20, 30, 40, 50}
+    clear(s)
+    return s[0] + s[1] + s[2] + s[3] + s[4]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 0, "all elements should be zeroed after clear");
+}
+
+#[test]
+fn test_clear_empty_slice_noop() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := make([]int, 0)
+    clear(s)
+    return len(s)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 0, "clear on empty slice should be a no-op");
+}
+
+// ==================== Regression: clear(nil slice/map) is a no-op ====================
+
+#[test]
+fn test_clear_nil_slice() {
+    let source = r#"
+package main
+
+func Run() int {
+    var s []int
+    clear(s)
+    return 42
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "clear on nil slice should not panic");
+}
+
+#[test]
+fn test_clear_nil_map() {
+    let source = r#"
+package main
+
+func Run() int {
+    var m map[string]int
+    clear(m)
+    return 42
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "clear on nil map should not panic");
+}
+
+// ==================== Regression: min/max single argument ====================
+
+#[test]
+fn test_min_single_arg() {
+    let source = r#"
+package main
+
+func Run() int {
+    return min(42)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 42);
+}
+
+#[test]
+fn test_max_single_arg() {
+    let source = r#"
+package main
+
+func Run() int {
+    return max(42)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 42);
+}
+
+#[test]
+fn test_min_single_arg_variable() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 99
+    return min(x)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 99);
+}
+
+// ==================== Regression: min/max unsigned comparison ====================
+
+#[test]
+fn test_min_uint() {
+    let source = r#"
+package main
+
+func Run() int {
+    var a uint = 5
+    var b uint = 3
+    return int(min(a, b))
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 3);
+}
+
+#[test]
+fn test_max_uint() {
+    let source = r#"
+package main
+
+func Run() int {
+    var a uint = 5
+    var b uint = 3
+    return int(max(a, b))
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 5);
+}
+
+// ==================== Regression: min/max string support ====================
+
+#[test]
+fn test_min_string() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := min("b", "a")
+    if s == "a" {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 1, r#"min("b","a") should be "a""#);
+}
+
+#[test]
+fn test_max_string() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := max("a", "b")
+    if s == "b" {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 1, r#"max("a","b") should be "b""#);
+}
+
+#[test]
+fn test_min_string_three_args() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := min("foo", "bar", "baz")
+    if s == "bar" {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 1, r#"min("foo","bar","baz") should be "bar""#);
+}
+
+// ==================== Regression: slice-to-array conversion ====================
+
+#[test]
+fn test_slice_to_array_conversion() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := []int{10, 20, 30}
+    a := [3]int(s)
+    return a[0] + a[1] + a[2]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 60, "[3]int(slice) should copy elements");
+}
+
+#[test]
+#[should_panic]
+fn test_slice_to_array_panics_when_too_short() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := []int{1, 2}
+    a := [3]int(s)
+    return a[0]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    func.call(&mut store, ()).expect("should panic due to slice too short");
 }
