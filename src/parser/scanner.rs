@@ -112,8 +112,13 @@ impl Scanner {
     fn next_nstr(&mut self, n: usize) -> &str {
         let start = self.indices[self.pos];
         let end = (start + n).min(self.source.len());
-        let part = &self.source.as_bytes()[start..end];
-        unsafe { std::str::from_utf8_unchecked(part) }
+        match self.source.get(start..end) {
+            Some(s) => s,
+            None => {
+                let safe_end = self.source.floor_char_boundary(end);
+                &self.source[start..safe_end]
+            }
+        }
     }
 
     #[rustfmt::skip]

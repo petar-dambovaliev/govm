@@ -1882,7 +1882,28 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::Ident(id) => Some(id.name.clone()),
+            ast::Expression::Index(idx) => {
+                if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
+                    Some(id.name.clone())
+                } else {
+                    None
+                }
+            }
+            ast::Expression::IndexList(idx_list) => {
+                if let ast::Expression::Ident(id) = idx_list.left.as_ref() {
+                    Some(id.name.clone())
+                } else {
+                    None
+                }
+            }
             _ => None,
+        })
+    }
+
+    fn is_generic_recv(&self, recv: &ast::FieldList) -> bool {
+        recv.list.first().map_or(false, |field| {
+            matches!(&field.typ,
+                ast::Expression::Index(_) | ast::Expression::IndexList(_))
         })
     }
 
@@ -1893,6 +1914,18 @@ impl WasmCompiler {
         if !decl.typ.typ_params.list.is_empty() {
             self.generic_funcs.insert(name.clone(), decl.clone());
             return Ok(());
+        }
+
+        // Methods on generic types: store for later monomorphization
+        if let Some(recv) = &decl.recv {
+            if self.is_generic_recv(recv) {
+                let recv_type_name = self.extract_recv_type_name(recv);
+                if let Some(type_name) = recv_type_name {
+                    let key = format!("{}.{}", type_name, name);
+                    self.generic_funcs.insert(key, decl.clone());
+                    return Ok(());
+                }
+            }
         }
 
         let is_method = decl.recv.is_some();
@@ -3004,7 +3037,8 @@ impl WasmCompiler {
                             // Track [N]T(slice) slice-to-array conversions
                             if let ast::Expression::TypeArray(arr_type) = call_expr.func.as_ref() {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
-                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                    Self::parse_go_int(&lit.value)
+                                        .map_err(|e| Error::SyntaxError(e))? as u32
                                 } else {
                                     0
                                 };
@@ -3028,7 +3062,8 @@ impl WasmCompiler {
                         if let ast::Expression::CompositeLit(comp) = &assign.right[i] {
                             if let ast::Expression::TypeArray(arr_type) = comp.typ.as_ref() {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
-                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                    Self::parse_go_int(&lit.value)
+                                        .map_err(|e| Error::SyntaxError(e))? as u32
                                 } else if matches!(arr_type.len.as_ref(), ast::Expression::Ellipsis(_)) {
                                     comp.val.values.len() as u32
                                 } else { 0 };
@@ -5101,11 +5136,38 @@ impl WasmCompiler {
             Error::InternalError(format!("variable '{}' not found", iface_var))
         })?;
 
-        // Nil check: if type_id == 0, trap
+        // Nil check: if type_id == 0, panic with a descriptive message
         out.push(Instruction::LocalGet(tid_local));
         out.push(Instruction::I32Eqz);
         out.push(Instruction::If(BlockType::Empty));
-        out.push(Instruction::Unreachable);
+        {
+            let msg = format!("runtime error: nil pointer dereference (calling method {} on nil interface)", method_name);
+            let msg_bytes = msg.as_bytes();
+            let msg_len = msg_bytes.len() as i32;
+            out.push(Instruction::I32Const(msg_len));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            let msg_ptr_local = locals.add_local(
+                &format!("__nil_panic_ptr_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalSet(msg_ptr_local));
+            for (j, &byte) in msg_bytes.iter().enumerate() {
+                out.push(Instruction::LocalGet(msg_ptr_local));
+                out.push(Instruction::I32Const(byte as i32));
+                out.push(Instruction::I32Store8(MemArg {
+                    offset: j as u64,
+                    align: 0,
+                    memory_index: 0,
+                }));
+            }
+            out.push(Instruction::LocalGet(msg_ptr_local));
+            out.push(Instruction::GlobalSet(self.panic_value_ptr_global));
+            out.push(Instruction::I32Const(msg_len));
+            out.push(Instruction::GlobalSet(self.panic_value_len_global));
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::GlobalSet(self.panicking_global));
+            out.push(Instruction::Unreachable);
+        }
         out.push(Instruction::End);
 
         // Compile arguments to temp locals
@@ -5125,20 +5187,22 @@ impl WasmCompiler {
         let candidates: Vec<(u32, u32, Vec<ValType>)> = self
             .functions
             .iter()
-            .filter(|f| f.recv_type.is_some() && f.name.ends_with(&format!(".{}", method_name)))
-            .map(|f| {
-                let type_name = f.recv_type.as_ref().unwrap();
+            .filter_map(|f| {
+                let type_name = f.recv_type.as_ref()?;
+                if !f.name.ends_with(&format!(".{}", method_name)) {
+                    return None;
+                }
                 let type_id = self.type_registry.get(type_name).copied().unwrap_or(0);
                 let result_types: Vec<ValType> = f.results.iter().map(|r| r.to_val_type()).collect();
-                (type_id, f.wasm_func_idx, result_types)
+                Some((type_id, f.wasm_func_idx, result_types))
             })
             .collect();
 
         if candidates.is_empty() {
-            // No concrete implementations exist. The nil check above will trap
-            // if this code is reached at runtime. Emit unreachable as fallback.
-            out.push(Instruction::Unreachable);
-            return Ok(());
+            return Err(Error::InternalError(format!(
+                "no concrete implementations found for interface method '{}'",
+                method_name
+            )));
         }
 
         // Determine result types from first candidate
@@ -6027,14 +6091,16 @@ impl WasmCompiler {
                                 );
                             } else if let ast::Expression::TypeArray(arr_type) = typ {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
-                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                    Self::parse_go_int(&lit.value)
+                                        .map_err(|e| Error::SyntaxError(e))? as u32
                                 } else { 0 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
                                 locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
                                 if let ast::Expression::TypeArray(inner_arr) = arr_type.typ.as_ref() {
                                     let inner_len = if let ast::Expression::BasicLit(lit) = inner_arr.len.as_ref() {
-                                        Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                        Self::parse_go_int(&lit.value)
+                                            .map_err(|e| Error::SyntaxError(e))? as u32
                                     } else { 0 };
                                     let inner_elem_vt = Self::infer_array_elem_vt(&inner_arr.typ);
                                     locals.nested_array_inner_info.insert(ident.name.clone(), (inner_elem_vt, inner_len));
@@ -6182,7 +6248,8 @@ impl WasmCompiler {
                                 out.push(Instruction::MemoryFill(0));
                             } else if let ast::Expression::TypeArray(arr_type) = typ {
                                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
-                                    Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                                    Self::parse_go_int(&lit.value)
+                                        .map_err(|e| Error::SyntaxError(e))? as u32
                                 } else { 0 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
                                 let (elem_size, _) = Self::elem_size_and_align(elem_vt);
@@ -11185,6 +11252,7 @@ impl WasmCompiler {
                             }
                             out.push(Instruction::Call(func_idx));
                         } else {
+                            Self::validate_type_constraints(&template, &subst)?;
                             let specialized = self.monomorphize_func_decl(&template, &mono_name, &subst);
                             let saved = self.generic_funcs.clone();
                             self.compile_func_decl(&specialized, true)?;
@@ -11581,6 +11649,37 @@ impl WasmCompiler {
                             )));
                         }
                     }
+                } else {
+                    // Non-ident receiver: method chaining (e.g., b.Add(10).Add(20))
+                    let recv_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
+                    if let Some(type_name) = recv_type {
+                        self.compile_expression(sel.x.as_ref(), out, locals)?;
+                        for arg in &call.args {
+                            self.compile_expression(arg, out, locals)?;
+                        }
+                        let qualified = format!("{}.{}", type_name, sel.sel.name);
+                        let method_suffix = format!(".{}", sel.sel.name);
+                        let func_idx = self.functions.iter()
+                            .find(|f| f.name == qualified)
+                            .or_else(|| {
+                                self.functions.iter()
+                                    .find(|f| f.recv_type.is_some() && f.name.ends_with(&method_suffix))
+                            })
+                            .map(|f| f.wasm_func_idx);
+                        if let Some(idx) = func_idx {
+                            out.push(Instruction::Call(idx));
+                        } else {
+                            return Err(Error::InternalError(format!(
+                                "undefined method: {}.{}",
+                                type_name, sel.sel.name
+                            )));
+                        }
+                    } else {
+                        return Err(Error::InternalError(format!(
+                            "cannot infer receiver type for method call .{}",
+                            sel.sel.name
+                        )));
+                    }
                 }
             }
             ast::Expression::TypeSlice(slice_type) => {
@@ -11904,7 +12003,8 @@ impl WasmCompiler {
                 // Slice-to-array conversion: [N]T(slice)
                 if let Some(arg) = call.args.first() {
                     let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
-                        Self::parse_go_int(&lit.value).unwrap_or(0) as u32
+                        Self::parse_go_int(&lit.value)
+                            .map_err(|e| Error::SyntaxError(e))? as u32
                     } else {
                         return Err(Error::InternalError(
                             "slice-to-array conversion requires a constant array length".to_string(),
@@ -11990,6 +12090,7 @@ impl WasmCompiler {
                             }
                         }
                     }
+                    Self::validate_type_constraints(&template, &subst)?;
                     let specialized = self.monomorphize_func_decl(&template, &mono_name, &subst);
                     let saved_generic_funcs = self.generic_funcs.clone();
                     self.compile_func_decl(&specialized, true)?;
@@ -12048,7 +12149,8 @@ impl WasmCompiler {
                             }
                         }
 
-                        // Create a specialized declaration by rewriting the template
+                        // Validate type constraints before monomorphization
+                        Self::validate_type_constraints(&template, &subst)?;
                         let specialized = self.monomorphize_func_decl(&template, &mono_name, &subst);
                         let saved_generic_funcs = self.generic_funcs.clone();
                         self.compile_func_decl(&specialized, true)?;
@@ -12327,11 +12429,9 @@ impl WasmCompiler {
         self.last_closure_captures = captures.clone();
 
         // In outer function: allocate env and store captures
-        if !captures.is_empty() {
-            let env_size: i32 = {
-                let last = captures.last().unwrap();
-                (last.env_offset + val_type_byte_size(last.val_type)) as i32
-            };
+        if let Some(last) = captures.last() {
+            let env_size: i32 =
+                (last.env_offset + val_type_byte_size(last.val_type)) as i32;
             out.push(Instruction::I32Const(env_size));
             out.push(Instruction::Call(self.alloc_func_idx()?));
             let env_local = outer_locals.add_local("__env_ptr_outer", ValType::I32);
@@ -13671,7 +13771,7 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
     ) {
         if mti.is_string_key {
-            let kl = key_len_local.unwrap();
+            let kl = key_len_local.expect("key_len_local must be set for string-keyed maps");
             let eq_result = locals.add_local(&format!("__mkeq_{}", locals.locals.len()), ValType::I32);
             let cmp_idx = locals.add_local(&format!("__mkcidx_{}", locals.locals.len()), ValType::I32);
 
@@ -13748,7 +13848,7 @@ impl WasmCompiler {
             out.push(Instruction::LocalGet(key_local));
             out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
             out.push(Instruction::LocalGet(entry_local));
-            out.push(Instruction::LocalGet(key_len_local.unwrap()));
+            out.push(Instruction::LocalGet(key_len_local.expect("key_len_local must be set for string-keyed maps")));
             out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
         } else {
             let (_, key_align) = Self::elem_size_and_align(mti.key_vt);
@@ -13810,8 +13910,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
-            key_len_local = Some(locals.add_local(&format!("__mg_klen_{}", locals.locals.len()), ValType::I32));
-            out.push(Instruction::LocalSet(key_len_local.unwrap()));
+            let kl = locals.add_local(&format!("__mg_klen_{}", locals.locals.len()), ValType::I32);
+            key_len_local = Some(kl);
+            out.push(Instruction::LocalSet(kl));
             key_local = locals.add_local(&format!("__mg_kptr_{}", locals.locals.len()), ValType::I32);
             out.push(Instruction::LocalSet(key_local));
         } else {
@@ -13937,8 +14038,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
-            key_len_local = Some(locals.add_local(&format!("__mgok_klen_{}", locals.locals.len()), ValType::I32));
-            out.push(Instruction::LocalSet(key_len_local.unwrap()));
+            let kl = locals.add_local(&format!("__mgok_klen_{}", locals.locals.len()), ValType::I32);
+            key_len_local = Some(kl);
+            out.push(Instruction::LocalSet(kl));
             key_local = locals.add_local(&format!("__mgok_kptr_{}", locals.locals.len()), ValType::I32);
             out.push(Instruction::LocalSet(key_local));
         } else {
@@ -14092,8 +14194,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
-            key_len_local = Some(locals.add_local(&format!("__ms_klen_{}", locals.locals.len()), ValType::I32));
-            out.push(Instruction::LocalSet(key_len_local.unwrap()));
+            let kl = locals.add_local(&format!("__ms_klen_{}", locals.locals.len()), ValType::I32);
+            key_len_local = Some(kl);
+            out.push(Instruction::LocalSet(kl));
             key_local = locals.add_local(&format!("__ms_kptr_{}", locals.locals.len()), ValType::I32);
             out.push(Instruction::LocalSet(key_local));
         } else {
@@ -14293,8 +14396,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
-            key_len_local = Some(locals.add_local(&format!("__md_klen_{}", locals.locals.len()), ValType::I32));
-            out.push(Instruction::LocalSet(key_len_local.unwrap()));
+            let kl = locals.add_local(&format!("__md_klen_{}", locals.locals.len()), ValType::I32);
+            key_len_local = Some(kl);
+            out.push(Instruction::LocalSet(kl));
             key_local = locals.add_local(&format!("__md_kptr_{}", locals.locals.len()), ValType::I32);
             out.push(Instruction::LocalSet(key_local));
         } else {
@@ -15219,6 +15323,41 @@ impl WasmCompiler {
         }
     }
 
+    fn is_comparable_type(type_name: &str) -> bool {
+        matches!(
+            type_name,
+            "int" | "int8" | "int16" | "int32" | "int64"
+            | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
+            | "uintptr" | "float32" | "float64" | "complex64" | "complex128"
+            | "bool" | "string" | "byte" | "rune"
+        )
+    }
+
+    fn validate_type_constraints(
+        template: &ast::FuncDecl,
+        subst: &HashMap<String, String>,
+    ) -> Result<(), Error> {
+        for field in &template.typ.typ_params.list {
+            let constraint_name = match &field.typ {
+                ast::Expression::Ident(id) => Some(id.name.as_str()),
+                _ => None,
+            };
+            if constraint_name == Some("comparable") {
+                for name_ident in &field.name {
+                    if let Some(concrete) = subst.get(&name_ident.name) {
+                        if !Self::is_comparable_type(concrete) {
+                            return Err(Error::TypeError(format!(
+                                "{} does not satisfy comparable constraint",
+                                concrete
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn monomorphize_func_decl(
         &self,
         template: &ast::FuncDecl,
@@ -15445,6 +15584,44 @@ impl WasmCompiler {
                     }
                 }
                 None
+            }
+            ast::Expression::Call(call) => {
+                self.infer_return_struct_type(call, locals)
+            }
+            _ => None,
+        }
+    }
+
+    fn infer_return_struct_type(&self, call: &ast::Call, locals: &LocalAlloc) -> Option<String> {
+        match call.func.as_ref() {
+            ast::Expression::Ident(ident) => {
+                let fi = self.functions.iter().find(|f| f.name == ident.name && f.recv_type.is_none())?;
+                fi.result_go_types.first().cloned()
+                    .filter(|t| self.struct_defs.contains_key(t))
+            }
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
+                    let recv_type = locals.get_var_struct_type(&recv_ident.name)
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            if self.struct_defs.contains_key(&recv_ident.name) {
+                                Some(recv_ident.name.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(type_name) = recv_type {
+                        let qualified = format!("{}.{}", type_name, sel.sel.name);
+                        let fi = self.functions.iter().find(|f| f.name == qualified)?;
+                        return fi.result_go_types.first().cloned()
+                            .filter(|t| self.struct_defs.contains_key(t));
+                    }
+                }
+                let parent_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals)?;
+                let qualified = format!("{}.{}", parent_type, sel.sel.name);
+                let fi = self.functions.iter().find(|f| f.name == qualified)?;
+                fi.result_go_types.first().cloned()
+                    .filter(|t| self.struct_defs.contains_key(t))
             }
             _ => None,
         }
@@ -16349,6 +16526,24 @@ impl WasmCompiler {
         vec![]
     }
 
+    fn call_return_go_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<String> {
+        if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+                    return fi.result_go_types.clone();
+                }
+            }
+            if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
+                    if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                        return fi.result_go_types.clone();
+                    }
+                }
+            }
+        }
+        vec![]
+    }
+
     fn resolve_selector_method_name(&self, sel: &ast::Selector, locals: &LocalAlloc) -> Option<String> {
         if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
             if let Some(type_name) = locals.get_var_struct_type(&recv_ident.name) {
@@ -16373,6 +16568,8 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
+        let go_types = self.call_return_go_types(&assign.right[0], locals);
+
         self.compile_expression(&assign.right[0], out, locals)?;
 
         // Pop return values into temp locals in reverse order (WASM stack is LIFO)
@@ -16394,6 +16591,32 @@ impl WasmCompiler {
                 }
                 let vt = ret_types[i];
                 let (_, tmp, _) = temps[i];
+
+                let is_iface = go_types.get(i).map_or(false, |gt| self.is_iface_go_type(gt));
+                if is_iface {
+                    let iface_tag = go_types.get(i)
+                        .map(|gt| format!("__iface_{}", gt))
+                        .unwrap_or_else(|| "__interface".to_string());
+                    let local_idx = if is_define {
+                        if let Some(existing) = locals.find_at_current_scope(&ident.name) {
+                            existing
+                        } else {
+                            locals.add_local(&ident.name, vt)
+                        }
+                    } else {
+                        locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, vt))
+                    };
+                    locals.set_var_struct_type(&ident.name, &iface_tag);
+                    let tid_local = locals.add_local(
+                        &format!("{}_type_id", ident.name),
+                        ValType::I32,
+                    );
+                    self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                    out.push(Instruction::LocalGet(tmp));
+                    out.push(Instruction::LocalSet(local_idx));
+                    continue;
+                }
+
                 let local_idx = if is_define {
                     if let Some(existing) = locals.find_at_current_scope(&ident.name) {
                         existing

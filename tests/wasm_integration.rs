@@ -8289,6 +8289,12 @@ type Doer interface {
     Do() int
 }
 
+type MyDoer struct {}
+
+func (m MyDoer) Do() int {
+    return 42
+}
+
 func NilInterfaceCall() int {
     var d Doer
     return d.Do()
@@ -24786,4 +24792,414 @@ func Run() int {
     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 6);
+}
+
+// ==================== B4: Multi-level pointer indirection ====================
+
+#[test]
+fn test_multi_level_pointer() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 42
+    p := &x
+    pp := &p
+    return **pp
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "multi-level pointer dereference should work");
+}
+
+// ==================== B6: Nil function comparison ====================
+
+#[test]
+fn test_nil_func_comparison() {
+    let source = r#"
+package main
+
+func Run() int {
+    var f func()
+    if f == nil {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "nil function should compare equal to nil");
+}
+
+// ==================== B2: Method chaining ====================
+
+#[test]
+fn test_method_chaining() {
+    let source = r#"
+package main
+
+type Builder struct {
+    val int
+}
+
+func (b Builder) Add(x int) Builder {
+    return Builder{val: b.val + x}
+}
+
+func (b Builder) Result() int {
+    return b.val
+}
+
+func Run() int {
+    b := Builder{val: 0}
+    return b.Add(10).Add(20).Add(12).Result()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "method chaining should work");
+}
+
+// ==================== C2: Map with empty struct values ====================
+
+#[test]
+fn test_map_with_empty_struct_values() {
+    let source = r#"
+package main
+
+type Pair struct {
+    A int
+    B int
+}
+
+func Run() int {
+    m := make(map[string]Pair)
+    m["xy"] = Pair{A: 10, B: 32}
+    p := m["xy"]
+    return p.A + p.B
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "map with struct values should work");
+}
+
+// ==================== C3: Pointer-to-struct field access ====================
+
+#[test]
+fn test_pointer_struct_field_assign() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func Run() int {
+    p := &Point{X: 10, Y: 20}
+    p.X = 42
+    return p.X + p.Y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 62, "pointer-to-struct field assignment should work");
+}
+
+// ==================== C4: Named types with methods on builtin types ====================
+
+#[test]
+fn test_named_builtin_type_with_method() {
+    let source = r#"
+package main
+
+type MyInt int
+
+func (m MyInt) Double() int {
+    return int(m) * 2
+}
+
+func Run() int {
+    x := MyInt(21)
+    return x.Double()
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "named type with method on builtin type should work");
+}
+
+// ==================== C6: Multi-return forwarding ====================
+
+#[test]
+fn test_multi_return_forwarding() {
+    let source = r#"
+package main
+
+func pair() (int, int) {
+    return 10, 32
+}
+
+func add(a int, b int) int {
+    return a + b
+}
+
+func Run() int {
+    return add(pair())
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "multi-return forwarding f(g()) should work");
+}
+
+// ==================== C8: For range with blank index only ====================
+
+#[test]
+fn test_for_range_blank_index_only() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := []int{10, 20, 30}
+    sum := 0
+    for _ = range s {
+        sum = sum + 1
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 3, "for _ = range should iterate correct number of times");
+}
+
+// ==================== C10: Switch with init statement and func call ====================
+
+#[test]
+fn test_switch_with_init_func_call() {
+    let source = r#"
+package main
+
+func getVal() int {
+    return 2
+}
+
+func Run() int {
+    switch x := getVal(); x {
+    case 1:
+        return 10
+    case 2:
+        return 42
+    case 3:
+        return 30
+    default:
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "switch with init statement should work");
+}
+
+// ==================== D3: parse_go_int edge cases ====================
+
+#[test]
+fn test_hex_array_size() {
+    let source = r#"
+package main
+
+func Run() int {
+    var a [0x4]int
+    a[0] = 10
+    a[1] = 20
+    a[2] = 30
+    a[3] = 40
+    return a[0] + a[1] + a[2] + a[3]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 100, "hex array size should work");
+}
+
+#[test]
+fn test_binary_literal() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 0b101010
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "binary literal 0b101010 should equal 42");
+}
+
+#[test]
+fn test_octal_literal() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 0o52
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "octal literal 0o52 should equal 42");
+}
+
+#[test]
+fn test_underscore_separated_int() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 1_000_000
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1_000_000, "underscore separated integer should work");
+}
+
+// ==================== D2: Interface variable with type assertion and method call ====================
+
+#[test]
+fn test_interface_type_assert_method_call() {
+    let source = r#"
+package main
+
+type Stringer interface {
+    Value() int
+}
+
+type MyVal struct {
+    v int
+}
+
+func (m MyVal) Value() int {
+    return m.v
+}
+
+func wrap(x Stringer) int {
+    m := x.(MyVal)
+    return m.Value()
+}
+
+func Run() int {
+    v := MyVal{v: 42}
+    return wrap(v)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "interface type assertion and method call should work");
 }

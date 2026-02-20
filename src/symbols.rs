@@ -320,8 +320,9 @@ impl DefineType {
     }
 
     pub fn eq_structs(l: &Self, r: &Self) -> bool {
-        let (n1, fields1, _) = l.as_struct().unwrap();
-        let (n2, fields2, _) = r.as_struct().unwrap();
+        let (Ok((n1, fields1, _)), Ok((n2, fields2, _))) = (l.as_struct(), r.as_struct()) else {
+            return false;
+        };
         n1 == n2 && fields1 == fields2
     }
 
@@ -399,12 +400,14 @@ impl DefineType {
             return true;
         }
         if self.is_spec() {
-            let (_, inner, _, _) = self.as_spec().unwrap();
-            return other == &inner.strip_type();
+            if let Ok((_, inner, _, _)) = self.as_spec() {
+                return other == &inner.strip_type();
+            }
         }
         if other.is_spec() {
-            let (_, _, _, is_transparent) = other.as_spec().unwrap();
-            return is_transparent;
+            if let Ok((_, _, _, is_transparent)) = other.as_spec() {
+                return is_transparent;
+            }
         }
         false
     }
@@ -728,12 +731,14 @@ impl Context {
     }
 
     fn define(&mut self, pkg: &str, name: &str, dt: DefineType, invar: bool) -> Symbol {
-        let current_scope = self.symbols.last_mut().unwrap();
+        let current_scope = self.symbols.last_mut().expect("symbol table has no scopes");
         current_scope.push((name.to_string(), dt, pkg.to_string()));
         self.max_size += 1;
 
         Symbol {
-            index: (self.total_len() - 1).try_into().unwrap(),
+            index: (self.total_len() - 1)
+                .try_into()
+                .expect("symbol index overflow (too many symbols)"),
             scope: self.scope,
             invar,
         }
@@ -751,7 +756,9 @@ impl Context {
             }) {
                 return Some((
                     Symbol {
-                        index: (abs_index + index).try_into().unwrap(),
+                        index: (abs_index + index)
+                            .try_into()
+                            .expect("symbol index overflow (too many symbols)"),
                         scope: self.scope,
                         invar: scope[index].1.is_invar(),
                     },
@@ -823,7 +830,9 @@ impl SymbolTable {
     }
 
     pub fn current_context(&mut self) -> &mut Context {
-        self.contexts.last_mut().unwrap()
+        self.contexts
+            .last_mut()
+            .expect("SymbolTable has no contexts")
     }
 
     pub fn new_context(&mut self, is_closure: bool) {
@@ -831,7 +840,9 @@ impl SymbolTable {
     }
 
     pub fn leave_context(&mut self) -> Context {
-        self.contexts.pop().unwrap()
+        self.contexts
+            .pop()
+            .expect("cannot leave context: no contexts on stack")
     }
 
     pub fn enter_scope(&mut self) {
@@ -839,7 +850,10 @@ impl SymbolTable {
     }
 
     pub fn leave_scope(&mut self) {
-        self.current_context().symbols.pop().unwrap();
+        self.current_context()
+            .symbols
+            .pop()
+            .expect("cannot leave scope: no scopes on stack");
     }
 
     pub fn define(&mut self, pkg: &str, name: &str, dt: DefineType, invar: bool) -> Symbol {
