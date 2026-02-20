@@ -26859,3 +26859,276 @@ func StackAlloc() int {
     let val2 = func.call(&mut store, ()).expect("second call after reset failed");
     assert_eq!(val2, 15, "stack-allocated struct should work identically after reset");
 }
+
+#[test]
+fn test_addr_of_struct_stack_allocated() {
+    let source = r#"
+package main
+
+type Vec3 struct {
+    X int
+    Y int
+    Z int
+}
+
+func SumVec() int {
+    v := &Vec3{X: 10, Y: 20, Z: 30}
+    return v.X + v.Y + v.Z
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "SumVec")
+        .expect("SumVec not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 60, "addr-of struct that doesn't escape should work on stack");
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("memory export not found");
+    let data = memory.data(&store);
+
+    let stack_region = &data[1024..65536];
+    let found_in_stack = stack_region.windows(8).any(|w| {
+        i64::from_le_bytes(w.try_into().unwrap()) == 10
+    });
+    assert!(found_in_stack, "non-escaping &struct should be allocated in stack region");
+}
+
+#[test]
+fn test_new_struct_stack_allocated() {
+    let source = r#"
+package main
+
+type Pair struct {
+    A int
+    B int
+}
+
+func NewPair() int {
+    p := new(Pair)
+    p.A = 100
+    p.B = 200
+    return p.A + p.B
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "NewPair")
+        .expect("NewPair not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 300, "new(Pair) that doesn't escape should work on stack");
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("memory export not found");
+    let data = memory.data(&store);
+
+    let stack_region = &data[1024..65536];
+    let found_100 = stack_region.windows(8).any(|w| {
+        i64::from_le_bytes(w.try_into().unwrap()) == 100
+    });
+    assert!(found_100, "non-escaping new() struct should be in stack region");
+}
+
+#[test]
+fn test_new_struct_escapes_via_return() {
+    let source = r#"
+package main
+
+type Record struct {
+    Val int
+}
+
+func MakeRecord() int {
+    r := new(Record)
+    r.Val = 42
+    return r.Val
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "MakeRecord")
+        .expect("MakeRecord not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "new() struct should work correctly");
+}
+
+#[test]
+fn test_struct_in_switch_init() {
+    let source = r#"
+package main
+
+type Mode struct {
+    Val int
+}
+
+func SwitchInit() int {
+    m := Mode{Val: 5}
+    switch x := m.Val; {
+    case x > 3:
+        return x * 10
+    default:
+        return x
+    }
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "SwitchInit")
+        .expect("SwitchInit not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 50, "struct used in switch init should work correctly");
+}
+
+#[test]
+fn test_struct_survives_closure_in_same_function() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func UseStructAfterClosure() int {
+    p := Point{X: 10, Y: 20}
+    f := func() int { return 42 }
+    result := f()
+    return p.X + p.Y + result
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "UseStructAfterClosure")
+        .expect("UseStructAfterClosure not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 72, "struct on stack must survive closure compilation in the same function");
+}
+
+#[test]
+fn test_struct_survives_generic_call_in_same_function() {
+    let source = r#"
+package main
+
+type Vec2 struct {
+    A int
+    B int
+}
+
+func Identity[T any](x T) T {
+    return x
+}
+
+func UseStructAfterGeneric() int {
+    v := Vec2{A: 3, B: 7}
+    n := Identity[int](100)
+    return v.A + v.B + n
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "UseStructAfterGeneric")
+        .expect("UseStructAfterGeneric not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 110, "struct on stack must survive generic monomorphization in the same function");
+}
+
+#[test]
+fn test_closure_capture_with_slice_expr() {
+    let source = r#"
+package main
+
+func SliceCapture() int {
+    arr := [5]int{10, 20, 30, 40, 50}
+    start := 1
+    f := func() int {
+        return arr[start] + arr[start + 1]
+    }
+    return f()
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "SliceCapture")
+        .expect("SliceCapture not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 50, "closure must correctly capture variables used in index expressions");
+}
