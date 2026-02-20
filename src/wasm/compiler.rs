@@ -108,6 +108,8 @@ struct LocalAlloc {
     params: Vec<(String, ValType)>,
     locals: Vec<(String, ValType, u32)>,
     scope_depth: u32,
+    next_scope_id: u32,
+    scope_stack: Vec<u32>,
     var_types: HashMap<String, String>,
     closure_info: HashMap<String, (u32, u32)>,
     slice_elem_types: HashMap<String, ValType>,
@@ -124,6 +126,8 @@ impl LocalAlloc {
             params,
             locals: Vec::new(),
             scope_depth: 0,
+            next_scope_id: 1,
+            scope_stack: vec![0],
             var_types: HashMap::new(),
             closure_info: HashMap::new(),
             slice_elem_types: HashMap::new(),
@@ -139,17 +143,27 @@ impl LocalAlloc {
         self.params.len() as u32
     }
 
+    fn current_scope_id(&self) -> u32 {
+        *self.scope_stack.last().unwrap()
+    }
+
     fn push_scope(&mut self) {
         self.scope_depth += 1;
+        let id = self.next_scope_id;
+        self.next_scope_id += 1;
+        self.scope_stack.push(id);
     }
 
     fn pop_scope(&mut self) {
         self.scope_depth = self.scope_depth.saturating_sub(1);
+        if self.scope_stack.len() > 1 {
+            self.scope_stack.pop();
+        }
     }
 
     fn add_local(&mut self, name: &str, vt: ValType) -> u32 {
         let idx = self.param_count() + self.locals.len() as u32;
-        self.locals.push((name.to_string(), vt, self.scope_depth));
+        self.locals.push((name.to_string(), vt, self.current_scope_id()));
         idx
     }
 
@@ -159,8 +173,8 @@ impl LocalAlloc {
                 return Some(i as u32);
             }
         }
-        for (i, (n, _, depth)) in self.locals.iter().enumerate().rev() {
-            if n == name && *depth <= self.scope_depth {
+        for (i, (n, _, scope_id)) in self.locals.iter().enumerate().rev() {
+            if n == name && self.scope_stack.contains(scope_id) {
                 return Some(self.param_count() + i as u32);
             }
         }
@@ -168,11 +182,12 @@ impl LocalAlloc {
     }
 
     fn find_at_current_scope(&self, name: &str) -> Option<u32> {
-        for (i, (n, _, depth)) in self.locals.iter().enumerate().rev() {
-            if n == name && *depth == self.scope_depth {
+        let current = self.current_scope_id();
+        for (i, (n, _, scope_id)) in self.locals.iter().enumerate().rev() {
+            if n == name && *scope_id == current {
                 return Some(self.param_count() + i as u32);
             }
-            if n == name && *depth < self.scope_depth {
+            if n == name && self.scope_stack.contains(scope_id) && *scope_id != current {
                 return None;
             }
         }
@@ -185,8 +200,8 @@ impl LocalAlloc {
                 return Some(*vt);
             }
         }
-        for (n, vt, depth) in self.locals.iter().rev() {
-            if n == name && *depth <= self.scope_depth {
+        for (n, vt, scope_id) in self.locals.iter().rev() {
+            if n == name && self.scope_stack.contains(scope_id) {
                 return Some(*vt);
             }
         }
@@ -2601,6 +2616,11 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        let has_init = if_stmt.init.is_some();
+        if has_init {
+            locals.push_scope();
+        }
+
         if let Some(init) = &if_stmt.init {
             self.compile_statement(init, out, locals, result_types)?;
         }
@@ -2622,6 +2642,10 @@ impl WasmCompiler {
             *depth -= 1;
         }
         out.push(Instruction::End);
+
+        if has_init {
+            locals.pop_scope();
+        }
         Ok(())
     }
 
@@ -2643,6 +2667,11 @@ impl WasmCompiler {
         result_types: &[ValType],
         label: Option<String>,
     ) -> Result<(), Error> {
+        let has_init = for_stmt.init.is_some();
+        if has_init {
+            locals.push_scope();
+        }
+
         if let Some(init) = &for_stmt.init {
             self.compile_statement(init, out, locals, result_types)?;
         }
@@ -2686,6 +2715,10 @@ impl WasmCompiler {
         out.push(Instruction::End);
 
         self.loop_depth.pop();
+
+        if has_init {
+            locals.pop_scope();
+        }
 
         Ok(())
     }
@@ -3523,6 +3556,11 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
         result_types: &[ValType],
     ) -> Result<(), Error> {
+        let has_init = ts.init.is_some();
+        if has_init {
+            locals.push_scope();
+        }
+
         // Compile init statement if present
         if let Some(ref init) = ts.init {
             self.compile_statement(init, out, locals, result_types)?;
@@ -3625,6 +3663,10 @@ impl WasmCompiler {
                 self.compile_block_stmts(default, out, locals, result_types)?;
             }
             out.push(Instruction::End);
+        }
+
+        if has_init {
+            locals.pop_scope();
         }
 
         Ok(())
@@ -3995,6 +4037,11 @@ impl WasmCompiler {
         result_types: &[ValType],
         label: Option<String>,
     ) -> Result<(), Error> {
+        let has_init = switch.init.is_some();
+        if has_init {
+            locals.push_scope();
+        }
+
         if let Some(init) = &switch.init {
             self.compile_statement(init, out, locals, result_types)?;
         }
@@ -4045,6 +4092,9 @@ impl WasmCompiler {
                 for stmt in def.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+            }
+            if has_init {
+                locals.pop_scope();
             }
             return Ok(());
         }
@@ -4228,6 +4278,10 @@ impl WasmCompiler {
 
         self.loop_depth.pop();
         out.push(Instruction::End);
+
+        if has_init {
+            locals.pop_scope();
+        }
 
         Ok(())
     }
@@ -5977,6 +6031,9 @@ impl WasmCompiler {
 
         // Unary operations
         match op.op {
+            Operator::Add => {
+                self.compile_expression(&op.x, out, locals)?;
+            }
             Operator::Sub => {
                 let vt = self.infer_val_type(&op.x, locals);
                 match vt {
