@@ -12408,3 +12408,336 @@ sw:
     let result = run_fn.call(&mut store, ()).expect("call failed");
     assert_eq!(result, 111); // 1 + 10 + 100
 }
+
+// ==================== Bug 1: Slice expression bounds checking ====================
+
+#[test]
+fn test_slice_bounds_low_greater_than_high_traps() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := make([]int, 5)
+    s[0] = 1
+    s[1] = 2
+    s[2] = 3
+    t := s[3:1]
+    return len(t)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert!(func.call(&mut store, ()).is_err(), "s[3:1] should trap because low > high");
+}
+
+#[test]
+fn test_string_slice_out_of_range_traps() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := "hello"
+    t := s[2:10]
+    return len(t)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert!(func.call(&mut store, ()).is_err(), "s[2:10] should trap because high > len");
+}
+
+#[test]
+fn test_slice_high_exceeds_cap_traps() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := make([]int, 3, 5)
+    s[0] = 10
+    t := s[0:6]
+    return len(t)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert!(func.call(&mut store, ()).is_err(), "s[0:6] should trap because high > cap");
+}
+
+#[test]
+fn test_valid_slice_expression_works() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := make([]int, 5)
+    s[0] = 10
+    s[1] = 20
+    s[2] = 30
+    s[3] = 40
+    s[4] = 50
+    t := s[1:4]
+    return len(t) + t[0] + t[1] + t[2]
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let result = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result, 3 + 20 + 30 + 40); // len=3, elements 20,30,40
+}
+
+#[test]
+fn test_valid_string_slice_works() {
+    let source = r#"
+package main
+
+func Run() int {
+    s := "hello"
+    t := s[1:4]
+    return len(t)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let result = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result, 3); // "ell" has length 3
+}
+
+// ==================== Bug 2: Termination analysis - switch break check ====================
+
+#[test]
+fn test_switch_with_break_is_not_terminating() {
+    let source = r#"
+package main
+
+func Run(x int) int {
+    switch x {
+    case 1:
+        return 1
+    default:
+        break
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "switch with break should not be terminating; missing return");
+    let err_msg = result.err().unwrap().to_string();
+    assert!(err_msg.contains("missing return"), "error should mention missing return, got: {}", err_msg);
+}
+
+#[test]
+fn test_switch_without_break_is_terminating() {
+    let source = r#"
+package main
+
+func Run(x int) int {
+    switch x {
+    case 1:
+        return 1
+    default:
+        return 0
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("switch with all returns should be terminating");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<i64, i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, 1).expect("call failed"), 1);
+    assert_eq!(func.call(&mut store, 99).expect("call failed"), 0);
+}
+
+#[test]
+fn test_labeled_switch_with_break_is_not_terminating() {
+    let source = r#"
+package main
+
+func Run(x int) int {
+sw:
+    switch x {
+    case 1:
+        return 1
+    default:
+        break sw
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "labeled switch with break to label should not be terminating");
+}
+
+// ==================== Bug 3: Labeled fallthrough terminates ====================
+
+#[test]
+fn test_labeled_fallthrough_terminates() {
+    let source = r#"
+package main
+
+func Run(x int) int {
+    switch x {
+    case 1:
+done:
+        fallthrough
+    case 2:
+        return 10
+    default:
+        return 20
+    }
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    compiler.compile_source(source).expect("labeled fallthrough should be recognized as terminating");
+}
+
+// ==================== Bug 4: Short variable declaration validation ====================
+
+#[test]
+fn test_short_var_decl_all_existing_vars_error() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 1
+    y := 2
+    x, y := 3, 4
+    return x + y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "x, y := 3, 4 should fail when both x and y already exist");
+    let err_msg = result.err().unwrap().to_string();
+    assert!(err_msg.contains("no new variables"), "error should mention no new variables, got: {}", err_msg);
+}
+
+#[test]
+fn test_short_var_decl_duplicate_names_error() {
+    let source = r#"
+package main
+
+func Run() int {
+    x, y, x := 1, 2, 3
+    return x + y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "x, y, x := 1, 2, 3 should fail with duplicate x");
+    let err_msg = result.err().unwrap().to_string();
+    assert!(err_msg.contains("repeated on left side"), "error should mention repeated name, got: {}", err_msg);
+}
+
+#[test]
+fn test_short_var_decl_with_one_new_succeeds() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 1
+    x, y := 10, 20
+    return x + y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("x, y := 10, 20 should succeed since y is new");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    assert_eq!(func.call(&mut store, ()).expect("call failed"), 30);
+}
+
+// ==================== Bug 5: Struct zero-value initialization ====================
+
+#[test]
+fn test_struct_var_zero_value_initialization() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func Run() int {
+    var p Point
+    return p.X + p.Y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let result = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result, 0, "zero-valued struct fields should be 0");
+}
+
+#[test]
+fn test_struct_var_field_access_without_initializer() {
+    let source = r#"
+package main
+
+type Rect struct {
+    Width  int
+    Height int
+}
+
+func Run() int {
+    var r Rect
+    r.Width = 10
+    r.Height = 5
+    return r.Width * r.Height
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let result = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(result, 50);
+}

@@ -1656,6 +1656,32 @@ impl WasmCompiler {
         let is_define = assign.op == Operator::Define;
 
         if is_define {
+            // Validate short variable declaration rules
+            let mut seen_names: Vec<&str> = Vec::new();
+            let mut has_new = false;
+            for left in &assign.left {
+                if let ast::Expression::Ident(ident) = left {
+                    if ident.name == "_" {
+                        continue;
+                    }
+                    if seen_names.contains(&ident.name.as_str()) {
+                        return Err(Error::SyntaxError(format!(
+                            "{} repeated on left side of :=",
+                            ident.name
+                        )));
+                    }
+                    seen_names.push(&ident.name);
+                    if locals.find_at_current_scope(&ident.name).is_none() {
+                        has_new = true;
+                    }
+                }
+            }
+            if !seen_names.is_empty() && !has_new {
+                return Err(Error::SyntaxError(
+                    "no new variables on left side of :=".to_string(),
+                ));
+            }
+
             // Map comma-ok: v, ok := m[key]
             if assign.right.len() == 1 && assign.left.len() == 2 {
                 if let ast::Expression::Index(idx_expr) = &assign.right[0] {
@@ -3828,12 +3854,7 @@ impl WasmCompiler {
         let num_cases = non_default_cases.len();
 
         let has_fallthrough = non_default_cases.iter().any(|c| {
-            c.body.iter().any(|s| {
-                matches!(
-                    s,
-                    ast::Statement::Branch(b) if b.key == Keyword::FallThrough
-                )
-            })
+            c.body.iter().any(|s| Self::is_fallthrough_stmt(s))
         });
 
         out.push(Instruction::Block(BlockType::Empty));
@@ -3894,12 +3915,10 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(matched));
 
                 for stmt in case.body.iter() {
-                    if let ast::Statement::Branch(b) = stmt {
-                        if b.key == Keyword::FallThrough {
-                            out.push(Instruction::I32Const(1));
-                            out.push(Instruction::LocalSet(ft));
-                            continue;
-                        }
+                    if Self::is_fallthrough_stmt(stmt) {
+                        out.push(Instruction::I32Const(1));
+                        out.push(Instruction::LocalSet(ft));
+                        continue;
                     }
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
@@ -4407,6 +4426,25 @@ impl WasmCompiler {
                                 out.push(Instruction::LocalSet(len_local));
                                 out.push(Instruction::LocalSet(ptr_local));
                             } else {
+                                out.push(Instruction::LocalSet(local_idx));
+                            }
+                        } else if let Some(ref typ) = spec.typ {
+                            if let ast::Expression::Ident(type_ident) = typ {
+                                if let Some(sd) = self.struct_defs.get(&type_ident.name) {
+                                    let size = sd.total_size as i32;
+                                    out.push(Instruction::I32Const(size));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    out.push(Instruction::LocalSet(local_idx));
+                                }
+                            } else if let ast::Expression::TypeStruct(_) = typ {
+                                let field_count = if let ast::Expression::TypeStruct(st) = typ {
+                                    st.fields.len()
+                                } else {
+                                    0
+                                };
+                                let size = ((field_count * 8) as i32).max(8);
+                                out.push(Instruction::I32Const(size));
+                                out.push(Instruction::Call(self.alloc_func_idx()?));
                                 out.push(Instruction::LocalSet(local_idx));
                             }
                         }
@@ -9188,6 +9226,67 @@ impl WasmCompiler {
         }
         out.push(Instruction::LocalSet(high_local));
 
+        // Bounds checks: 0 <= low <= high <= len (strings/arrays) or cap (slices)
+        // Check low <= high
+        out.push(Instruction::LocalGet(low_local));
+        out.push(Instruction::LocalGet(high_local));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Unreachable);
+        out.push(Instruction::End);
+
+        if is_string {
+            // For strings: high <= len
+            out.push(Instruction::LocalGet(high_local));
+            out.push(Instruction::LocalGet(orig_len_local));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+        } else {
+            // For slices: high <= cap
+            out.push(Instruction::LocalGet(high_local));
+            out.push(Instruction::LocalGet(orig_cap_local));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+        }
+
+        let three_index_max_local = if let Some(ref max_expr) = slice.index[2] {
+            // Three-index slice: additionally check high <= max <= cap
+            let max_local = locals.add_local(
+                &format!("__slice_max_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            self.compile_expression(max_expr, out, locals)?;
+            let vt = self.infer_val_type(max_expr, locals);
+            if vt == ValType::I64 {
+                out.push(Instruction::I32WrapI64);
+            }
+            out.push(Instruction::LocalSet(max_local));
+
+            // high <= max
+            out.push(Instruction::LocalGet(high_local));
+            out.push(Instruction::LocalGet(max_local));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+
+            // max <= cap
+            out.push(Instruction::LocalGet(max_local));
+            out.push(Instruction::LocalGet(orig_cap_local));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+
+            Some(max_local)
+        } else {
+            None
+        };
+
         let slice_elem_vt = if let ast::Expression::Ident(ident) = &*slice.left {
             locals
                 .slice_elem_types
@@ -9238,12 +9337,8 @@ impl WasmCompiler {
 
             // new_cap = max - low (three-index) or orig_cap - low (two-index)
             out.push(Instruction::LocalGet(new_hdr));
-            if let Some(ref max_expr) = slice.index[2] {
-                self.compile_expression(max_expr, out, locals)?;
-                let vt = self.infer_val_type(max_expr, locals);
-                if vt == ValType::I64 {
-                    out.push(Instruction::I32WrapI64);
-                }
+            if let Some(max_local) = three_index_max_local {
+                out.push(Instruction::LocalGet(max_local));
             } else {
                 out.push(Instruction::LocalGet(orig_cap_local));
             }
@@ -11332,28 +11427,49 @@ impl WasmCompiler {
                     && !Self::block_contains_break(&for_stmt.body.list, None)
             }
             ast::Statement::Switch(sw) => {
-                let has_default = sw.block.body.iter().any(|c| c.tok == Keyword::Default);
-                if !has_default {
-                    return false;
-                }
-                sw.block.body.iter().all(|c| Self::case_body_terminates(&c.body))
+                Self::switch_is_terminating(&sw.block.body, None)
             }
             ast::Statement::TypeSwitch(ts) => {
                 let has_default = ts.block.body.iter().any(|c| c.list.is_empty());
                 if !has_default {
                     return false;
                 }
-                ts.block.body.iter().all(|c| Self::case_body_terminates(&c.body))
+                let cases_terminate = ts.block.body.iter().all(|c| Self::case_body_terminates(&c.body));
+                if !cases_terminate {
+                    return false;
+                }
+                !Self::switch_cases_contain_break(
+                    ts.block.body.iter().map(|c| c.body.as_slice()),
+                    None,
+                )
             }
             ast::Statement::Label(labeled) => {
-                if let ast::Statement::For(for_stmt) = labeled.stmt.as_ref() {
-                    for_stmt.cond.is_none()
-                        && !Self::block_contains_break(
-                            &for_stmt.body.list,
+                match labeled.stmt.as_ref() {
+                    ast::Statement::For(for_stmt) => {
+                        for_stmt.cond.is_none()
+                            && !Self::block_contains_break(
+                                &for_stmt.body.list,
+                                Some(&labeled.name.name),
+                            )
+                    }
+                    ast::Statement::Switch(sw) => {
+                        Self::switch_is_terminating(&sw.block.body, Some(&labeled.name.name))
+                    }
+                    ast::Statement::TypeSwitch(ts) => {
+                        let has_default = ts.block.body.iter().any(|c| c.list.is_empty());
+                        if !has_default {
+                            return false;
+                        }
+                        let cases_terminate = ts.block.body.iter().all(|c| Self::case_body_terminates(&c.body));
+                        if !cases_terminate {
+                            return false;
+                        }
+                        !Self::switch_cases_contain_break(
+                            ts.block.body.iter().map(|c| c.body.as_slice()),
                             Some(&labeled.name.name),
                         )
-                } else {
-                    Self::stmt_always_returns(&labeled.stmt)
+                    }
+                    other => Self::stmt_always_returns(other),
                 }
             }
             _ => false,
@@ -11465,6 +11581,72 @@ impl WasmCompiler {
         false
     }
 
+    fn switch_is_terminating(cases: &[ast::CaseClause], label: Option<&str>) -> bool {
+        let has_default = cases.iter().any(|c| c.tok == Keyword::Default);
+        if !has_default {
+            return false;
+        }
+        let cases_terminate = cases.iter().all(|c| Self::case_body_terminates(&c.body));
+        if !cases_terminate {
+            return false;
+        }
+        !Self::switch_cases_contain_break(
+            cases.iter().map(|c| c.body.as_slice()),
+            label,
+        )
+    }
+
+    fn switch_cases_contain_break<'a>(
+        cases: impl Iterator<Item = &'a [ast::Statement]>,
+        label: Option<&str>,
+    ) -> bool {
+        for case_body in cases {
+            if Self::case_stmts_contain_unlabeled_break(case_body, label) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn case_stmts_contain_unlabeled_break(stmts: &[ast::Statement], switch_label: Option<&str>) -> bool {
+        for stmt in stmts {
+            match stmt {
+                ast::Statement::Branch(b) if b.key == Keyword::Break => {
+                    if b.ident.is_none() {
+                        return true;
+                    }
+                    if let Some(ref brk_label) = b.ident {
+                        if let Some(sw_label) = switch_label {
+                            if brk_label.name == sw_label {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                ast::Statement::If(if_stmt) => {
+                    if Self::case_stmts_contain_unlabeled_break(&if_stmt.body.list, switch_label) {
+                        return true;
+                    }
+                    if let Some(ref els) = if_stmt.else_ {
+                        if let ast::Statement::Block(block) = els.as_ref() {
+                            if Self::case_stmts_contain_unlabeled_break(&block.list, switch_label) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                ast::Statement::Block(block) => {
+                    if Self::case_stmts_contain_unlabeled_break(&block.list, switch_label) {
+                        return true;
+                    }
+                }
+                // Don't recurse into for/switch/select - break inside those refers to them, not the outer switch
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn case_body_terminates(stmts: &[ast::Statement]) -> bool {
         let last = stmts
             .iter()
@@ -11474,13 +11656,19 @@ impl WasmCompiler {
             if Self::stmt_always_returns(last) {
                 return true;
             }
-            if let ast::Statement::Branch(b) = last {
-                if b.key == Keyword::FallThrough {
-                    return true;
-                }
+            if Self::is_fallthrough_stmt(last) {
+                return true;
             }
         }
         false
+    }
+
+    fn is_fallthrough_stmt(stmt: &ast::Statement) -> bool {
+        match stmt {
+            ast::Statement::Branch(b) => b.key == Keyword::FallThrough,
+            ast::Statement::Label(labeled) => Self::is_fallthrough_stmt(&labeled.stmt),
+            _ => false,
+        }
     }
 
     fn infer_deref_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
