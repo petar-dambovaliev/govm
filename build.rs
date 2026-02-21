@@ -2,6 +2,60 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+fn collect_packages(dir: &Path, prefix: &str, packages: &mut Vec<(String, Vec<String>)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut subdirs: Vec<_> = Vec::new();
+    let mut go_files: Vec<String> = Vec::new();
+
+    let mut all: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    all.sort_by_key(|e| e.file_name());
+
+    for entry in &all {
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            subdirs.push(entry.path());
+        } else if ft.is_file() {
+            let path = entry.path();
+            if path.extension().map(|ext| ext == "go").unwrap_or(false) {
+                let rel_path = if prefix.is_empty() {
+                    entry.file_name().to_string_lossy().to_string()
+                } else {
+                    format!("{}/{}", prefix, entry.file_name().to_string_lossy())
+                };
+                go_files.push(rel_path);
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
+
+    if !go_files.is_empty() {
+        packages.push((prefix.to_string(), go_files));
+    }
+
+    subdirs.sort();
+    for subdir in subdirs {
+        let dir_name = subdir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let child_prefix = if prefix.is_empty() {
+            dir_name
+        } else {
+            format!("{}/{}", prefix, dir_name)
+        };
+        println!("cargo:rerun-if-changed={}", subdir.display());
+        collect_packages(&subdir, &child_prefix, packages);
+    }
+}
+
 fn main() {
     let stdlib_dir = Path::new("src/wasm/stdlib");
 
@@ -19,36 +73,8 @@ fn main() {
         for dir_entry in dirs {
             let pkg_name = dir_entry.file_name().to_string_lossy().to_string();
             let pkg_path = dir_entry.path();
-
             println!("cargo:rerun-if-changed={}", pkg_path.display());
-
-            let mut go_files: Vec<String> = Vec::new();
-            if let Ok(files) = fs::read_dir(&pkg_path) {
-                let mut file_entries: Vec<_> = files
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.path()
-                            .extension()
-                            .map(|ext| ext == "go")
-                            .unwrap_or(false)
-                    })
-                    .collect();
-                file_entries.sort_by_key(|e| e.file_name());
-
-                for file_entry in file_entries {
-                    let rel_path = format!(
-                        "{}/{}",
-                        pkg_name,
-                        file_entry.file_name().to_string_lossy()
-                    );
-                    go_files.push(rel_path);
-                    println!("cargo:rerun-if-changed={}", file_entry.path().display());
-                }
-            }
-
-            if !go_files.is_empty() {
-                packages.push((pkg_name, go_files));
-            }
+            collect_packages(&pkg_path, &pkg_name, &mut packages);
         }
     }
 

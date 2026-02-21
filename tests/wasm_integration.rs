@@ -27645,3 +27645,644 @@ func Run() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 1, "Is should return false for non-matching errors");
 }
+
+#[test]
+fn test_utf8_rune_len_ascii() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    return utf8.RuneLen('A')
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_rune_len_multibyte() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r2 := utf8.RuneLen(0x00E9)
+    r3 := utf8.RuneLen(0x4E16)
+    r4 := utf8.RuneLen(0x1F600)
+    return r2*100 + r3*10 + r4
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 234, "2-byte=2, 3-byte=3, 4-byte=4 -> 234");
+}
+
+#[test]
+fn test_utf8_rune_len_invalid() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    neg := utf8.RuneLen(-1)
+    sur := utf8.RuneLen(0xD800)
+    over := utf8.RuneLen(0x110000)
+    if neg == -1 && sur == -1 && over == -1 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "invalid runes should return -1");
+}
+
+#[test]
+fn test_utf8_decode_rune_ascii() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := []byte{0x48, 0x69}
+    r, size := utf8.DecodeRune(buf)
+    if r == 'H' && size == 1 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_decode_rune_multibyte() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := []byte{0xC3, 0xA9}
+    r, size := utf8.DecodeRune(buf)
+    if r == 0xE9 && size == 2 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "should decode 2-byte UTF-8 (e-acute)");
+}
+
+#[test]
+fn test_utf8_decode_rune_empty() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := []byte{}
+    r, size := utf8.DecodeRune(buf)
+    if r == 0xFFFD && size == 0 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "empty slice should return RuneError, 0");
+}
+
+#[test]
+fn test_utf8_decode_rune_in_string() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r, size := utf8.DecodeRuneInString("Hello")
+    if r == 'H' && size == 1 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_encode_rune() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := make([]byte, 4)
+    n := utf8.EncodeRune(buf, 'A')
+    if n == 1 && buf[0] == 0x41 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_encode_rune_multibyte() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := make([]byte, 4)
+    n := utf8.EncodeRune(buf, 0xE9)
+    if n == 2 && buf[0] == 0xC3 && buf[1] == 0xA9 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "should encode 2-byte e-acute");
+}
+
+#[test]
+fn test_utf8_rune_count_in_string() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    return utf8.RuneCountInString("Hello")
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 5);
+}
+
+#[test]
+fn test_utf8_rune_count_bytes() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F}
+    return utf8.RuneCount(buf)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 5);
+}
+
+#[test]
+fn test_utf8_valid_string() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    if utf8.ValidString("Hello") {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_valid_bytes() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    good := []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F}
+    bad := []byte{0xFF, 0xFE}
+    g := 0
+    b := 0
+    if utf8.Valid(good) {
+        g = 1
+    }
+    if utf8.Valid(bad) {
+        b = 1
+    }
+    return g*10 + b
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "valid=1, invalid=0 -> 10");
+}
+
+#[test]
+fn test_utf8_valid_rune() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r := 0
+    if utf8.ValidRune('A') {
+        r += 1
+    }
+    if utf8.ValidRune(0x10FFFF) {
+        r += 10
+    }
+    if utf8.ValidRune(0xD800) {
+        r += 100
+    }
+    if utf8.ValidRune(-1) {
+        r += 1000
+    }
+    return r
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 11, "A=valid, MaxRune=valid, surrogate=invalid, -1=invalid -> 11");
+}
+
+#[test]
+fn test_utf8_rune_start() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r := 0
+    if utf8.RuneStart(0x41) {
+        r += 1
+    }
+    if utf8.RuneStart(0xC3) {
+        r += 10
+    }
+    if utf8.RuneStart(0x80) {
+        r += 100
+    }
+    return r
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 11, "0x41=start, 0xC3=start, 0x80=continuation -> 11");
+}
+
+#[test]
+fn test_utf8_full_rune() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r := 0
+    if utf8.FullRune([]byte{0x41}) {
+        r += 1
+    }
+    if utf8.FullRune([]byte{0xC3, 0xA9}) {
+        r += 10
+    }
+    if utf8.FullRune([]byte{0xC3}) {
+        r += 100
+    }
+    if utf8.FullRune([]byte{}) {
+        r += 1000
+    }
+    return r
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 11, "ASCII=full, 2-byte=full, truncated=not full, empty=not full -> 11");
+}
+
+#[test]
+fn test_utf8_full_rune_in_string() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r := 0
+    if utf8.FullRuneInString("A") {
+        r += 1
+    }
+    if utf8.FullRuneInString("") {
+        r += 10
+    }
+    return r
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "A=full, empty=not full -> 1");
+}
+
+#[test]
+fn test_utf8_append_rune() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    var buf []byte
+    buf = utf8.AppendRune(buf, 'A')
+    if len(buf) == 1 && buf[0] == 0x41 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_decode_last_rune() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    buf := []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F}
+    r, size := utf8.DecodeLastRune(buf)
+    if r == 'o' && size == 1 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_decode_last_rune_in_string() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r, size := utf8.DecodeLastRuneInString("Hello")
+    if r == 'o' && size == 1 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1);
+}
+
+#[test]
+fn test_utf8_constants() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    r := 0
+    if utf8.RuneError == 0xFFFD {
+        r += 1
+    }
+    if utf8.RuneSelf == 0x80 {
+        r += 10
+    }
+    if utf8.MaxRune == 0x10FFFF {
+        r += 100
+    }
+    if utf8.UTFMax == 4 {
+        r += 1000
+    }
+    return r
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1111, "all four constants should match");
+}
+
+#[test]
+fn test_utf8_encode_decode_roundtrip() {
+    let source = r#"
+package main
+
+import "unicode/utf8"
+
+func Run() int {
+    runes := []rune{0x41, 0xE9, 0x4E16, 0x1F600}
+    expected := []int{1, 2, 3, 4}
+    buf := make([]byte, 4)
+    for i := 0; i < len(runes); i++ {
+        n := utf8.EncodeRune(buf, runes[i])
+        if n != expected[i] {
+            return 0
+        }
+        r, sz := utf8.DecodeRune(buf[0:n])
+        if r != runes[i] || sz != n {
+            return 0
+        }
+    }
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "encode/decode roundtrip should preserve runes");
+}

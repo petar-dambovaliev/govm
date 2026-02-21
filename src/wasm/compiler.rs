@@ -621,11 +621,40 @@ impl WasmCompiler {
         name.to_string()
     }
 
+    fn resolve_global_var(&self, name: &str) -> Option<&(u32, ValType)> {
+        if let Some(entry) = self.global_vars.get(name) {
+            return Some(entry);
+        }
+        if let Some(ref pkg) = self.current_package {
+            let qualified = format!("{}.{}", pkg, name);
+            return self.global_vars.get(&qualified);
+        }
+        None
+    }
+
+    fn resolve_global_var_name(&self, name: &str) -> String {
+        if self.global_vars.contains_key(name) {
+            return name.to_string();
+        }
+        if let Some(ref pkg) = self.current_package {
+            let qualified = format!("{}.{}", pkg, name);
+            if self.global_vars.contains_key(&qualified) {
+                return qualified;
+            }
+        }
+        name.to_string()
+    }
+
+    fn pkg_short_name(pkg: &str) -> &str {
+        pkg.rsplit('/').next().unwrap_or(pkg)
+    }
+
     fn prescan_stdlib_package(&mut self, pkg: &str, sources: &[&str]) -> Result<(), Error> {
-        if self.compiled_packages.contains(pkg) {
+        let short = Self::pkg_short_name(pkg);
+        if self.compiled_packages.contains(short) {
             return Ok(());
         }
-        self.compiled_packages.insert(pkg.to_string());
+        self.compiled_packages.insert(short.to_string());
 
         let mut files = Vec::new();
         for source in sources {
@@ -648,7 +677,7 @@ impl WasmCompiler {
             }
         }
 
-        self.current_package = Some(pkg.to_string());
+        self.current_package = Some(short.to_string());
 
         for file in &files {
             self.prescan_type_declarations(file);
@@ -663,7 +692,8 @@ impl WasmCompiler {
     }
 
     fn compile_stdlib_bodies(&mut self, pkg: &str, sources: &[&str]) -> Result<(), Error> {
-        let compiled_key = format!("__compiled_{}", pkg);
+        let short = Self::pkg_short_name(pkg);
+        let compiled_key = format!("__compiled_{}", short);
         if self.compiled_packages.contains(&compiled_key) {
             return Ok(());
         }
@@ -690,7 +720,7 @@ impl WasmCompiler {
             }
         }
 
-        self.current_package = Some(pkg.to_string());
+        self.current_package = Some(short.to_string());
 
         for file in &files {
             let sorted = Self::sort_declarations_by_deps(&file.decl);
@@ -4168,30 +4198,6 @@ impl WasmCompiler {
                 }
             }
         } else {
-            // When returning a single slice variable but the function signature
-            // expects 3 values (ptr, len, cap), expand the header pointer.
-            if ret.ret.len() == 1 && result_types.len() == 3 {
-                if let ast::Expression::Ident(ident) = &ret.ret[0] {
-                    if locals.get_var_struct_type(&ident.name) == Some("__slice") {
-                        self.compile_expression(&ret.ret[0], out, locals)?;
-                        let hdr = locals.add_local(
-                            &format!("__ret_slice_hdr_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        out.push(Instruction::LocalSet(hdr));
-                        out.push(Instruction::LocalGet(hdr));
-                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                        out.push(Instruction::LocalGet(hdr));
-                        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                        out.push(Instruction::LocalGet(hdr));
-                        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
-                        self.emit_deferred_calls(out);
-                        out.push(Instruction::Return);
-                        return Ok(());
-                    }
-                }
-            }
-
             for (i, expr) in ret.ret.iter().enumerate() {
                 let is_iface_return = result_go_types.get(i)
                     .map_or(false, |gt| self.is_iface_go_type(gt));
@@ -5166,8 +5172,9 @@ impl WasmCompiler {
                                     out.push(Instruction::LocalSet(idx));
                                 }
                             }
-                        } else if let Some(&(global_idx, vt)) = self.global_vars.get(&ident.name) {
-                            let len_key = format!("{}_1", ident.name);
+                        } else if let Some(&(global_idx, vt)) = self.resolve_global_var(&ident.name) {
+                            let resolved_name = self.resolve_global_var_name(&ident.name);
+                            let len_key = format!("{}_1", resolved_name);
                             if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
                                 // String global: stack has (ptr, len)
                                 let len_tmp = locals.add_local(
@@ -5600,6 +5607,9 @@ impl WasmCompiler {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
         } else if let ast::Expression::Selector(sel) = &range.expr {
             self.is_selector_slice_field(sel, locals)
+        } else if let ast::Expression::Call(_) = &range.expr {
+            let go_types = self.call_return_go_types(&range.expr, locals);
+            go_types.len() == 1 && go_types[0].starts_with("[]")
         } else {
             false
         };
@@ -7675,7 +7685,7 @@ impl WasmCompiler {
                     let vt = self.infer_val_type(&incdec.expr, locals);
                     Self::emit_incdec_op(incdec.op, vt, out)?;
                     out.push(Instruction::LocalSet(idx));
-                } else if let Some(&(global_idx, vt)) = self.global_vars.get(&ident.name) {
+                } else if let Some(&(global_idx, vt)) = self.resolve_global_var(&ident.name) {
                     out.push(Instruction::GlobalGet(global_idx));
                     Self::emit_incdec_op(incdec.op, vt, out)?;
                     out.push(Instruction::GlobalSet(global_idx));
@@ -8534,9 +8544,9 @@ impl WasmCompiler {
             return Ok(());
         }
 
-        if let Some(&(global_idx, _vt)) = self.global_vars.get(&ident.name) {
-            // String globals use two globals: ptr (global_idx) and len (global_idx+1)
-            let len_key = format!("{}_1", ident.name);
+        if let Some(&(global_idx, _vt)) = self.resolve_global_var(&ident.name) {
+            let resolved_name = self.resolve_global_var_name(&ident.name);
+            let len_key = format!("{}_1", resolved_name);
             if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
                 out.push(Instruction::GlobalGet(global_idx));
                 out.push(Instruction::GlobalGet(len_global_idx));
@@ -8572,7 +8582,7 @@ impl WasmCompiler {
             || matches!(
                 name,
                 "fmt" | "math" | "strings" | "strconv" | "sort" | "unicode"
-                    | "bytes" | "encoding"
+                    | "utf8" | "bytes" | "encoding"
             )
     }
 
@@ -8867,6 +8877,7 @@ impl WasmCompiler {
             ast::Expression::Ident(ident) => {
                 locals.get_var_struct_type(&ident.name) == Some("__string")
                     || self.global_vars.contains_key(&format!("{}_1", ident.name))
+                    || self.global_vars.contains_key(&format!("{}_1", self.resolve_global_var_name(&ident.name)))
             }
             ast::Expression::Paren(p) => self.is_string_expr(&p.expr, locals),
             ast::Expression::Operation(op) if op.op == Operator::Add && op.y.is_some() => {
@@ -13306,6 +13317,13 @@ impl WasmCompiler {
                             } else {
                                 for (i, arg) in call.args.iter().enumerate() {
                                     self.compile_expression(arg, out, locals)?;
+                                    if let Some(expected_wt) = fi.params.get(i) {
+                                        let expected_vt = expected_wt.1.to_val_type();
+                                        let actual_vt = self.infer_val_type(arg, locals);
+                                        if actual_vt != expected_vt {
+                                            Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                                        }
+                                    }
                                     if fi.iface_param_indices.contains(&i) {
                                         if let ast::Expression::Ident(arg_ident) = arg {
                                             if arg_ident.name == "nil" {
@@ -14179,7 +14197,7 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        // Handle package-qualified global variable access (e.g., errors.ErrUnsupported)
+        // Handle package-qualified access (globals and constants)
         if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
             if self.compiled_packages.contains(pkg_ident.name.as_str()) {
                 let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
@@ -14190,6 +14208,22 @@ impl WasmCompiler {
                         out.push(Instruction::GlobalGet(len_global_idx));
                     } else {
                         out.push(Instruction::GlobalGet(global_idx));
+                    }
+                    return Ok(());
+                }
+                if let Some(cv) = self.constants.get(&sel.sel.name).cloned() {
+                    match &cv {
+                        ConstValue::I64(v) => out.push(Instruction::I64Const(*v)),
+                        ConstValue::F64(v) => out.push(Instruction::F64Const(*v)),
+                        ConstValue::Bool(v) => out.push(Instruction::I32Const(*v as i32)),
+                        ConstValue::Str(_) => {
+                            out.push(Instruction::I32Const(0));
+                            out.push(Instruction::I32Const(0));
+                        }
+                        ConstValue::Complex128(re, im) => {
+                            out.push(Instruction::F64Const(*re));
+                            out.push(Instruction::F64Const(*im));
+                        }
                     }
                     return Ok(());
                 }
@@ -18024,7 +18058,7 @@ impl WasmCompiler {
             },
             ast::Expression::TypePointer(_) => vec![WasmType::I32],
             ast::Expression::TypeSlice(_) => {
-                vec![WasmType::I32, WasmType::I32, WasmType::I32]
+                vec![WasmType::I32]
             }
             ast::Expression::TypeArray(_) => vec![WasmType::I32],
             ast::Expression::TypeMap(_) => vec![WasmType::I32],
@@ -18070,7 +18104,7 @@ impl WasmCompiler {
                             ConstValue::Complex128(_, _) => ValType::I32,
                         };
                     }
-                    if let Some(&(_idx, vt)) = self.global_vars.get(&ident.name) {
+                    if let Some(&(_idx, vt)) = self.resolve_global_var(&ident.name) {
                         return vt;
                     }
                     ValType::I64
@@ -18204,6 +18238,23 @@ impl WasmCompiler {
                     if let Some(sd) = self.struct_defs.get(&type_name) {
                         if let Some(field) = sd.find_field(&sel.sel.name) {
                             return field.wasm_type.to_val_type();
+                        }
+                    }
+                }
+                if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
+                    if self.compiled_packages.contains(pkg_ident.name.as_str()) {
+                        if let Some(cv) = self.constants.get(&sel.sel.name) {
+                            return match cv {
+                                ConstValue::I64(_) => ValType::I64,
+                                ConstValue::F64(_) => ValType::F64,
+                                ConstValue::Bool(_) => ValType::I32,
+                                ConstValue::Str(_) => ValType::I32,
+                                ConstValue::Complex128(_, _) => ValType::I32,
+                            };
+                        }
+                        let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                        if let Some(&(_, vt)) = self.global_vars.get(&qualified) {
+                            return vt;
                         }
                     }
                 }
@@ -18700,7 +18751,7 @@ impl WasmCompiler {
     fn call_return_val_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<ValType> {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
-                if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+                if let Some(fi) = self.find_func_in_pkg(&ident.name) {
                     return fi.results.iter().map(|wt| wt.to_val_type()).collect();
                 }
             }
@@ -18718,7 +18769,7 @@ impl WasmCompiler {
     fn call_return_go_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<String> {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
-                if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+                if let Some(fi) = self.find_func_in_pkg(&ident.name) {
                     return fi.result_go_types.clone();
                 }
             }
