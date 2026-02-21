@@ -317,6 +317,7 @@ pub struct WasmCompiler {
     panic_value_len_global: u32,
     map_iter_counter_global: u32,
     oom_func_idx: u32,
+    time_now_func_idx: u32,
 
     functions: Vec<FuncInfo>,
     deferred_calls: Vec<Vec<DeferredCall>>,
@@ -332,6 +333,7 @@ pub struct WasmCompiler {
     last_iface_call_returns_iface: bool,
     pending_closures: Vec<(u32, Function)>,
     constants: HashMap<String, ConstValue>,
+    constant_types: HashMap<String, String>,
     global_vars: HashMap<String, (u32, ValType)>,
     current_iota: Option<i64>,
     named_returns: Vec<(String, ValType)>,
@@ -414,6 +416,7 @@ impl WasmCompiler {
             panic_value_len_global: 0,
             map_iter_counter_global: 0,
             oom_func_idx: 0,
+            time_now_func_idx: 0,
 
             functions: Vec::new(),
             deferred_calls: Vec::new(),
@@ -429,6 +432,7 @@ impl WasmCompiler {
             last_iface_call_returns_iface: false,
             pending_closures: Vec::new(),
             constants: HashMap::new(),
+            constant_types: HashMap::new(),
             global_vars: HashMap::new(),
             current_iota: None,
             named_returns: Vec::new(),
@@ -613,6 +617,15 @@ impl WasmCompiler {
             return name.to_string();
         }
         if let Some(ref pkg) = self.current_package {
+            let qualified = format!("{}.{}", pkg, name);
+            if self.struct_defs.contains_key(&qualified) {
+                return qualified;
+            }
+        }
+        for pkg in &self.compiled_packages {
+            if pkg.starts_with("__compiled_") {
+                continue;
+            }
             let qualified = format!("{}.{}", pkg, name);
             if self.struct_defs.contains_key(&qualified) {
                 return qualified;
@@ -885,6 +898,7 @@ impl WasmCompiler {
                 &[ValType::I32],
             ),
             ("ctx_oom", &[], &[]),
+            ("time_now_unix_nano", &[], &[ValType::I64]),
         ];
 
         for (name, params, results) in pairs {
@@ -897,6 +911,8 @@ impl WasmCompiler {
 
             if *name == "ctx_oom" {
                 self.oom_func_idx = self.next_func_idx;
+            } else if *name == "time_now_unix_nano" {
+                self.time_now_func_idx = self.next_func_idx;
             }
 
             self.import_section.import(
@@ -2064,12 +2080,31 @@ impl WasmCompiler {
             spec.values.as_slice()
         };
 
+        let const_type_name = if let Some(ref typ_expr) = spec.typ {
+            match typ_expr {
+                ast::Expression::Ident(ident) => {
+                    let type_name = if let Some(ref pkg) = self.current_package {
+                        format!("{}.{}", pkg, ident.name)
+                    } else {
+                        ident.name.clone()
+                    };
+                    Some(type_name)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         for (i, name) in spec.name.iter().enumerate() {
             let val_expr = exprs_to_use.get(i).or(exprs_to_use.first());
 
             if let Some(expr) = val_expr {
                 let cv = self.eval_const_expr(expr, &name.name)?;
                 self.constants.insert(name.name.clone(), cv);
+                if let Some(ref type_name) = const_type_name {
+                    self.constant_types.insert(name.name.clone(), type_name.clone());
+                }
             } else {
                 return Err(Error::InternalError(format!(
                     "constant '{}' must have a value",
@@ -3589,9 +3624,10 @@ impl WasmCompiler {
                 }
             }
             if let ast::Expression::Ident(type_ident) = &field.typ {
-                if self.struct_defs.contains_key(&type_ident.name) {
+                let resolved_struct = self.resolve_struct_in_pkg(&type_ident.name);
+                if self.struct_defs.contains_key(&resolved_struct) {
                     for name_ident in &field.name {
-                        locals.set_var_struct_type(&name_ident.name, &type_ident.name);
+                        locals.set_var_struct_type(&name_ident.name, &resolved_struct);
                     }
                 }
                 if type_ident.name == "Context" {
@@ -4176,13 +4212,20 @@ impl WasmCompiler {
                     }
                 }
             } else {
+                let mut ws = 0usize;
                 for (i, expr) in ret.ret.iter().enumerate() {
                     self.compile_expression(expr, out, locals)?;
-                    if let Some(&expected_vt) = result_types.get(i) {
-                        let actual_vt = self.infer_val_type(expr, locals);
-                        if actual_vt != expected_vt {
-                            Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                    let is_str = self.is_string_expr(expr, locals);
+                    if is_str {
+                        ws += 2;
+                    } else {
+                        if let Some(&expected_vt) = result_types.get(ws) {
+                            let actual_vt = self.infer_val_type(expr, locals);
+                            if actual_vt != expected_vt {
+                                Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                            }
                         }
+                        ws += 1;
                     }
                     if let Some((name, _vt)) = named_returns_clone.get(i) {
                         if let Some(idx) = locals.find(name) {
@@ -4198,6 +4241,7 @@ impl WasmCompiler {
                 }
             }
         } else {
+            let mut wasm_slot = 0usize;
             for (i, expr) in ret.ret.iter().enumerate() {
                 let is_iface_return = result_go_types.get(i)
                     .map_or(false, |gt| self.is_iface_go_type(gt));
@@ -4205,9 +4249,9 @@ impl WasmCompiler {
                 let is_iface_field_sel = self.is_interface_field_selector(expr, locals);
                 if is_iface_return && is_nil {
                     self.emit_nil_iface_box(out, locals)?;
+                    wasm_slot += 1;
                 } else if is_iface_return && is_iface_field_sel {
                     self.compile_expression(expr, out, locals)?;
-                    // Selector pushed (data_ptr, type_id) — wrap into interface wrapper
                     let tid_tmp = locals.add_local(
                         &format!("__ret_isel_tid_{}", locals.locals.len()),
                         ValType::I32,
@@ -4232,15 +4276,23 @@ impl WasmCompiler {
                     out.push(Instruction::LocalGet(data_tmp));
                     out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
                     out.push(Instruction::LocalGet(wrapper));
+                    wasm_slot += 1;
                 } else if is_iface_return && !self.is_interface_var_expr(expr, locals) {
                     self.emit_return_iface_box(expr, out, locals)?;
+                    wasm_slot += 1;
                 } else {
                     self.compile_expression(expr, out, locals)?;
-                    if let Some(&expected_vt) = result_types.get(i) {
-                        let actual_vt = self.infer_val_type(expr, locals);
-                        if actual_vt != expected_vt {
-                            Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                    let is_string = self.is_string_expr(expr, locals);
+                    if is_string {
+                        wasm_slot += 2;
+                    } else {
+                        if let Some(&expected_vt) = result_types.get(wasm_slot) {
+                            let actual_vt = self.infer_val_type(expr, locals);
+                            if actual_vt != expected_vt {
+                                Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                            }
                         }
+                        wasm_slot += 1;
                     }
                 }
             }
@@ -4360,7 +4412,15 @@ impl WasmCompiler {
                         continue;
                     }
 
-                    let vt = if i < assign.right.len() {
+                    let is_string_rhs = if i < assign.right.len() {
+                        self.is_string_expr(&assign.right[i], locals)
+                    } else {
+                        false
+                    };
+
+                    let vt = if is_string_rhs {
+                        ValType::I32
+                    } else if i < assign.right.len() {
                         self.infer_val_type(&assign.right[i], locals)
                     } else {
                         ValType::I32
@@ -4426,8 +4486,7 @@ impl WasmCompiler {
                         }
 
                         // Track string variables
-                        let is_string = self.is_string_expr(&assign.right[i], locals);
-                        if is_string {
+                        if is_string_rhs {
                             locals.set_var_struct_type(
                                 &ident.name,
                                 "__string",
@@ -4440,6 +4499,13 @@ impl WasmCompiler {
                                 ident.name.clone(),
                                 (local_idx, len_local),
                             );
+                        }
+
+                        // Track type alias from arithmetic expressions with typed constants
+                        if !is_string_rhs && locals.get_var_struct_type(&ident.name).is_none() {
+                            if let Some(alias_type) = self.infer_type_alias_from_expr(&assign.right[i]) {
+                                locals.set_var_struct_type(&ident.name, &alias_type);
+                            }
                         }
 
                         // Track slice variables from make/append calls
@@ -4544,6 +4610,43 @@ impl WasmCompiler {
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
                                 locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                            }
+                        }
+
+                        // Track struct type from function/method call return types
+                        if let ast::Expression::Call(call_expr) = &assign.right[i] {
+                            // Check for type alias conversions like time.Duration(v) or Duration(v)
+                            if let ast::Expression::Selector(sel) = call_expr.func.as_ref() {
+                                if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
+                                    let qualified_alias = format!("{}.{}", pkg_id.name, sel.sel.name);
+                                    if self.type_aliases.contains_key(&qualified_alias) {
+                                        locals.set_var_struct_type(&ident.name, &qualified_alias);
+                                    }
+                                }
+                            } else if let ast::Expression::Ident(fn_id) = call_expr.func.as_ref() {
+                                let resolved = self.resolve_struct_in_pkg(&fn_id.name);
+                                if self.type_aliases.contains_key(&resolved) {
+                                    locals.set_var_struct_type(&ident.name, &resolved);
+                                }
+                            }
+
+                            let go_types = self.call_return_go_types(&assign.right[i], locals);
+                            if let Some(go_type) = go_types.first() {
+                                if go_type == "string" {
+                                    locals.set_var_struct_type(&ident.name, "__string");
+                                } else {
+                                    let resolved_struct = self.resolve_struct_in_pkg(go_type);
+                                    if self.struct_defs.contains_key(&resolved_struct) {
+                                        locals.set_var_struct_type(&ident.name, &resolved_struct);
+                                    } else if go_type.starts_with("[]") {
+                                        if locals.get_var_struct_type(&ident.name).is_none() {
+                                            locals.set_var_struct_type(&ident.name, "__slice");
+                                        }
+                                    }
+                                }
+                            }
+                            if self.is_string_expr(&assign.right[i], locals) {
+                                locals.set_var_struct_type(&ident.name, "__string");
                             }
                         }
 
@@ -4750,7 +4853,7 @@ impl WasmCompiler {
                             out.push(Instruction::LocalGet(wrapper));
                             out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
                             out.push(Instruction::LocalSet(local_idx));
-                        } else if is_string {
+                        } else if is_string_rhs {
                             let (ptr_local, len_local) = locals.string_locals[&ident.name];
                             out.push(Instruction::LocalSet(len_local));
                             out.push(Instruction::LocalSet(ptr_local));
@@ -7871,6 +7974,25 @@ impl WasmCompiler {
                                 if Self::is_unsigned_type_name(&type_ident.name) {
                                     locals.unsigned_vars.insert(ident.name.clone());
                                 }
+                            } else if let ast::Expression::Selector(sel) = typ {
+                                if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
+                                    let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                                    if self.struct_defs.contains_key(&qualified) {
+                                        locals.set_var_struct_type(&ident.name, &qualified);
+                                    } else if self.type_aliases.contains_key(&qualified) {
+                                        locals.set_var_struct_type(&ident.name, &qualified);
+                                    } else if self.iface_defs.contains_key(&qualified) {
+                                        is_iface = true;
+                                        iface_type_name = Some(qualified.clone());
+                                        let iface_tag = format!("__iface_{}", qualified);
+                                        locals.set_var_struct_type(&ident.name, &iface_tag);
+                                        let tid_local = locals.add_local(
+                                            &format!("{}__type_id", ident.name),
+                                            ValType::I32,
+                                        );
+                                        self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                    }
+                                }
                             }
                         }
                         if i < spec.values.len() && !is_iface {
@@ -8504,7 +8626,7 @@ impl WasmCompiler {
                     );
                     out.push(Instruction::I32Const(len));
                     out.push(Instruction::Call(self.alloc_func_idx()?));
-                    out.push(Instruction::LocalTee(ptr_local));
+                    out.push(Instruction::LocalSet(ptr_local));
 
                     for (i, &byte) in bytes.iter().enumerate() {
                         out.push(Instruction::LocalGet(ptr_local));
@@ -8582,7 +8704,7 @@ impl WasmCompiler {
             || matches!(
                 name,
                 "fmt" | "math" | "strings" | "strconv" | "sort" | "unicode"
-                    | "utf8" | "bytes" | "encoding"
+                    | "utf8" | "bytes" | "encoding" | "time"
             )
     }
 
@@ -8858,7 +8980,6 @@ impl WasmCompiler {
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(recv) = sel.x.as_ref() {
                         if self.is_interface_var(&recv.name, locals) {
-                            // Check if the method returns a string by looking at implementations
                             let method_name = &sel.sel.name;
                             for fi in &self.functions {
                                 if fi.recv_type.is_some() && fi.name.ends_with(&format!(".{}", method_name)) {
@@ -8866,6 +8987,17 @@ impl WasmCompiler {
                                         && fi.results[0] == WasmType::I32
                                         && fi.results[1] == WasmType::I32;
                                 }
+                            }
+                        }
+                    }
+                    if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
+                        if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                            if fi.results.len() == 2
+                                && fi.results[0] == WasmType::I32
+                                && fi.results[1] == WasmType::I32
+                                && fi.result_go_types.first().map_or(false, |t| t == "string")
+                            {
+                                return true;
                             }
                         }
                     }
@@ -8878,6 +9010,11 @@ impl WasmCompiler {
                 locals.get_var_struct_type(&ident.name) == Some("__string")
                     || self.global_vars.contains_key(&format!("{}_1", ident.name))
                     || self.global_vars.contains_key(&format!("{}_1", self.resolve_global_var_name(&ident.name)))
+                    || matches!(self.constants.get(&ident.name), Some(ConstValue::Str(_)))
+                    || {
+                        let qualified = self.qualify_pkg_name(&ident.name);
+                        matches!(self.constants.get(&qualified), Some(ConstValue::Str(_)))
+                    }
             }
             ast::Expression::Paren(p) => self.is_string_expr(&p.expr, locals),
             ast::Expression::Operation(op) if op.op == Operator::Add && op.y.is_some() => {
@@ -9284,6 +9421,14 @@ impl WasmCompiler {
                 && self.is_string_expr(y, locals)
             {
                 return self.emit_string_compare(&op.x, y, op.op, out, locals);
+            }
+
+            if matches!(op.op, Operator::Equal | Operator::NotEqual) {
+                let lhs_str = self.is_string_expr(&op.x, locals);
+                let rhs_str = self.is_string_expr(y, locals);
+                if lhs_str != rhs_str {
+                    eprintln!("DEBUG: string compare mismatch: lhs={} rhs={} op_x={:?} y={:?}", lhs_str, rhs_str, op.x, y);
+                }
             }
 
             // Complex number arithmetic
@@ -12900,6 +13045,11 @@ impl WasmCompiler {
                     return Ok(());
                 }
 
+                if ident.name == "nowUnixNano" && self.current_package.as_deref() == Some("time") {
+                    out.push(Instruction::Call(self.time_now_func_idx));
+                    return Ok(());
+                }
+
                 // Look up as a user function (or stdlib function within package context)
                 let fi_lookup = self.find_func_in_pkg(&ident.name).cloned();
                 if let Some(func_info) = fi_lookup {
@@ -13069,11 +13219,20 @@ impl WasmCompiler {
                         }
                         out.push(Instruction::Call(func_info.wasm_func_idx));
                     }
-                } else if self.type_aliases.contains_key(&ident.name) {
+                } else if self.type_aliases.contains_key(&ident.name)
+                    || self.current_package.as_ref().map_or(false, |pkg| {
+                        self.type_aliases.contains_key(&format!("{}.{}", pkg, ident.name))
+                    })
+                {
                     if let Some(arg) = call.args.first() {
                         self.compile_expression(arg, out, locals)?;
                         let src_vt = self.infer_val_type(arg, locals);
-                        let resolved = self.resolve_type_name(&ident.name);
+                        let alias_key = if self.type_aliases.contains_key(&ident.name) {
+                            ident.name.clone()
+                        } else {
+                            format!("{}.{}", self.current_package.as_ref().unwrap(), ident.name)
+                        };
+                        let resolved = self.resolve_type_name(&alias_key);
                         let target_vt = Self::val_type_for_type_name(resolved);
                         if src_vt != target_vt {
                             Self::emit_typed_coerce(src_vt, target_vt, out)?;
@@ -13401,6 +13560,21 @@ impl WasmCompiler {
                             out.push(Instruction::Call(fi.wasm_func_idx));
                             return Ok(());
                         }
+
+                        let qualified_alias = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                        if self.type_aliases.contains_key(&qualified_alias) {
+                            if let Some(arg) = call.args.first() {
+                                self.compile_expression(arg, out, locals)?;
+                                let src_vt = self.infer_val_type(arg, locals);
+                                let resolved = self.resolve_type_name(&qualified_alias);
+                                let target_vt = Self::val_type_for_type_name(resolved);
+                                if src_vt != target_vt {
+                                    Self::emit_typed_coerce(src_vt, target_vt, out)?;
+                                }
+                                return Ok(());
+                            }
+                        }
+
                     }
 
                     match (pkg_ident.name.as_str(), sel.sel.name.as_str()) {
@@ -14211,14 +14385,32 @@ impl WasmCompiler {
                     }
                     return Ok(());
                 }
-                if let Some(cv) = self.constants.get(&sel.sel.name).cloned() {
+                if let Some(cv) = self.constants.get(&sel.sel.name).or_else(|| self.constants.get(&qualified)).cloned() {
                     match &cv {
                         ConstValue::I64(v) => out.push(Instruction::I64Const(*v)),
                         ConstValue::F64(v) => out.push(Instruction::F64Const(*v)),
                         ConstValue::Bool(v) => out.push(Instruction::I32Const(*v as i32)),
-                        ConstValue::Str(_) => {
-                            out.push(Instruction::I32Const(0));
-                            out.push(Instruction::I32Const(0));
+                        ConstValue::Str(s) => {
+                            let bytes = s.as_bytes();
+                            let slen = bytes.len() as i32;
+                            let ptr_local = locals.add_local(
+                                &format!("__const_str_ptr_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            out.push(Instruction::I32Const(slen));
+                            out.push(Instruction::Call(self.alloc_func_idx()?));
+                            out.push(Instruction::LocalSet(ptr_local));
+                            for (i, &byte) in bytes.iter().enumerate() {
+                                out.push(Instruction::LocalGet(ptr_local));
+                                out.push(Instruction::I32Const(byte as i32));
+                                out.push(Instruction::I32Store8(MemArg {
+                                    offset: i as u64,
+                                    align: 0,
+                                    memory_index: 0,
+                                }));
+                            }
+                            out.push(Instruction::LocalGet(ptr_local));
+                            out.push(Instruction::I32Const(slen));
                         }
                         ConstValue::Complex128(re, im) => {
                             out.push(Instruction::F64Const(*re));
@@ -17778,6 +17970,14 @@ impl WasmCompiler {
                 locals.get_var_struct_type(&ident.name).map(|s| s.to_string())
             }
             ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
+                    let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                    if let Some(type_name) = self.constant_types.get(&sel.sel.name)
+                        .or_else(|| self.constant_types.get(&qualified))
+                    {
+                        return Some(type_name.clone());
+                    }
+                }
                 let parent_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals)?;
                 let struct_def = self.struct_defs.get(&parent_type)?;
                 let field = struct_def.find_field(&sel.sel.name)?;
@@ -18030,6 +18230,13 @@ impl WasmCompiler {
         for _ in 0..10 {
             if let Some((base, _is_alias)) = self.type_aliases.get(resolved) {
                 resolved = base;
+            } else if let Some(ref pkg) = self.current_package {
+                let qualified = format!("{}.{}", pkg, resolved);
+                if let Some((base, _is_alias)) = self.type_aliases.get(&qualified) {
+                    resolved = base;
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -18326,6 +18533,24 @@ impl WasmCompiler {
             ast::Expression::TypeFunction(_) => ValType::I32,
             ast::Expression::TypeArray(_) => ValType::I32,
             ast::Expression::TypeStruct(_) => ValType::I32,
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                    if self.struct_defs.contains_key(&qualified) {
+                        return ValType::I32;
+                    }
+                    if self.iface_defs.contains_key(&qualified) || sel.sel.name == "error" {
+                        return ValType::I32;
+                    }
+                    if let Some((alias, _)) = self.type_aliases.get(&qualified) {
+                        return self.expr_to_val_type(&ast::Expression::Ident(ast::Ident {
+                            name: alias.clone(),
+                            ..Default::default()
+                        }));
+                    }
+                }
+                ValType::I64
+            },
             _ => ValType::I64,
         }
     }
@@ -18766,6 +18991,56 @@ impl WasmCompiler {
         vec![]
     }
 
+    fn infer_type_alias_from_expr(&self, expr: &ast::Expression) -> Option<String> {
+        match expr {
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                    if let Some(t) = self.constant_types.get(&sel.sel.name) {
+                        return Some(t.clone());
+                    }
+                    if let Some(t) = self.constant_types.get(&qualified) {
+                        return Some(t.clone());
+                    }
+                }
+                None
+            }
+            ast::Expression::Operation(op) => {
+                if let Some(t) = self.infer_type_alias_from_expr(&op.x) {
+                    return Some(t);
+                }
+                if let Some(ref y) = op.y {
+                    return self.infer_type_alias_from_expr(y);
+                }
+                None
+            }
+            ast::Expression::Paren(p) => self.infer_type_alias_from_expr(&p.expr),
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(fn_ident) = call.func.as_ref() {
+                    let qualified = if let Some(ref pkg) = self.current_package {
+                        format!("{}.{}", pkg, fn_ident.name)
+                    } else {
+                        fn_ident.name.clone()
+                    };
+                    if self.type_aliases.contains_key(&fn_ident.name)
+                        || self.type_aliases.contains_key(&qualified)
+                    {
+                        return Some(qualified);
+                    }
+                } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                    if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                        let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                        if self.type_aliases.contains_key(&qualified) {
+                            return Some(qualified);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn call_return_go_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<String> {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
@@ -18787,6 +19062,10 @@ impl WasmCompiler {
     fn resolve_selector_method_name(&self, sel: &ast::Selector, locals: &LocalAlloc) -> Option<String> {
         if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
             if let Some(type_name) = locals.get_var_struct_type(&recv_ident.name) {
+                let unresolved = format!("{}.{}", type_name, sel.sel.name);
+                if self.functions.iter().any(|f| f.name == unresolved) {
+                    return Some(unresolved);
+                }
                 let resolved = self.resolve_type_name(type_name);
                 let qualified = format!("{}.{}", resolved, sel.sel.name);
                 if self.functions.iter().any(|f| f.name == qualified) {
@@ -18794,6 +19073,12 @@ impl WasmCompiler {
                 }
             }
             let qualified = format!("{}.{}", recv_ident.name, sel.sel.name);
+            if self.functions.iter().any(|f| f.name == qualified) {
+                return Some(qualified);
+            }
+        }
+        if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+            let qualified = format!("{}.{}", type_name, sel.sel.name);
             if self.functions.iter().any(|f| f.name == qualified) {
                 return Some(qualified);
             }
@@ -18868,6 +19153,15 @@ impl WasmCompiler {
                 };
                 out.push(Instruction::LocalGet(tmp));
                 out.push(Instruction::LocalSet(local_idx));
+
+                if let Some(go_type) = go_types.get(i) {
+                    let resolved_struct = self.resolve_struct_in_pkg(go_type);
+                    if self.struct_defs.contains_key(&resolved_struct) {
+                        locals.set_var_struct_type(&ident.name, &resolved_struct);
+                    } else if go_type.starts_with("[]") {
+                        locals.set_var_struct_type(&ident.name, "__slice");
+                    }
+                }
             }
         }
 

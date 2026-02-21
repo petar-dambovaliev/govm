@@ -239,6 +239,17 @@ impl UdfRuntime {
             },
         )?;
 
+        linker.func_wrap(
+            "env",
+            "time_now_unix_nano",
+            |_caller: wasmtime::Caller<'_, HostState>| -> i64 {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as i64
+            },
+        )?;
+
         Ok(())
     }
 

@@ -13,6 +13,7 @@ lazy_static::lazy_static! {
         s.insert("bytes");
         s.insert("encoding/json");
         s.insert("errors");
+        s.insert("time");
         s
     };
 
@@ -30,7 +31,6 @@ lazy_static::lazy_static! {
         ("sync", "concurrency not available in WASM UDFs"),
         ("sync/atomic", "atomic operations not available in WASM UDFs"),
         ("crypto", "crypto not allowed in sandboxed UDFs"),
-        ("time", "time access not allowed in sandboxed UDFs"),
         ("plugin", "plugins not supported in WASM UDFs"),
         ("database/sql", "database access not allowed in sandboxed UDFs"),
     ];
