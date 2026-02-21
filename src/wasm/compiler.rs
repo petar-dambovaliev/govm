@@ -2091,6 +2091,7 @@ impl WasmCompiler {
             ast::Statement::Send(send) => {
                 Self::mark_expr_escaping(&send.value, escaping);
                 Self::escape_scan_call_args(&send.value, escaping);
+                Self::escape_scan_call_args(&send.chan, escaping);
             }
             ast::Statement::Go(go_stmt) => {
                 for arg in &go_stmt.call.args {
@@ -2160,8 +2161,19 @@ impl WasmCompiler {
             }
             ast::Expression::Slice(sl) => Self::mark_expr_escaping(&sl.left, escaping),
             ast::Expression::FuncLit(fl) => {
+                let mut bound = HashSet::new();
+                for field in &fl.typ.params.list {
+                    for name in &field.name {
+                        bound.insert(name.name.clone());
+                    }
+                }
+                for field in &fl.typ.result.list {
+                    for name in &field.name {
+                        bound.insert(name.name.clone());
+                    }
+                }
                 let mut captured = HashSet::new();
-                Self::collect_free_vars_block(&fl.body, &mut HashSet::new(), &mut captured);
+                Self::collect_free_vars_block(&fl.body, &mut bound, &mut captured);
                 for name in &captured {
                     escaping.insert(name.clone());
                 }
@@ -2240,8 +2252,19 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::FuncLit(fl) => {
+                let mut bound = HashSet::new();
+                for field in &fl.typ.params.list {
+                    for name in &field.name {
+                        bound.insert(name.name.clone());
+                    }
+                }
+                for field in &fl.typ.result.list {
+                    for name in &field.name {
+                        bound.insert(name.name.clone());
+                    }
+                }
                 let mut captured = HashSet::new();
-                Self::collect_free_vars_block(&fl.body, &mut HashSet::new(), &mut captured);
+                Self::collect_free_vars_block(&fl.body, &mut bound, &mut captured);
                 for name in &captured {
                     escaping.insert(name.clone());
                 }

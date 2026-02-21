@@ -27314,3 +27314,35 @@ func Run() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 10, "return with nested function calls must work correctly");
 }
+
+#[test]
+fn test_closure_param_not_treated_as_capture() {
+    let source = r#"
+package main
+
+func Run() int {
+    a := 5
+    f := func(a int) int {
+        return a * 3
+    }
+    return f(a)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 15, "closure parameter should shadow outer variable, not cause false escape");
+}
