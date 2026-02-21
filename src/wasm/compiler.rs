@@ -1991,6 +1991,7 @@ impl WasmCompiler {
             ast::Statement::Return(ret) => {
                 for expr in &ret.ret {
                     Self::mark_expr_escaping(expr, escaping);
+                    Self::escape_scan_call_args(expr, escaping);
                 }
             }
             ast::Statement::Assign(assign) => {
@@ -2089,16 +2090,19 @@ impl WasmCompiler {
             }
             ast::Statement::Send(send) => {
                 Self::mark_expr_escaping(&send.value, escaping);
+                Self::escape_scan_call_args(&send.value, escaping);
             }
             ast::Statement::Go(go_stmt) => {
                 for arg in &go_stmt.call.args {
                     Self::mark_expr_escaping(arg, escaping);
+                    Self::escape_scan_call_args(arg, escaping);
                 }
                 Self::escape_scan_call_args(&go_stmt.call.func, escaping);
             }
             ast::Statement::Defer(defer_stmt) => {
                 for arg in &defer_stmt.call.args {
                     Self::mark_expr_escaping(arg, escaping);
+                    Self::escape_scan_call_args(arg, escaping);
                 }
                 Self::escape_scan_call_args(&defer_stmt.call.func, escaping);
             }
@@ -2130,6 +2134,9 @@ impl WasmCompiler {
                         Self::escape_scan_stmt(s, escaping, assignments);
                     }
                 }
+            }
+            ast::Statement::IncDec(incdec) => {
+                Self::escape_scan_call_args(&incdec.expr, escaping);
             }
             _ => {}
         }
@@ -2167,6 +2174,7 @@ impl WasmCompiler {
                     Self::mark_escaping_element(&kv.val, escaping);
                 }
             }
+            ast::Expression::Invar(inv) => Self::mark_expr_escaping(&inv.expr, escaping),
             _ => {}
         }
     }
@@ -2264,6 +2272,9 @@ impl WasmCompiler {
             }
             ast::Expression::Star(s) => {
                 Self::escape_scan_call_args(&s.right, escaping);
+            }
+            ast::Expression::Invar(inv) => {
+                Self::escape_scan_call_args(&inv.expr, escaping);
             }
             _ => {}
         }

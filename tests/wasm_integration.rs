@@ -27280,3 +27280,37 @@ func UseStack() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 10, "stack allocation with overflow check before bump must work");
 }
+
+#[test]
+fn test_return_with_nested_call_escapes_arg() {
+    let source = r#"
+package main
+
+func Identity(x int) int {
+    return x
+}
+
+func Run() int {
+    a := 7
+    b := 3
+    return Identity(a) + Identity(b)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "return with nested function calls must work correctly");
+}
