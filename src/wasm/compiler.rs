@@ -608,34 +608,48 @@ impl WasmCompiler {
         name.to_string()
     }
 
-    fn compile_stdlib_package(&mut self, pkg: &str, source: &str) -> Result<(), Error> {
+    fn compile_stdlib_package(&mut self, pkg: &str, sources: &[&str]) -> Result<(), Error> {
         if self.compiled_packages.contains(pkg) {
             return Ok(());
         }
         self.compiled_packages.insert(pkg.to_string());
 
-        let file = crate::parser::parse_source(source)
-            .map_err(|e| Error::SyntaxError(e.to_string()))?;
+        let mut files = Vec::new();
+        for source in sources {
+            let file = crate::parser::parse_source(source)
+                .map_err(|e| Error::SyntaxError(e.to_string()))?;
+            files.push(file);
+        }
 
         // Recursively compile any stdlib packages this package imports
-        for imp in &file.imports {
-            let path = imp.path.value.trim_matches('"');
-            if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(dep)) =
-                crate::wasm::stdlib::resolve_import(path)
-            {
-                if let Some(dep_source) = crate::wasm::stdlib::get_stdlib_source(&dep) {
-                    self.compile_stdlib_package(&dep, dep_source)?;
+        for file in &files {
+            for imp in &file.imports {
+                let path = imp.path.value.trim_matches('"');
+                if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(dep)) =
+                    crate::wasm::stdlib::resolve_import(path)
+                {
+                    if let Some(dep_sources) = crate::wasm::stdlib::get_stdlib_sources(&dep) {
+                        self.compile_stdlib_package(&dep, dep_sources)?;
+                    }
                 }
             }
         }
 
         self.current_package = Some(pkg.to_string());
-        self.prescan_type_declarations(&file);
 
-        let sorted = Self::sort_declarations_by_deps(&file.decl);
-        for decl in &sorted {
-            self.compile_declaration(decl)?;
+        // Prescan type declarations from all files before compiling
+        for file in &files {
+            self.prescan_type_declarations(file);
         }
+
+        // Compile declarations from all files
+        for file in &files {
+            let sorted = Self::sort_declarations_by_deps(&file.decl);
+            for decl in &sorted {
+                self.compile_declaration(decl)?;
+            }
+        }
+
         self.current_package = None;
         Ok(())
     }
@@ -659,8 +673,8 @@ impl WasmCompiler {
             if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(pkg)) =
                 crate::wasm::stdlib::resolve_import(path)
             {
-                if let Some(source) = crate::wasm::stdlib::get_stdlib_source(&pkg) {
-                    self.compile_stdlib_package(&pkg, source)?;
+                if let Some(sources) = crate::wasm::stdlib::get_stdlib_sources(&pkg) {
+                    self.compile_stdlib_package(&pkg, sources)?;
                 }
             }
         }
