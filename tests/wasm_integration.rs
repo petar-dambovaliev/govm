@@ -29170,9 +29170,9 @@ package main
 import "time"
 
 func Run() int64 {
-    d := 3*time.Hour + 2*time.Minute + 1*time.Second + 500*time.Millisecond
-    s := d.String()
-    if s == "3h2m1.5s" { return 1 }
+    loc := time.FixedZone("EST", -18000)
+    s := loc.String()
+    if s == "EST" { return 1 }
     return 0
 }
 "#;

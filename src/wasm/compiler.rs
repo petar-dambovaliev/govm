@@ -1760,9 +1760,10 @@ impl WasmCompiler {
             }
             ast::Declaration::Const(const_decl) => {
                 let mut last_exprs: Vec<ast::Expression> = Vec::new();
+                let mut last_const_type: Option<String> = None;
                 for (iota_val, spec) in const_decl.specs.iter().enumerate() {
                     self.current_iota = Some(iota_val as i64);
-                    self.compile_global_const(spec, &mut last_exprs)?;
+                    self.compile_global_const(spec, &mut last_exprs, &mut last_const_type)?;
                 }
                 self.current_iota = None;
                 Ok(())
@@ -2072,6 +2073,7 @@ impl WasmCompiler {
         &mut self,
         spec: &ast::ConstSpec,
         last_exprs: &mut Vec<ast::Expression>,
+        last_const_type: &mut Option<String>,
     ) -> Result<(), Error> {
         let exprs_to_use = if spec.values.is_empty() {
             last_exprs.as_slice()
@@ -2081,7 +2083,7 @@ impl WasmCompiler {
         };
 
         let const_type_name = if let Some(ref typ_expr) = spec.typ {
-            match typ_expr {
+            let resolved = match typ_expr {
                 ast::Expression::Ident(ident) => {
                     let type_name = if let Some(ref pkg) = self.current_package {
                         format!("{}.{}", pkg, ident.name)
@@ -2091,9 +2093,13 @@ impl WasmCompiler {
                     Some(type_name)
                 }
                 _ => None,
+            };
+            if resolved.is_some() {
+                *last_const_type = resolved.clone();
             }
+            resolved
         } else {
-            None
+            last_const_type.clone()
         };
 
         for (i, name) in spec.name.iter().enumerate() {
@@ -4635,7 +4641,8 @@ impl WasmCompiler {
                                 if go_type == "string" {
                                     locals.set_var_struct_type(&ident.name, "__string");
                                 } else {
-                                    let resolved_struct = self.resolve_struct_in_pkg(go_type);
+                                    let base_type = go_type.strip_prefix('*').unwrap_or(go_type);
+                                    let resolved_struct = self.resolve_struct_in_pkg(base_type);
                                     if self.struct_defs.contains_key(&resolved_struct) {
                                         locals.set_var_struct_type(&ident.name, &resolved_struct);
                                     } else if go_type.starts_with("[]") {
@@ -13474,15 +13481,20 @@ impl WasmCompiler {
                                     out.push(Instruction::LocalGet(hdr));
                                 }
                             } else {
+                                let mut wasm_param_idx = 0usize;
                                 for (i, arg) in call.args.iter().enumerate() {
                                     self.compile_expression(arg, out, locals)?;
-                                    if let Some(expected_wt) = fi.params.get(i) {
-                                        let expected_vt = expected_wt.1.to_val_type();
-                                        let actual_vt = self.infer_val_type(arg, locals);
-                                        if actual_vt != expected_vt {
-                                            Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                                    let is_str_arg = self.is_string_expr(arg, locals);
+                                    if !is_str_arg {
+                                        if let Some(expected_wt) = fi.params.get(wasm_param_idx) {
+                                            let expected_vt = expected_wt.1.to_val_type();
+                                            let actual_vt = self.infer_val_type(arg, locals);
+                                            if actual_vt != expected_vt {
+                                                Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
+                                            }
                                         }
                                     }
+                                    wasm_param_idx += if is_str_arg { 2 } else { 1 };
                                     if fi.iface_param_indices.contains(&i) {
                                         if let ast::Expression::Ident(arg_ident) = arg {
                                             if arg_ident.name == "nil" {
