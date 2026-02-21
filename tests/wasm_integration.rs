@@ -27132,3 +27132,151 @@ func SliceCapture() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 50, "closure must correctly capture variables used in index expressions");
 }
+
+#[test]
+fn test_nested_call_args_escape() {
+    let source = r#"
+package main
+
+func Double(x int) int {
+    return x * 2
+}
+
+func AddOne(x int) int {
+    return x + 1
+}
+
+func Run() int {
+    return AddOne(Double(5))
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 11, "nested call arguments must be correctly handled");
+}
+
+#[test]
+fn test_closure_assignment_captures_var() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 10
+    f := func() int {
+        x = 20
+        return x
+    }
+    return f()
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "Run")
+        .expect("Run not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 20, "closure that assigns to outer var must capture it as free");
+}
+
+#[test]
+fn test_reset_clears_panic_state() {
+    let source = r#"
+package main
+
+func Panicker() int {
+    panic("boom")
+    return 0
+}
+
+func Safe() int {
+    return 42
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let panicker = instance
+        .get_typed_func::<(), i64>(&mut store, "Panicker")
+        .expect("Panicker not found");
+
+    let _ = panicker.call(&mut store, ());
+
+    let reset = instance
+        .get_typed_func::<(), ()>(&mut store, "reset")
+        .expect("reset not found");
+    reset.call(&mut store, ()).expect("reset failed");
+
+    let safe = instance
+        .get_typed_func::<(), i64>(&mut store, "Safe")
+        .expect("Safe not found");
+    let val = safe.call(&mut store, ()).expect("Safe should succeed after reset");
+    assert_eq!(val, 42, "function must work correctly after reset clears panic state");
+}
+
+#[test]
+fn test_stack_overflow_check_before_bump() {
+    let source = r#"
+package main
+
+type Big struct {
+    A int
+    B int
+    C int
+    D int
+}
+
+func UseStack() int {
+    b := Big{A: 1, B: 2, C: 3, D: 4}
+    return b.A + b.B + b.C + b.D
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, "UseStack")
+        .expect("UseStack not found");
+
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "stack allocation with overflow check before bump must work");
+}

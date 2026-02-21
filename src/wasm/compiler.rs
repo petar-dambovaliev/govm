@@ -822,6 +822,12 @@ impl WasmCompiler {
         func.instruction(&Instruction::GlobalSet(self.heap_ptr_global));
         func.instruction(&Instruction::I32Const(Self::STACK_BASE));
         func.instruction(&Instruction::GlobalSet(self.stack_ptr_global));
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::GlobalSet(self.panicking_global));
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::GlobalSet(self.panic_value_ptr_global));
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::GlobalSet(self.panic_value_len_global));
         func.instruction(&Instruction::End);
 
         self.code_section.function(&func);
@@ -1995,7 +2001,8 @@ impl WasmCompiler {
                 for (i, lhs) in assign.left.iter().enumerate() {
                     match lhs {
                         ast::Expression::Selector(_)
-                        | ast::Expression::Index(_) => {
+                        | ast::Expression::Index(_)
+                        | ast::Expression::Star(_) => {
                             if let Some(rhs) = assign.right.get(i) {
                                 Self::mark_expr_escaping(rhs, escaping);
                             }
@@ -2059,6 +2066,9 @@ impl WasmCompiler {
                     Self::escape_scan_call_args(tag, escaping);
                 }
                 for clause in &sw.block.body {
+                    for e in &clause.list {
+                        Self::escape_scan_call_args(e, escaping);
+                    }
                     for s in clause.body.iter() {
                         Self::escape_scan_stmt(s, escaping, assignments);
                     }
@@ -2084,17 +2094,26 @@ impl WasmCompiler {
                 for arg in &go_stmt.call.args {
                     Self::mark_expr_escaping(arg, escaping);
                 }
+                Self::escape_scan_call_args(&go_stmt.call.func, escaping);
             }
             ast::Statement::Defer(defer_stmt) => {
                 for arg in &defer_stmt.call.args {
                     Self::mark_expr_escaping(arg, escaping);
                 }
+                Self::escape_scan_call_args(&defer_stmt.call.func, escaping);
             }
             ast::Statement::Declaration(decl_stmt) => {
                 if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
                     for spec in &var_decl.specs {
                         for val in &spec.values {
                             Self::escape_scan_call_args(val, escaping);
+                        }
+                        for (i, name) in spec.name.iter().enumerate() {
+                            if let Some(val) = spec.values.get(i) {
+                                if let ast::Expression::Ident(src_id) = val {
+                                    assignments.push((name.name.clone(), src_id.name.clone()));
+                                }
+                            }
                         }
                     }
                 }
@@ -2123,7 +2142,7 @@ impl WasmCompiler {
             }
             ast::Expression::Paren(p) => Self::mark_expr_escaping(&p.expr, escaping),
             ast::Expression::Star(s) => Self::mark_expr_escaping(&s.right, escaping),
-            ast::Expression::Operation(op) if op.y.is_none() => {
+            ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
                 Self::mark_expr_escaping(&op.x, escaping);
             }
             ast::Expression::Selector(sel) => Self::mark_expr_escaping(&sel.x, escaping),
@@ -2133,7 +2152,53 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::Slice(sl) => Self::mark_expr_escaping(&sl.left, escaping),
+            ast::Expression::FuncLit(fl) => {
+                let mut captured = HashSet::new();
+                Self::collect_free_vars_block(&fl.body, &mut HashSet::new(), &mut captured);
+                for name in &captured {
+                    escaping.insert(name.clone());
+                }
+            }
+            ast::Expression::CompositeLit(comp) => {
+                for kv in &comp.val.values {
+                    if let Some(key) = &kv.key {
+                        Self::mark_escaping_element(key, escaping);
+                    }
+                    Self::mark_escaping_element(&kv.val, escaping);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn mark_escaping_element(elem: &ast::Element, escaping: &mut HashSet<String>) {
+        match elem {
+            ast::Element::Expr(e) => Self::mark_expr_escaping(e, escaping),
+            ast::Element::LitValue(lv) => {
+                for kv in &lv.values {
+                    if let Some(key) = &kv.key {
+                        Self::mark_escaping_element(key, escaping);
+                    }
+                    Self::mark_escaping_element(&kv.val, escaping);
+                }
+            }
+        }
+    }
+
+    fn escape_scan_element(elem: &ast::Element, escaping: &mut HashSet<String>) {
+        match elem {
+            ast::Element::Expr(e) => {
+                Self::mark_expr_escaping(e, escaping);
+                Self::escape_scan_call_args(e, escaping);
+            }
+            ast::Element::LitValue(lv) => {
+                for kv in &lv.values {
+                    if let Some(key) = &kv.key {
+                        Self::escape_scan_element(key, escaping);
+                    }
+                    Self::escape_scan_element(&kv.val, escaping);
+                }
+            }
         }
     }
 
@@ -2142,6 +2207,7 @@ impl WasmCompiler {
             ast::Expression::Call(call) => {
                 for arg in &call.args {
                     Self::mark_expr_escaping(arg, escaping);
+                    Self::escape_scan_call_args(arg, escaping);
                 }
                 Self::escape_scan_call_args(&call.func, escaping);
             }
@@ -2159,9 +2225,10 @@ impl WasmCompiler {
             ast::Expression::Paren(p) => Self::escape_scan_call_args(&p.expr, escaping),
             ast::Expression::CompositeLit(comp) => {
                 for kv in &comp.val.values {
-                    if let ast::Element::Expr(e) = &kv.val {
-                        Self::mark_expr_escaping(e, escaping);
+                    if let Some(key) = &kv.key {
+                        Self::escape_scan_element(key, escaping);
                     }
+                    Self::escape_scan_element(&kv.val, escaping);
                 }
             }
             ast::Expression::FuncLit(fl) => {
@@ -2195,6 +2262,9 @@ impl WasmCompiler {
             ast::Expression::TypeAssert(ta) => {
                 Self::escape_scan_call_args(&ta.left, escaping);
             }
+            ast::Expression::Star(s) => {
+                Self::escape_scan_call_args(&s.right, escaping);
+            }
             _ => {}
         }
     }
@@ -2225,6 +2295,10 @@ impl WasmCompiler {
                             bound.insert(id.name.clone());
                         }
                     }
+                } else {
+                    for lhs in &assign.left {
+                        Self::collect_free_vars_expr(lhs, bound, free);
+                    }
                 }
             }
             ast::Statement::Expr(es) => {
@@ -2236,43 +2310,53 @@ impl WasmCompiler {
                 }
             }
             ast::Statement::If(if_stmt) => {
+                let mut scoped = bound.clone();
                 if let Some(init) = &if_stmt.init {
-                    Self::collect_free_vars_stmt(init, bound, free);
+                    Self::collect_free_vars_stmt(init, &mut scoped, free);
                 }
-                Self::collect_free_vars_expr(&if_stmt.cond, bound, free);
-                Self::collect_free_vars_block(&if_stmt.body, bound, free);
+                Self::collect_free_vars_expr(&if_stmt.cond, &scoped, free);
+                Self::collect_free_vars_block(&if_stmt.body, &mut scoped.clone(), free);
                 if let Some(else_) = &if_stmt.else_ {
-                    Self::collect_free_vars_stmt(else_, bound, free);
+                    Self::collect_free_vars_stmt(else_, &mut scoped.clone(), free);
                 }
             }
             ast::Statement::For(for_stmt) => {
+                let mut scoped = bound.clone();
                 if let Some(init) = &for_stmt.init {
-                    Self::collect_free_vars_stmt(init, bound, free);
+                    Self::collect_free_vars_stmt(init, &mut scoped, free);
                 }
                 if let Some(cond) = &for_stmt.cond {
-                    Self::collect_free_vars_stmt(cond, bound, free);
+                    Self::collect_free_vars_stmt(cond, &mut scoped, free);
                 }
                 if let Some(post) = &for_stmt.post {
-                    Self::collect_free_vars_stmt(post, bound, free);
+                    Self::collect_free_vars_stmt(post, &mut scoped, free);
                 }
-                Self::collect_free_vars_block(&for_stmt.body, bound, free);
+                Self::collect_free_vars_block(&for_stmt.body, &mut scoped, free);
             }
             ast::Statement::Range(range_stmt) => {
                 Self::collect_free_vars_expr(&range_stmt.expr, bound, free);
+                let mut scoped = bound.clone();
                 let is_define = range_stmt.op.as_ref()
                     .map_or(false, |(_, op)| matches!(op, Operator::Define));
                 if is_define {
                     if let Some(ast::Expression::Ident(k)) = &range_stmt.key {
-                        bound.insert(k.name.clone());
+                        scoped.insert(k.name.clone());
                     }
                     if let Some(ast::Expression::Ident(v)) = &range_stmt.value {
-                        bound.insert(v.name.clone());
+                        scoped.insert(v.name.clone());
+                    }
+                } else {
+                    if let Some(key) = &range_stmt.key {
+                        Self::collect_free_vars_expr(key, bound, free);
+                    }
+                    if let Some(value) = &range_stmt.value {
+                        Self::collect_free_vars_expr(value, bound, free);
                     }
                 }
-                Self::collect_free_vars_block(&range_stmt.body, bound, free);
+                Self::collect_free_vars_block(&range_stmt.body, &mut scoped, free);
             }
             ast::Statement::Block(block) => {
-                Self::collect_free_vars_block(block, bound, free);
+                Self::collect_free_vars_block(block, &mut bound.clone(), free);
             }
             ast::Statement::Declaration(decl_stmt) => {
                 if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
@@ -2287,31 +2371,35 @@ impl WasmCompiler {
                 }
             }
             ast::Statement::Switch(sw) => {
+                let mut scoped = bound.clone();
                 if let Some(init) = &sw.init {
-                    Self::collect_free_vars_stmt(init, bound, free);
+                    Self::collect_free_vars_stmt(init, &mut scoped, free);
                 }
                 if let Some(tag) = &sw.tag {
-                    Self::collect_free_vars_expr(tag, bound, free);
+                    Self::collect_free_vars_expr(tag, &scoped, free);
                 }
                 for clause in &sw.block.body {
+                    let mut clause_scope = scoped.clone();
                     for e in &clause.list {
-                        Self::collect_free_vars_expr(e, bound, free);
+                        Self::collect_free_vars_expr(e, &clause_scope, free);
                     }
                     for s in clause.body.iter() {
-                        Self::collect_free_vars_stmt(s, bound, free);
+                        Self::collect_free_vars_stmt(s, &mut clause_scope, free);
                     }
                 }
             }
             ast::Statement::TypeSwitch(tsw) => {
+                let mut scoped = bound.clone();
                 if let Some(init) = &tsw.init {
-                    Self::collect_free_vars_stmt(init, bound, free);
+                    Self::collect_free_vars_stmt(init, &mut scoped, free);
                 }
                 if let Some(tag) = &tsw.tag {
-                    Self::collect_free_vars_stmt(tag, bound, free);
+                    Self::collect_free_vars_stmt(tag, &mut scoped, free);
                 }
                 for clause in &tsw.block.body {
+                    let mut clause_scope = scoped.clone();
                     for s in clause.body.iter() {
-                        Self::collect_free_vars_stmt(s, bound, free);
+                        Self::collect_free_vars_stmt(s, &mut clause_scope, free);
                     }
                 }
             }
@@ -2339,11 +2427,12 @@ impl WasmCompiler {
             }
             ast::Statement::Select(sel) => {
                 for clause in &sel.body.body {
+                    let mut clause_scope = bound.clone();
                     if let Some(comm) = &clause.comm {
-                        Self::collect_free_vars_stmt(comm, bound, free);
+                        Self::collect_free_vars_stmt(comm, &mut clause_scope, free);
                     }
                     for s in clause.body.iter() {
-                        Self::collect_free_vars_stmt(s, bound, free);
+                        Self::collect_free_vars_stmt(s, &mut clause_scope, free);
                     }
                 }
             }
@@ -2359,8 +2448,9 @@ impl WasmCompiler {
         match expr {
             ast::Expression::Ident(id) => {
                 if !bound.contains(&id.name)
-                    && !matches!(id.name.as_str(), "true" | "false" | "nil" | "iota"
+                    && !matches!(id.name.as_str(), "_" | "true" | "false" | "nil" | "iota"
                         | "len" | "cap" | "append" | "copy" | "delete" | "make" | "new"
+                        | "close" | "complex" | "real" | "imag" | "uintptr"
                         | "panic" | "recover" | "print" | "println" | "string" | "int"
                         | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
                         | "uint32" | "uint64" | "float32" | "float64" | "byte" | "rune"
@@ -2407,6 +2497,11 @@ impl WasmCompiler {
                         inner_bound.insert(name.name.clone());
                     }
                 }
+                for field in &fl.typ.result.list {
+                    for name in &field.name {
+                        inner_bound.insert(name.name.clone());
+                    }
+                }
                 Self::collect_free_vars_block(&fl.body, &mut inner_bound, free);
             }
             ast::Expression::IndexList(il) => {
@@ -2430,6 +2525,14 @@ impl WasmCompiler {
                     }
                     Self::collect_free_vars_element(&kv.val, bound, free);
                 }
+            }
+            ast::Expression::List(exprs) => {
+                for e in exprs {
+                    Self::collect_free_vars_expr(e, bound, free);
+                }
+            }
+            ast::Expression::Invar(inv) => {
+                Self::collect_free_vars_expr(&inv.expr, bound, free);
             }
             _ => {}
         }
@@ -2594,6 +2697,14 @@ impl WasmCompiler {
             ast::Statement::Label(labeled) => {
                 Self::collect_stack_locals_from_stmt(&labeled.stmt, escaping, struct_defs, locals, offset);
             }
+            ast::Statement::Select(sel) => {
+                for clause in &sel.body.body {
+                    if let Some(comm) = &clause.comm {
+                        Self::collect_stack_locals_from_stmt(comm, escaping, struct_defs, locals, offset);
+                    }
+                    Self::collect_stack_locals_from_block(&clause.body, escaping, struct_defs, locals, offset);
+                }
+            }
             _ => {}
         }
     }
@@ -2612,8 +2723,8 @@ impl WasmCompiler {
                             None
                         }
                     }
-                    ast::Expression::TypeSlice(_) => Some(12),
-                    ast::Expression::TypeMap(_) => Some(20),
+                    ast::Expression::TypeSlice(_) => None,
+                    ast::Expression::TypeMap(_) => None,
                     ast::Expression::TypeArray(arr) => {
                         if let ast::Expression::BasicLit(lit) = arr.len.as_ref() {
                             if let Ok(n) = lit.value.parse::<u32>() {
@@ -2634,15 +2745,7 @@ impl WasmCompiler {
             }
             ast::Expression::Call(call) => {
                 if let ast::Expression::Ident(id) = call.func.as_ref() {
-                    if id.name == "make" {
-                        if let Some(type_arg) = call.args.first() {
-                            match type_arg {
-                                ast::Expression::TypeSlice(_) => return Some(12),
-                                ast::Expression::TypeMap(_) => return Some(20),
-                                _ => {}
-                            }
-                        }
-                    } else if id.name == "new" {
+                    if id.name == "new" {
                         if let Some(type_arg) = call.args.first() {
                             if let ast::Expression::Ident(ti) = type_arg {
                                 if let Some(sdef) = struct_defs.get(&ti.name) {
@@ -3071,18 +3174,21 @@ impl WasmCompiler {
                 func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
                 func_body.push(Instruction::LocalSet(fb));
 
-                func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
+                // Check for overflow before bumping the stack pointer
+                func_body.push(Instruction::LocalGet(fb));
                 func_body.push(Instruction::I32Const(sf.total_size as i32));
                 func_body.push(Instruction::I32Add);
-                func_body.push(Instruction::GlobalSet(self.stack_ptr_global));
-
-                func_body.push(Instruction::GlobalGet(self.stack_ptr_global));
                 func_body.push(Instruction::I32Const(Self::HEAP_BASE));
                 func_body.push(Instruction::I32GeU);
                 func_body.push(Instruction::If(BlockType::Empty));
                 func_body.push(Instruction::Call(self.oom_func_idx));
                 func_body.push(Instruction::Unreachable);
                 func_body.push(Instruction::End);
+
+                func_body.push(Instruction::LocalGet(fb));
+                func_body.push(Instruction::I32Const(sf.total_size as i32));
+                func_body.push(Instruction::I32Add);
+                func_body.push(Instruction::GlobalSet(self.stack_ptr_global));
             }
             sf
         } else {
