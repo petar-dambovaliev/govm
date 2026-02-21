@@ -90,11 +90,12 @@
 // a higher resolution may be requested using [golang.org/x/sys/windows.TimeBeginPeriod].
 package time
 
-import (
-	"errors"
-	"math/bits"
-	_ "unsafe" // for go:linkname
-)
+import "errors"
+
+func mul32(a, b uint32) (uint32, uint32) {
+	v := uint64(a) * uint64(b)
+	return uint32(v >> 32), uint32(v)
+}
 
 // A Time represents an instant in time with nanosecond precision.
 //
@@ -671,7 +672,7 @@ func (days absDays) split() (century absCentury, cyear absCyear, ayday absYday) 
 	// so do that instead, saving a few cycles.
 	// See Neri and Schneider, section 8.3
 	// for more about this optimization.
-	hi, lo := bits.Mul32(2939745, cd)
+	hi, lo := mul32(2939745, cd)
 	cyear = absCyear(hi)
 	ayday = absYday(lo / 2939745 / 4)
 	return
@@ -1222,23 +1223,11 @@ func subMono(t, u int64) Duration {
 	return d
 }
 
-// Since returns the time elapsed since t.
-// It is shorthand for time.Now().Sub(t).
 func Since(t Time) Duration {
-	if t.wall&hasMonotonic != 0 && !runtimeIsBubbled() {
-		// Common case optimization: if t has monotonic time, then Sub will use only it.
-		return subMono(runtimeNano()-startNano, t.ext)
-	}
 	return Now().Sub(t)
 }
 
-// Until returns the duration until t.
-// It is shorthand for t.Sub(time.Now()).
 func Until(t Time) Duration {
-	if t.wall&hasMonotonic != 0 && !runtimeIsBubbled() {
-		// Common case optimization: if t has monotonic time, then Sub will use only it.
-		return subMono(t.ext, runtimeNano()-startNano)
-	}
 	return t.Sub(Now())
 }
 
@@ -1300,64 +1289,15 @@ func daysIn(m Month, year int) int {
 	return 30 + int((m+m>>3)&1)
 }
 
-// Provided by package runtime.
-//
-// now returns the current real time, and is superseded by runtimeNow which returns
-// the fake synctest clock when appropriate.
-//
-// now should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - gitee.com/quant1x/gox
-//   - github.com/phuslu/log
-//   - github.com/sethvargo/go-limiter
-//   - github.com/ulule/limiter/v3
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-func now() (sec int64, nsec int32, mono int64)
+func nowUnixNano() int64 {
+	return 0
+}
 
-// runtimeNow returns the current time.
-// When called within a synctest.Run bubble, it returns the group's fake clock.
-//
-//go:linkname runtimeNow
-func runtimeNow() (sec int64, nsec int32, mono int64)
-
-// runtimeNano returns the current value of the runtime clock in nanoseconds.
-// When called within a synctest.Run bubble, it returns the group's fake clock.
-//
-//go:linkname runtimeNano
-func runtimeNano() int64
-
-//go:linkname runtimeIsBubbled
-func runtimeIsBubbled() bool
-
-// Monotonic times are reported as offsets from startNano.
-// We initialize startNano to runtimeNano() - 1 so that on systems where
-// monotonic time resolution is fairly low (e.g. Windows 2008
-// which appears to have a default resolution of 15ms),
-// we avoid ever reporting a monotonic time of 0.
-// (Callers may want to use 0 as "time not set".)
-var startNano int64 = runtimeNano() - 1
-
-// x/tools uses a linkname of time.Now in its tests. No harm done.
-//go:linkname Now
-
-// Now returns the current local time.
 func Now() Time {
-	sec, nsec, mono := runtimeNow()
-	if mono == 0 {
-		return Time{uint64(nsec), sec + unixToInternal, Local}
-	}
-	mono -= startNano
-	sec += unixToInternal - minWall
-	if uint64(sec)>>33 != 0 {
-		// Seconds field overflowed the 33 bits available when
-		// storing a monotonic time. This will be true after
-		// March 16, 2157.
-		return Time{uint64(nsec), sec + minWall, Local}
-	}
-	return Time{hasMonotonic | uint64(sec)<<nsecShift | uint64(nsec), mono, Local}
+	n := nowUnixNano()
+	sec := n / 1e9
+	nsec := int32(n % 1e9)
+	return unixTime(sec, nsec)
 }
 
 func unixTime(sec int64, nsec int32) Time {
@@ -1459,192 +1399,6 @@ func (t Time) UnixMicro() int64 {
 // location associated with t.
 func (t Time) UnixNano() int64 {
 	return (t.unixSec())*1e9 + int64(t.nsec())
-}
-
-const (
-	timeBinaryVersionV1 byte = iota + 1 // For general situation
-	timeBinaryVersionV2                 // For LMT only
-)
-
-// AppendBinary implements the [encoding.BinaryAppender] interface.
-func (t Time) AppendBinary(b []byte) ([]byte, error) {
-	var offsetMin int16 // minutes east of UTC. -1 is UTC.
-	var offsetSec int8
-	version := timeBinaryVersionV1
-
-	if t.Location() == UTC {
-		offsetMin = -1
-	} else {
-		_, offset := t.Zone()
-		if offset%60 != 0 {
-			version = timeBinaryVersionV2
-			offsetSec = int8(offset % 60)
-		}
-
-		offset /= 60
-		if offset < -32768 || offset == -1 || offset > 32767 {
-			return b, errors.New("Time.MarshalBinary: unexpected zone offset")
-		}
-		offsetMin = int16(offset)
-	}
-
-	sec := t.sec()
-	nsec := t.nsec()
-	b = append(b,
-		version,       // byte 0 : version
-		byte(sec>>56), // bytes 1-8: seconds
-		byte(sec>>48),
-		byte(sec>>40),
-		byte(sec>>32),
-		byte(sec>>24),
-		byte(sec>>16),
-		byte(sec>>8),
-		byte(sec),
-		byte(nsec>>24), // bytes 9-12: nanoseconds
-		byte(nsec>>16),
-		byte(nsec>>8),
-		byte(nsec),
-		byte(offsetMin>>8), // bytes 13-14: zone offset in minutes
-		byte(offsetMin),
-	)
-	if version == timeBinaryVersionV2 {
-		b = append(b, byte(offsetSec))
-	}
-	return b, nil
-}
-
-// MarshalBinary implements the [encoding.BinaryMarshaler] interface.
-func (t Time) MarshalBinary() ([]byte, error) {
-	b, err := t.AppendBinary(make([]byte, 0, 16))
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-// UnmarshalBinary implements the [encoding.BinaryUnmarshaler] interface.
-func (t *Time) UnmarshalBinary(data []byte) error {
-	buf := data
-	if len(buf) == 0 {
-		return errors.New("Time.UnmarshalBinary: no data")
-	}
-
-	version := buf[0]
-	if version != timeBinaryVersionV1 && version != timeBinaryVersionV2 {
-		return errors.New("Time.UnmarshalBinary: unsupported version")
-	}
-
-	wantLen := /*version*/ 1 + /*sec*/ 8 + /*nsec*/ 4 + /*zone offset*/ 2
-	if version == timeBinaryVersionV2 {
-		wantLen++
-	}
-	if len(buf) != wantLen {
-		return errors.New("Time.UnmarshalBinary: invalid length")
-	}
-
-	buf = buf[1:]
-	sec := int64(buf[7]) | int64(buf[6])<<8 | int64(buf[5])<<16 | int64(buf[4])<<24 |
-		int64(buf[3])<<32 | int64(buf[2])<<40 | int64(buf[1])<<48 | int64(buf[0])<<56
-
-	buf = buf[8:]
-	nsec := int32(buf[3]) | int32(buf[2])<<8 | int32(buf[1])<<16 | int32(buf[0])<<24
-
-	buf = buf[4:]
-	offset := int(int16(buf[1])|int16(buf[0])<<8) * 60
-	if version == timeBinaryVersionV2 {
-		offset += int(buf[2])
-	}
-
-	*t = Time{}
-	t.wall = uint64(nsec)
-	t.ext = sec
-
-	if offset == -1*60 {
-		t.setLoc(&utcLoc)
-	} else if _, localoff, _, _, _ := Local.lookup(t.unixSec()); offset == localoff {
-		t.setLoc(Local)
-	} else {
-		t.setLoc(FixedZone("", offset))
-	}
-
-	return nil
-}
-
-// TODO(rsc): Remove GobEncoder, GobDecoder, MarshalJSON, UnmarshalJSON in Go 2.
-// The same semantics will be provided by the generic MarshalBinary, MarshalText,
-// UnmarshalBinary, UnmarshalText.
-
-// GobEncode implements the gob.GobEncoder interface.
-func (t Time) GobEncode() ([]byte, error) {
-	return t.MarshalBinary()
-}
-
-// GobDecode implements the gob.GobDecoder interface.
-func (t *Time) GobDecode(data []byte) error {
-	return t.UnmarshalBinary(data)
-}
-
-// MarshalJSON implements the [encoding/json.Marshaler] interface.
-// The time is a quoted string in the RFC 3339 format with sub-second precision.
-// If the timestamp cannot be represented as valid RFC 3339
-// (e.g., the year is out of range), then an error is reported.
-func (t Time) MarshalJSON() ([]byte, error) {
-	b := make([]byte, 0, len(RFC3339Nano)+len(`""`))
-	b = append(b, '"')
-	b, err := t.appendStrictRFC3339(b)
-	b = append(b, '"')
-	if err != nil {
-		return nil, errors.New("Time.MarshalJSON: " + err.Error())
-	}
-	return b, nil
-}
-
-// UnmarshalJSON implements the [encoding/json.Unmarshaler] interface.
-// The time must be a quoted string in the RFC 3339 format.
-func (t *Time) UnmarshalJSON(data []byte) error {
-	if string(data) == "null" {
-		return nil
-	}
-	// TODO(https://go.dev/issue/47353): Properly unescape a JSON string.
-	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
-		return errors.New("Time.UnmarshalJSON: input is not a JSON string")
-	}
-	data = data[len(`"`) : len(data)-len(`"`)]
-	var err error
-	*t, err = parseStrictRFC3339(data)
-	return err
-}
-
-func (t Time) appendTo(b []byte, errPrefix string) ([]byte, error) {
-	b, err := t.appendStrictRFC3339(b)
-	if err != nil {
-		return nil, errors.New(errPrefix + err.Error())
-	}
-	return b, nil
-}
-
-// AppendText implements the [encoding.TextAppender] interface.
-// The time is formatted in RFC 3339 format with sub-second precision.
-// If the timestamp cannot be represented as valid RFC 3339
-// (e.g., the year is out of range), then an error is returned.
-func (t Time) AppendText(b []byte) ([]byte, error) {
-	return t.appendTo(b, "Time.AppendText: ")
-}
-
-// MarshalText implements the [encoding.TextMarshaler] interface. The output
-// matches that of calling the [Time.AppendText] method.
-//
-// See [Time.AppendText] for more information.
-func (t Time) MarshalText() ([]byte, error) {
-	return t.appendTo(make([]byte, 0, len(RFC3339Nano)), "Time.MarshalText: ")
-}
-
-// UnmarshalText implements the [encoding.TextUnmarshaler] interface.
-// The time must be in the RFC 3339 format.
-func (t *Time) UnmarshalText(data []byte) error {
-	var err error
-	*t, err = parseStrictRFC3339(data)
-	return err
 }
 
 // Unix returns the local Time corresponding to the given Unix time,
@@ -1899,49 +1653,3 @@ func div(t Time, d Duration) (qmod2 int, r Duration) {
 	return
 }
 
-// Regrettable Linkname Compatibility
-//
-// timeAbs, absDate, and absClock mimic old internal details, no longer used.
-// Widely used packages linknamed these to get “faster” time routines.
-// Notable members of the hall of shame include:
-//   - gitee.com/quant1x/gox
-//   - github.com/phuslu/log
-//
-// phuslu hard-coded 'Unix time + 9223372028715321600' [sic]
-// as the input to absDate and absClock, using the old Jan 1-based
-// absolute times.
-// quant1x linknamed the time.Time.abs method and passed the
-// result of that method to absDate and absClock.
-//
-// Keeping both of these working forces us to provide these three
-// routines here, operating on the old Jan 1-based epoch instead
-// of the new March 1-based epoch. And the fact that time.Time.abs
-// was linknamed means that we have to call the current abs method
-// something different (time.Time.absSec, defined above) to make it
-// possible to provide this simulation of the old routines here.
-//
-// None of this code is linked into the binary if not referenced by
-// these linkname-happy packages. In particular, despite its name,
-// time.Time.abs does not appear in the time.Time method table.
-//
-// Do not remove these routines or their linknames, or change the
-// type signature or meaning of arguments.
-
-//go:linkname legacyTimeTimeAbs time.Time.abs
-func legacyTimeTimeAbs(t Time) uint64 {
-	return uint64(t.absSec() - marchThruDecember*secondsPerDay)
-}
-
-//go:linkname legacyAbsClock time.absClock
-func legacyAbsClock(abs uint64) (hour, min, sec int) {
-	return absSeconds(abs + marchThruDecember*secondsPerDay).clock()
-}
-
-//go:linkname legacyAbsDate time.absDate
-func legacyAbsDate(abs uint64, full bool) (year int, month Month, day int, yday int) {
-	d := absSeconds(abs + marchThruDecember*secondsPerDay).days()
-	year, month, day = d.date()
-	_, yday = d.yearYday()
-	yday-- // yearYday is 1-based, old API was 0-based
-	return
-}

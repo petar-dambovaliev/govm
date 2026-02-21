@@ -4,11 +4,7 @@
 
 package time
 
-import (
-	"errors"
-	"internal/stringslite"
-	_ "unsafe" // for linkname
-)
+import "errors"
 
 // These are predefined layouts for use in [Time.Format] and [time.Parse].
 // The reference time used in these layouts is the specific time stamp:
@@ -191,15 +187,6 @@ func startsWithLowerCase(str string) bool {
 // nextStdChunk finds the first occurrence of a std string in
 // layout and returns the text before, the std string, and the text after.
 //
-// nextStdChunk should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - github.com/searKing/golang/go
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
-//go:linkname nextStdChunk
 func nextStdChunk(layout string) (prefix string, std int, suffix string) {
 	for i := 0; i < len(layout); i++ {
 		switch c := int(layout[i]); c {
@@ -468,7 +455,7 @@ func appendInt(b []byte, x int, width int) []byte {
 var errAtoi = errors.New("time: invalid number")
 
 // Duplicates functionality in strconv, but avoids dependency.
-func atoi[bytes []byte | string](s bytes) (x int, err error) {
+func atoi(s string) (x int, err error) {
 	neg := false
 	if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
 		neg = s[0] == '-'
@@ -849,8 +836,8 @@ type ParseError struct {
 // newParseError creates a new ParseError.
 // The provided value and valueElem are cloned to avoid escaping their values.
 func newParseError(layout, value, layoutElem, valueElem, message string) *ParseError {
-	valueCopy := stringslite.Clone(value)
-	valueElemCopy := stringslite.Clone(valueElem)
+	valueCopy := string([]byte(value))
+	valueElemCopy := string([]byte(valueElem))
 	return &ParseError{layout, valueCopy, layoutElem, valueElemCopy, message}
 }
 
@@ -912,7 +899,7 @@ func (e *ParseError) Error() string {
 }
 
 // isDigit reports whether s[i] is in range and is a decimal digit.
-func isDigit[bytes []byte | string](s bytes, i int) bool {
+func isDigit(s string, i int) bool {
 	if len(s) <= i {
 		return false
 	}
@@ -1403,7 +1390,7 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 		}
 
 		// Otherwise create fake zone to record offset.
-		zoneNameCopy := stringslite.Clone(zoneName) // avoid leaking the input value
+		zoneNameCopy := string([]byte(zoneName))
 		t.setLoc(FixedZone(zoneNameCopy, zoneOffset))
 		return t, nil
 	}
@@ -1424,7 +1411,7 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 			offset, _ = atoi(zoneName[3:]) // Guaranteed OK by parseGMT.
 			offset *= 3600
 		}
-		zoneNameCopy := stringslite.Clone(zoneName) // avoid leaking the input value
+		zoneNameCopy := string([]byte(zoneName))
 		t.setLoc(FixedZone(zoneNameCopy, offset))
 		return t, nil
 	}
@@ -1526,7 +1513,7 @@ func commaOrPeriod(b byte) bool {
 	return b == '.' || b == ','
 }
 
-func parseNanoseconds[bytes []byte | string](value bytes, nbytes int) (ns int, rangeErrString string, err error) {
+func parseNanoseconds(value string, nbytes int) (ns int, rangeErrString string, err error) {
 	if !commaOrPeriod(value[0]) {
 		err = errBad
 		return
@@ -1554,7 +1541,7 @@ func parseNanoseconds[bytes []byte | string](value bytes, nbytes int) (ns int, r
 var errLeadingInt = errors.New("time: bad [0-9]*") // never printed
 
 // leadingInt consumes the leading [0-9]* from s.
-func leadingInt[bytes []byte | string](s bytes) (x uint64, rem bytes, err error) {
+func leadingInt(s string) (x uint64, rem string, err error) {
 	i := 0
 	for ; i < len(s); i++ {
 		c := s[i]
