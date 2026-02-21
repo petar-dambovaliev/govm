@@ -27479,3 +27479,169 @@ func Run() int {
     let val = func.call(&mut store, ()).expect("call failed");
     assert_eq!(val, 42, "code without errors import should compile normally");
 }
+
+#[test]
+fn test_errors_unwrap_wrapping_type() {
+    let source = r#"
+package main
+
+import "errors"
+
+type wrappedError struct {
+    msg string
+    inner error
+}
+
+func (e *wrappedError) Error() string {
+    return e.msg
+}
+
+func (e *wrappedError) Unwrap() error {
+    return e.inner
+}
+
+func Run() int {
+    inner := errors.New("inner")
+    outer := &wrappedError{msg: "outer", inner: inner}
+    unwrapped := errors.Unwrap(outer)
+    if unwrapped == nil {
+        return 0
+    }
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "Unwrap should return the inner error");
+}
+
+#[test]
+fn test_errors_unwrap_non_wrapping() {
+    let source = r#"
+package main
+
+import "errors"
+
+func Run() int {
+    err := errors.New("plain error")
+    unwrapped := errors.Unwrap(err)
+    if unwrapped == nil {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "Unwrap on non-wrapping error should return nil");
+}
+
+#[test]
+fn test_errors_is_sentinel_match() {
+    let source = r#"
+package main
+
+import "errors"
+
+func Run() int {
+    sentinel := errors.New("not found")
+    if errors.Is(sentinel, sentinel) {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "Is should match identical sentinel error");
+}
+
+#[test]
+fn test_errors_is_wrapped_chain() {
+    let source = r#"
+package main
+
+import "errors"
+
+type wrappedError struct {
+    msg string
+    inner error
+}
+
+func (e *wrappedError) Error() string {
+    return e.msg
+}
+
+func (e *wrappedError) Unwrap() error {
+    return e.inner
+}
+
+func Run() int {
+    sentinel := errors.New("base")
+    wrapped := &wrappedError{msg: "layer1", inner: sentinel}
+    if errors.Is(wrapped, sentinel) {
+        return 1
+    }
+    return 0
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "Is should find sentinel through wrapped chain");
+}
+
+#[test]
+fn test_errors_is_no_match() {
+    let source = r#"
+package main
+
+import "errors"
+
+func Run() int {
+    err1 := errors.New("error one")
+    err2 := errors.New("error two")
+    if errors.Is(err1, err2) {
+        return 0
+    }
+    return 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 1, "Is should return false for non-matching errors");
+}
