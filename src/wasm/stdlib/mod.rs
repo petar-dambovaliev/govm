@@ -38,6 +38,8 @@ lazy_static::lazy_static! {
 
 const UDF_IMPORT_PREFIX: &str = "udf/";
 
+const ERRORS_SOURCE: &str = include_str!("errors.go");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportKind {
     Stdlib(String),
@@ -67,4 +69,11 @@ pub fn resolve_import(path: &str) -> Result<ImportKind, String> {
         "import \"{}\" is not allowed in UDFs. Only stdlib packages and udf/ imports are permitted.",
         path
     ))
+}
+
+pub fn get_stdlib_source(pkg: &str) -> Option<&'static str> {
+    match pkg {
+        "errors" => Some(ERRORS_SOURCE),
+        _ => None,
+    }
 }

@@ -25,3 +25,6 @@ lto = true
 opt-level = 3
 codegen-units = 1
 debug = true
+
+[dev-dependencies]
+wasmprinter = "0.245.1"

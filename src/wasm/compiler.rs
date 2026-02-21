@@ -355,7 +355,7 @@ pub struct WasmCompiler {
     start_func_idx: Option<u32>,
 
     // Deferred global variable initializers (non-constant or string expressions)
-    global_var_inits: Vec<(String, ast::Expression, ValType)>,
+    global_var_inits: Vec<(String, ast::Expression, ValType, Option<String>)>,
 
     // Global variables that hold function values: var_name -> wasm_func_idx
     global_func_vars: HashMap<String, u32>,
@@ -374,6 +374,10 @@ pub struct WasmCompiler {
     current_stack_frame: Option<StackFrameInfo>,
     // When set, the next allocation should use the stack frame slot for this variable
     stack_alloc_target: Option<String>,
+
+    // Stdlib package compilation
+    current_package: Option<String>,
+    compiled_packages: HashSet<String>,
 }
 
 impl WasmCompiler {
@@ -442,6 +446,9 @@ impl WasmCompiler {
             struct_field_map_types: HashMap::new(),
             current_stack_frame: None,
             stack_alloc_target: None,
+
+            current_package: None,
+            compiled_packages: HashSet::new(),
         }
     }
 
@@ -569,6 +576,70 @@ impl WasmCompiler {
         Ok(mantissa * (2.0f64).powi(exp))
     }
 
+    fn qualify_pkg_name(&self, name: &str) -> String {
+        if let Some(ref pkg) = self.current_package {
+            format!("{}.{}", pkg, name)
+        } else {
+            name.to_string()
+        }
+    }
+
+    fn find_func_in_pkg(&self, name: &str) -> Option<&FuncInfo> {
+        if let Some(fi) = self.functions.iter().find(|f| f.name == name) {
+            return Some(fi);
+        }
+        if let Some(ref pkg) = self.current_package {
+            let qualified = format!("{}.{}", pkg, name);
+            return self.functions.iter().find(|f| f.name == qualified);
+        }
+        None
+    }
+
+    fn resolve_struct_in_pkg(&self, name: &str) -> String {
+        if self.struct_defs.contains_key(name) {
+            return name.to_string();
+        }
+        if let Some(ref pkg) = self.current_package {
+            let qualified = format!("{}.{}", pkg, name);
+            if self.struct_defs.contains_key(&qualified) {
+                return qualified;
+            }
+        }
+        name.to_string()
+    }
+
+    fn compile_stdlib_package(&mut self, pkg: &str, source: &str) -> Result<(), Error> {
+        if self.compiled_packages.contains(pkg) {
+            return Ok(());
+        }
+        self.compiled_packages.insert(pkg.to_string());
+
+        let file = crate::parser::parse_source(source)
+            .map_err(|e| Error::SyntaxError(e.to_string()))?;
+
+        // Recursively compile any stdlib packages this package imports
+        for imp in &file.imports {
+            let path = imp.path.value.trim_matches('"');
+            if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(dep)) =
+                crate::wasm::stdlib::resolve_import(path)
+            {
+                if let Some(dep_source) = crate::wasm::stdlib::get_stdlib_source(&dep) {
+                    self.compile_stdlib_package(&dep, dep_source)?;
+                }
+            }
+        }
+
+        self.current_package = Some(pkg.to_string());
+        self.prescan_type_declarations(&file);
+
+        let sorted = Self::sort_declarations_by_deps(&file.decl);
+        for decl in &sorted {
+            self.compile_declaration(decl)?;
+        }
+        self.current_package = None;
+        Ok(())
+    }
+
     pub fn compile_source(&mut self, source: &str) -> Result<CompileResult, Error> {
         let file = crate::parser::parse_source(source)
             .map_err(|e| Error::SyntaxError(e.to_string()))?;
@@ -582,6 +653,18 @@ impl WasmCompiler {
         self.emit_alloc_function();
         self.emit_reset_function();
         self.register_builtin_types();
+
+        for imp in &file.imports {
+            let path = imp.path.value.trim_matches('"');
+            if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(pkg)) =
+                crate::wasm::stdlib::resolve_import(path)
+            {
+                if let Some(source) = crate::wasm::stdlib::get_stdlib_source(&pkg) {
+                    self.compile_stdlib_package(&pkg, source)?;
+                }
+            }
+        }
+
         self.prescan_type_declarations(file);
 
         let sorted_decls = Self::sort_declarations_by_deps(&file.decl);
@@ -867,7 +950,10 @@ impl WasmCompiler {
         let mut locals = LocalAlloc::new(param_entries);
         let mut body: Vec<Instruction<'static>> = Vec::new();
 
-        for (var_name, init_expr, _vt) in &inits {
+        for (var_name, init_expr, _vt, pkg_ctx) in &inits {
+            let prev_pkg = self.current_package.clone();
+            self.current_package = pkg_ctx.clone();
+
             let is_string_global = self.global_vars.contains_key(&format!("{}_1", var_name));
 
             if is_string_global {
@@ -894,6 +980,8 @@ impl WasmCompiler {
                 let (global_idx, _) = self.global_vars[var_name];
                 body.push(Instruction::GlobalSet(global_idx));
             }
+
+            self.current_package = prev_pkg;
         }
 
         body.push(Instruction::End);
@@ -949,7 +1037,8 @@ impl WasmCompiler {
         for decl in &file.decl {
             if let ast::Declaration::Type(type_decl) = decl {
                 for spec in &type_decl.specs {
-                    let name = &spec.name.name;
+                    let raw_name = &spec.name.name;
+                    let name = self.qualify_pkg_name(raw_name);
                     if let ast::Expression::TypeInterface(iface) = &spec.typ {
                         let mut methods = Vec::new();
                         let mut embedded_ifaces = Vec::new();
@@ -989,7 +1078,7 @@ impl WasmCompiler {
                         self.iface_defs.insert(name.clone(), methods);
                         self.iface_method_sigs.insert(name.clone(), method_sigs);
                     } else if let ast::Expression::TypeStruct(_) = &spec.typ {
-                        self.get_or_create_type_id(name);
+                        self.get_or_create_type_id(&name);
                     }
                 }
             }
@@ -997,7 +1086,8 @@ impl WasmCompiler {
             if let ast::Declaration::Function(func_decl) = decl {
                 if let Some(recv) = &func_decl.recv {
                     if let Some(type_name) = self.extract_recv_type_name(recv) {
-                        self.get_or_create_type_id(&type_name);
+                        let qualified = self.qualify_pkg_name(&type_name);
+                        self.get_or_create_type_id(&qualified);
                     }
                 }
             }
@@ -1317,24 +1407,25 @@ impl WasmCompiler {
             ast::Declaration::Type(type_decl) => {
                 for spec in &type_decl.specs {
                     Self::reject_unsupported_type(&spec.typ)?;
+                    let qualified_name = self.qualify_pkg_name(&spec.name.name);
                     // Generic type definitions: store as template for later monomorphization
                     if !spec.params.list.is_empty() {
-                        self.generic_types.insert(spec.name.name.clone(), spec.clone());
+                        self.generic_types.insert(qualified_name, spec.clone());
                         continue;
                     }
                     if let ast::Expression::TypeStruct(struct_type) = &spec.typ {
                         let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
-                            .insert(spec.name.name.clone(), struct_def);
-                        self.register_struct_field_map_types(&spec.name.name, &struct_type.fields);
+                            .insert(qualified_name.clone(), struct_def);
+                        self.register_struct_field_map_types(&qualified_name, &struct_type.fields);
                     } else if let ast::Expression::Ident(base_type) = &spec.typ {
                         self.type_aliases.insert(
-                            spec.name.name.clone(),
+                            qualified_name,
                             (base_type.name.clone(), spec.alias),
                         );
                     } else if matches!(&spec.typ, ast::Expression::TypeSlice(_) | ast::Expression::TypeMap(_) | ast::Expression::TypeArray(_)) {
                         self.named_composite_types.insert(
-                            spec.name.name.clone(),
+                            qualified_name,
                             spec.typ.clone(),
                         );
                     }
@@ -1473,7 +1564,8 @@ impl WasmCompiler {
         let is_composite_type = spec.typ.as_ref().map_or(false, |t| {
             matches!(t, ast::Expression::TypeSlice(_) | ast::Expression::TypeMap(_) | ast::Expression::TypeArray(_))
                 || matches!(t, ast::Expression::Ident(id) if {
-                    self.struct_defs.contains_key(&id.name)
+                    let resolved = self.resolve_struct_in_pkg(&id.name);
+                    self.struct_defs.contains_key(&resolved)
                     || self.named_composite_types.contains_key(&id.name)
                 })
         }) || spec.values.first().map_or(false, |v| {
@@ -1483,25 +1575,27 @@ impl WasmCompiler {
         if is_composite_type {
             // Composite globals are I32 pointers to heap-allocated data
             for name in &spec.name {
+                let var_name = self.qualify_pkg_name(&name.name);
                 let global_idx = self.next_global_idx;
                 self.global_section.global(
                     GlobalType { val_type: ValType::I32, mutable: true, shared: false },
                     &ConstExpr::i32_const(0),
                 );
                 self.next_global_idx += 1;
-                self.global_vars.insert(name.name.clone(), (global_idx, ValType::I32));
+                self.global_vars.insert(var_name.clone(), (global_idx, ValType::I32));
 
                 // Track the struct type for selector access
                 if let Some(type_expr) = &spec.typ {
                     if let ast::Expression::Ident(type_id) = type_expr {
-                        if self.struct_defs.contains_key(&type_id.name) {
+                        let resolved = self.resolve_struct_in_pkg(&type_id.name);
+                        if self.struct_defs.contains_key(&resolved) {
                             // Will be tracked at usage site via global_var_struct_types
                         }
                     }
                 }
 
                 if let Some(val) = spec.values.first() {
-                    self.global_var_inits.push((name.name.clone(), val.clone(), ValType::I32));
+                    self.global_var_inits.push((var_name, val.clone(), ValType::I32, self.current_package.clone()));
                 }
             }
             return Ok(());
@@ -1520,6 +1614,7 @@ impl WasmCompiler {
         if is_string_type {
             // Strings are (ptr, len) pairs; use two i32 globals and defer initialization
             for name in &spec.name {
+                let var_name = self.qualify_pkg_name(&name.name);
                 let ptr_idx = self.next_global_idx;
                 self.global_section.global(
                     GlobalType { val_type: ValType::I32, mutable: true, shared: false },
@@ -1534,11 +1629,11 @@ impl WasmCompiler {
                 );
                 self.next_global_idx += 1;
 
-                self.global_vars.insert(name.name.clone(), (ptr_idx, ValType::I32));
-                self.global_vars.insert(format!("{}_1", name.name), (len_idx, ValType::I32));
+                self.global_vars.insert(var_name.clone(), (ptr_idx, ValType::I32));
+                self.global_vars.insert(format!("{}_1", var_name), (len_idx, ValType::I32));
 
                 if let Some(val) = spec.values.first() {
-                    self.global_var_inits.push((name.name.clone(), val.clone(), ValType::I32));
+                    self.global_var_inits.push((var_name, val.clone(), ValType::I32, self.current_package.clone()));
                 }
             }
             return Ok(());
@@ -1561,6 +1656,7 @@ impl WasmCompiler {
         let has_non_const_init = spec.values.first().is_some() && const_init.is_none();
 
         for name in &spec.name {
+            let var_name = self.qualify_pkg_name(&name.name);
             let global_idx = self.next_global_idx;
             self.global_section.global(
                 GlobalType {
@@ -1582,17 +1678,17 @@ impl WasmCompiler {
                 },
             );
             self.next_global_idx += 1;
-            self.global_vars.insert(name.name.clone(), (global_idx, vt));
+            self.global_vars.insert(var_name.clone(), (global_idx, vt));
 
             if has_non_const_init {
                 if let Some(val) = spec.values.first() {
                     if let ast::Expression::Ident(func_ident) = val {
-                        if let Some(fi) = self.functions.iter().find(|f| f.name == func_ident.name) {
-                            self.global_func_vars.insert(name.name.clone(), fi.wasm_func_idx);
+                        if let Some(fi) = self.find_func_in_pkg(&func_ident.name) {
+                            self.global_func_vars.insert(var_name, fi.wasm_func_idx);
                             continue;
                         }
                     }
-                    self.global_var_inits.push((name.name.clone(), val.clone(), vt));
+                    self.global_var_inits.push((var_name, val.clone(), vt, self.current_package.clone()));
                 }
             }
         }
@@ -1920,6 +2016,14 @@ impl WasmCompiler {
                 } else {
                     lhs
                 }
+            }
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                    if let Some(fi) = self.find_func_in_pkg(&ident.name) {
+                        return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
+                    }
+                }
+                ValType::I64
             }
             _ => ValType::I64,
         }
@@ -2857,6 +2961,7 @@ impl WasmCompiler {
 
         let recv_type_name = if let Some(recv) = &decl.recv {
             self.extract_recv_type_name(recv)
+                .map(|rtn| self.qualify_pkg_name(&rtn))
         } else {
             None
         };
@@ -2864,11 +2969,13 @@ impl WasmCompiler {
         let internal_name = if let Some(ref rtn) = recv_type_name {
             format!("{}.{}", rtn, name)
         } else {
-            name.clone()
+            self.qualify_pkg_name(name)
         };
 
         let is_exported =
-            name.chars().next().map_or(false, |c| c.is_uppercase()) && !is_method;
+            name.chars().next().map_or(false, |c| c.is_uppercase())
+            && !is_method
+            && self.current_package.is_none();
 
         let mut param_types: Vec<ValType> = Vec::new();
         let mut param_names: Vec<String> = Vec::new();
@@ -2878,7 +2985,8 @@ impl WasmCompiler {
                 let recv_vt = match &field.typ {
                     ast::Expression::TypePointer(_) => ValType::I32,
                     ast::Expression::Ident(id) => {
-                        if self.struct_defs.contains_key(&id.name) {
+                        let resolved_struct = self.resolve_struct_in_pkg(&id.name);
+                        if self.struct_defs.contains_key(&resolved_struct) {
                             ValType::I32
                         } else {
                             let resolved = self.resolve_type_name(&id.name);
@@ -4166,18 +4274,19 @@ impl WasmCompiler {
                                     }
                                 }
                             } else if let ast::Expression::Selector(sel) = call_expr.func.as_ref() {
-                                let method_name = format!("{}.{}", self.infer_concrete_type_name(&sel.x, locals), sel.sel.name);
-                                if let Some(fi) = self.functions.iter().find(|f| f.name == method_name).cloned() {
-                                    if let Some(go_type) = fi.result_go_types.first() {
-                                        if self.is_iface_go_type(go_type) {
-                                            is_iface_from_call = true;
-                                            let iface_tag = format!("__iface_{}", go_type);
-                                            locals.set_var_struct_type(&ident.name, &iface_tag);
-                                            let tid_local = locals.add_local(
-                                                &format!("{}__type_id", ident.name),
-                                                ValType::I32,
-                                            );
-                                            self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
+                                    if let Some(fi) = self.functions.iter().find(|f| f.name == qualified).cloned() {
+                                        if let Some(go_type) = fi.result_go_types.first() {
+                                            if self.is_iface_go_type(go_type) {
+                                                is_iface_from_call = true;
+                                                let iface_tag = format!("__iface_{}", go_type);
+                                                locals.set_var_struct_type(&ident.name, &iface_tag);
+                                                let tid_local = locals.add_local(
+                                                    &format!("{}__type_id", ident.name),
+                                                    ValType::I32,
+                                                );
+                                                self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                            }
                                         }
                                     }
                                 }
@@ -5493,7 +5602,7 @@ impl WasmCompiler {
             }
             ast::Expression::CompositeLit(comp) => {
                 if let ast::Expression::Ident(type_ident) = comp.typ.as_ref() {
-                    type_ident.name.clone()
+                    self.qualify_pkg_name(&type_ident.name)
                 } else {
                     "int".to_string()
                 }
@@ -7876,14 +7985,15 @@ impl WasmCompiler {
             return Ok(());
         }
 
-        let is_type_or_package = self.struct_defs.contains_key(&ident.name)
+        let resolved_struct = self.resolve_struct_in_pkg(&ident.name);
+        let is_type_or_package = self.struct_defs.contains_key(&resolved_struct)
             || self.is_known_package(&ident.name);
         if is_type_or_package {
             out.push(Instruction::I64Const(0));
             return Ok(());
         }
 
-        if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name) {
+        if let Some(fi) = self.find_func_in_pkg(&ident.name) {
             let idx = fi.wasm_func_idx;
             out.push(Instruction::I64Const(idx as i64));
             self.last_func_value_idx = Some(idx);
@@ -7897,11 +8007,12 @@ impl WasmCompiler {
     }
 
     fn is_known_package(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "fmt" | "math" | "strings" | "strconv" | "sort" | "unicode"
-                | "bytes" | "errors" | "encoding"
-        )
+        self.compiled_packages.contains(name)
+            || matches!(
+                name,
+                "fmt" | "math" | "strings" | "strconv" | "sort" | "unicode"
+                    | "bytes" | "encoding"
+            )
     }
 
     fn is_complex64_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
@@ -8203,6 +8314,16 @@ impl WasmCompiler {
             }
             ast::Expression::Slice(slice) => {
                 self.is_string_expr(&slice.left, locals)
+            }
+            ast::Expression::Selector(sel) => {
+                if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+                    if let Some(sdef) = self.struct_defs.get(&type_name) {
+                        if let Some(field) = sdef.find_field(&sel.sel.name) {
+                            return field.go_type_tag.as_deref() == Some("__string");
+                        }
+                    }
+                }
+                false
             }
             _ => false,
         }
@@ -12176,8 +12297,8 @@ impl WasmCompiler {
                     return Ok(());
                 }
 
-                // Look up as a user function
-                let fi_lookup = self.functions.iter().find(|f| f.name == ident.name).cloned();
+                // Look up as a user function (or stdlib function within package context)
+                let fi_lookup = self.find_func_in_pkg(&ident.name).cloned();
                 if let Some(func_info) = fi_lookup {
                     if func_info.is_variadic {
                         // Fixed params (excluding variadic)
@@ -12539,6 +12660,81 @@ impl WasmCompiler {
                                 out.push(Instruction::LocalGet(len_local));
                                 return Ok(());
                             }
+                        }
+                    }
+
+                    // Check compiled stdlib functions before hardcoded intrinsics
+                    if self.compiled_packages.contains(pkg_ident.name.as_str()) {
+                        let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                        if let Some(fi) = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()).cloned() {
+                            if fi.is_variadic {
+                                let fixed_count = fi.params.len() - 1;
+                                for arg in call.args.iter().take(fixed_count) {
+                                    self.compile_expression(arg, out, locals)?;
+                                }
+                                let variadic_args = &call.args[fixed_count..];
+                                let elem_vt = fi.variadic_elem_vt.unwrap_or(ValType::I64);
+                                let (elem_size, elem_align) = Self::elem_size_and_align(elem_vt);
+                                let n_variadic = variadic_args.len() as i32;
+
+                                if call.dots.is_some() && n_variadic == 1 {
+                                    self.compile_expression(&variadic_args[0], out, locals)?;
+                                } else {
+                                    let hdr = locals.add_local(&format!("__va_hdr_{}", locals.locals.len()), ValType::I32);
+                                    out.push(Instruction::I32Const(12));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    out.push(Instruction::LocalSet(hdr));
+
+                                    let data_ptr = locals.add_local(&format!("__va_data_{}", locals.locals.len()), ValType::I32);
+                                    out.push(Instruction::I32Const(n_variadic * elem_size));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                    out.push(Instruction::LocalSet(data_ptr));
+
+                                    for (j, arg) in variadic_args.iter().enumerate() {
+                                        out.push(Instruction::LocalGet(data_ptr));
+                                        self.compile_expression(arg, out, locals)?;
+                                        let arg_vt = self.infer_val_type(arg, locals);
+                                        Self::emit_typed_coerce(arg_vt, elem_vt, out)?;
+                                        let offset = j as u64 * elem_size as u64;
+                                        Self::emit_typed_store(elem_vt, offset, elem_align, out);
+                                    }
+
+                                    out.push(Instruction::LocalGet(hdr));
+                                    out.push(Instruction::LocalGet(data_ptr));
+                                    out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                                    out.push(Instruction::LocalGet(hdr));
+                                    out.push(Instruction::I32Const(n_variadic));
+                                    out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                                    out.push(Instruction::LocalGet(hdr));
+                                    out.push(Instruction::I32Const(n_variadic));
+                                    out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
+
+                                    out.push(Instruction::LocalGet(hdr));
+                                }
+                            } else {
+                                for (i, arg) in call.args.iter().enumerate() {
+                                    self.compile_expression(arg, out, locals)?;
+                                    if fi.iface_param_indices.contains(&i) {
+                                        if let ast::Expression::Ident(arg_ident) = arg {
+                                            if arg_ident.name == "nil" {
+                                                out.push(Instruction::I32Const(0));
+                                            } else if let Some(&tid) = self.iface_var_type_ids.get(&arg_ident.name) {
+                                                out.push(Instruction::LocalGet(tid));
+                                            } else {
+                                                let concrete_type = locals.get_var_struct_type(&arg_ident.name)
+                                                    .map(|s| s.to_string())
+                                                    .unwrap_or_else(|| arg_ident.name.clone());
+                                                let type_id = self.get_or_create_type_id(&concrete_type);
+                                                out.push(Instruction::I32Const(type_id as i32));
+                                            }
+                                        } else {
+                                            out.push(Instruction::I32Const(0));
+                                        }
+                                    }
+                                }
+                            }
+                            out.push(Instruction::Call(fi.wasm_func_idx));
+                            return Ok(());
                         }
                     }
 
@@ -13336,6 +13532,23 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
+        // Handle package-qualified global variable access (e.g., errors.ErrUnsupported)
+        if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
+            if self.compiled_packages.contains(pkg_ident.name.as_str()) {
+                let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
+                if let Some(&(global_idx, _vt)) = self.global_vars.get(&qualified) {
+                    let len_key = format!("{}_1", qualified);
+                    if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
+                        out.push(Instruction::GlobalGet(global_idx));
+                        out.push(Instruction::GlobalGet(len_global_idx));
+                    } else {
+                        out.push(Instruction::GlobalGet(global_idx));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         self.compile_expression(&sel.x, out, locals)?;
 
         let struct_type_name = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
@@ -13343,6 +13556,28 @@ impl WasmCompiler {
         if let Some(type_name) = struct_type_name {
             if let Some(struct_def) = self.struct_defs.get(&type_name) {
                 if let Some(field) = struct_def.find_field(&sel.sel.name) {
+                    if field.go_type_tag.as_deref() == Some("__string") {
+                        let base_offset = field.offset as u64;
+                        let base_local = locals.add_local(
+                            &format!("__sel_str_base_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(base_local));
+                        out.push(Instruction::LocalGet(base_local));
+                        out.push(Instruction::I32Load(MemArg {
+                            offset: base_offset,
+                            align: 2,
+                            memory_index: 0,
+                        }));
+                        out.push(Instruction::LocalGet(base_local));
+                        out.push(Instruction::I32Load(MemArg {
+                            offset: base_offset + 4,
+                            align: 2,
+                            memory_index: 0,
+                        }));
+                        return Ok(());
+                    }
+
                     let offset = field.offset as u64;
                     match field.wasm_type {
                         WasmType::I64 => out.push(Instruction::I64Load(MemArg {
@@ -14003,7 +14238,7 @@ impl WasmCompiler {
                 } else { Some(type_ident.name.clone()) }
             } else { None }
         } else if let ast::Expression::Ident(ident) = comp.typ.as_ref() {
-            Some(ident.name.clone())
+            Some(self.resolve_struct_in_pkg(&ident.name))
         } else {
             None
         };
@@ -14202,12 +14437,12 @@ impl WasmCompiler {
                 }
             }
 
-            // Determine offset and type from struct layout
-            let (offset, field_wasm_type) = if let Some(ref key) = kv.key {
+            // Determine offset, type, and go_type_tag from struct layout
+            let (offset, field_wasm_type, field_go_type_tag) = if let Some(ref key) = kv.key {
                 if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
                     if let Some(ref sd) = struct_def {
                         if let Some(field) = sd.find_field(&key_ident.name) {
-                            (field.offset as u64, Some(field.wasm_type))
+                            (field.offset as u64, Some(field.wasm_type), field.go_type_tag.clone())
                         } else {
                             return Err(Error::InternalError(format!(
                                 "unknown field '{}' in struct literal",
@@ -14229,6 +14464,7 @@ impl WasmCompiler {
                     (
                         sd.fields[i].offset as u64,
                         Some(sd.fields[i].wasm_type),
+                        sd.fields[i].go_type_tag.clone(),
                     )
                 } else {
                     return Err(Error::InternalError(format!(
@@ -14242,6 +14478,37 @@ impl WasmCompiler {
                     "struct definition not found for composite literal".to_string(),
                 ));
             };
+
+            // String fields need special handling: store both ptr and len
+            if field_go_type_tag.as_deref() == Some("__string") {
+                self.compile_expression(elem_expr, out, locals)?;
+                let str_len_tmp = locals.add_local(
+                    &format!("__comp_str_len_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                let str_ptr_tmp = locals.add_local(
+                    &format!("__comp_str_ptr_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalSet(str_len_tmp));
+                out.push(Instruction::LocalSet(str_ptr_tmp));
+                out.push(Instruction::LocalGet(ptr_local));
+                out.push(Instruction::LocalGet(str_ptr_tmp));
+                out.push(Instruction::I32Store(MemArg {
+                    offset,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                out.push(Instruction::LocalGet(ptr_local));
+                out.push(Instruction::LocalGet(str_len_tmp));
+                out.push(Instruction::I32Store(MemArg {
+                    offset: offset + 4,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                out.push(Instruction::LocalGet(ptr_local));
+                continue;
+            }
 
             out.push(Instruction::LocalGet(ptr_local));
             self.compile_expression(elem_expr, out, locals)?;
@@ -17143,6 +17410,13 @@ impl WasmCompiler {
                     ValType::I32
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(receiver) = sel.x.as_ref() {
+                        // Check compiled stdlib package functions first
+                        if self.compiled_packages.contains(receiver.name.as_str()) {
+                            let qualified = format!("{}.{}", receiver.name, sel.sel.name);
+                            if let Some(fi) = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()) {
+                                return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
+                            }
+                        }
                         match (receiver.name.as_str(), sel.sel.name.as_str()) {
                             ("math", _) => ValType::F64,
                             _ => {
