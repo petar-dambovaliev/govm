@@ -90,8 +90,6 @@
 // a higher resolution may be requested using [golang.org/x/sys/windows.TimeBeginPeriod].
 package time
 
-import "errors"
-
 func mul32(a, b uint32) (uint32, uint32) {
 	v := uint64(a) * uint64(b)
 	return uint32(v >> 32), uint32(v)
@@ -1289,15 +1287,20 @@ func daysIn(m Month, year int) int {
 	return 30 + int((m+m>>3)&1)
 }
 
-func nowUnixNano() int64 {
-	return 0
-}
+func nowUnixNano() int64
+
+func monotonicNano() int64
 
 func Now() Time {
 	n := nowUnixNano()
 	sec := n / 1e9
 	nsec := int32(n % 1e9)
-	return unixTime(sec, nsec)
+	mono := monotonicNano()
+	wallSec := sec + unixToInternal
+	if wallSec < minWall || wallSec > maxWall {
+		return Time{uint64(nsec), wallSec, Local}
+	}
+	return Time{hasMonotonic | uint64(wallSec-minWall)<<nsecShift | uint64(nsec), mono, Local}
 }
 
 func unixTime(sec int64, nsec int32) Time {

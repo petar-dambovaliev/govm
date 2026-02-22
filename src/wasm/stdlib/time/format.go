@@ -455,7 +455,7 @@ func appendInt(b []byte, x int, width int) []byte {
 var errAtoi = errors.New("time: invalid number")
 
 // Duplicates functionality in strconv, but avoids dependency.
-func atoi(s string) (x int, err error) {
+func atoi[bytes []byte | string](s bytes) (x int, err error) {
 	neg := false
 	if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
 		neg = s[0] == '-'
@@ -899,7 +899,7 @@ func (e *ParseError) Error() string {
 }
 
 // isDigit reports whether s[i] is in range and is a decimal digit.
-func isDigit(s string, i int) bool {
+func isDigit[bytes []byte | string](s bytes, i int) bool {
 	if len(s) <= i {
 		return false
 	}
@@ -1513,7 +1513,7 @@ func commaOrPeriod(b byte) bool {
 	return b == '.' || b == ','
 }
 
-func parseNanoseconds(value string, nbytes int) (ns int, rangeErrString string, err error) {
+func parseNanoseconds[bytes []byte | string](value bytes, nbytes int) (ns int, rangeErrString string, err error) {
 	if !commaOrPeriod(value[0]) {
 		err = errBad
 		return
@@ -1541,7 +1541,7 @@ func parseNanoseconds(value string, nbytes int) (ns int, rangeErrString string, 
 var errLeadingInt = errors.New("time: bad [0-9]*") // never printed
 
 // leadingInt consumes the leading [0-9]* from s.
-func leadingInt(s string) (x uint64, rem string, err error) {
+func leadingInt[bytes []byte | string](s bytes) (x uint64, rem bytes, err error) {
 	i := 0
 	for ; i < len(s); i++ {
 		c := s[i]

@@ -317,7 +317,7 @@ pub struct WasmCompiler {
     panic_value_len_global: u32,
     map_iter_counter_global: u32,
     oom_func_idx: u32,
-    time_now_func_idx: u32,
+    wasm_imports: HashMap<String, u32>,
 
     functions: Vec<FuncInfo>,
     deferred_calls: Vec<Vec<DeferredCall>>,
@@ -416,7 +416,7 @@ impl WasmCompiler {
             panic_value_len_global: 0,
             map_iter_counter_global: 0,
             oom_func_idx: 0,
-            time_now_func_idx: 0,
+            wasm_imports: HashMap::new(),
 
             functions: Vec::new(),
             deferred_calls: Vec::new(),
@@ -756,6 +756,7 @@ impl WasmCompiler {
         self.emit_memory();
         self.emit_heap_globals();
         self.emit_host_imports();
+        self.emit_native_imports(file)?;
         self.emit_alloc_function();
         self.emit_reset_function();
         self.register_builtin_types();
@@ -885,6 +886,11 @@ impl WasmCompiler {
         self.next_global_idx += 1;
     }
 
+    const NATIVE_FUNCTIONS: &'static [&'static str] = &[
+        "nowUnixNano",
+        "monotonicNano",
+    ];
+
     fn emit_host_imports(&mut self) {
         let pairs: &[(&str, &[ValType], &[ValType])] = &[
             ("ctx_log", &[ValType::I32, ValType::I32], &[]),
@@ -898,7 +904,6 @@ impl WasmCompiler {
                 &[ValType::I32],
             ),
             ("ctx_oom", &[], &[]),
-            ("time_now_unix_nano", &[], &[ValType::I64]),
         ];
 
         for (name, params, results) in pairs {
@@ -911,8 +916,6 @@ impl WasmCompiler {
 
             if *name == "ctx_oom" {
                 self.oom_func_idx = self.next_func_idx;
-            } else if *name == "time_now_unix_nano" {
-                self.time_now_func_idx = self.next_func_idx;
             }
 
             self.import_section.import(
@@ -923,6 +926,127 @@ impl WasmCompiler {
             self.next_func_idx += 1;
             self.import_func_count += 1;
         }
+    }
+
+    fn emit_native_imports(&mut self, file: &ast::File) -> Result<(), Error> {
+        let mut all_files: Vec<ast::File> = Vec::new();
+        let mut visited = HashSet::new();
+
+        for imp in &file.imports {
+            let path = imp.path.value.trim_matches('"');
+            if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(pkg)) =
+                crate::wasm::stdlib::resolve_import(path)
+            {
+                if let Some(sources) = crate::wasm::stdlib::get_stdlib_sources(&pkg) {
+                    self.collect_stdlib_files_recursive(&pkg, sources, &mut all_files, &mut visited)?;
+                }
+            }
+        }
+
+        for parsed_file in &all_files {
+            for decl in &parsed_file.decl {
+                let func_decl = match decl {
+                    ast::Declaration::Function(f) => f,
+                    _ => continue,
+                };
+                if func_decl.body.is_some() {
+                    continue;
+                }
+                if func_decl.recv.is_some() {
+                    continue;
+                }
+                if !func_decl.typ.typ_params.list.is_empty() {
+                    continue;
+                }
+
+                let name = &func_decl.name.name;
+
+                if !Self::NATIVE_FUNCTIONS.contains(&name.as_str()) {
+                    return Err(Error::SyntaxError(format!(
+                        "function \"{}\" has no body and no native implementation is registered for it",
+                        name
+                    )));
+                }
+
+                let mut param_types: Vec<ValType> = Vec::new();
+                for field in &func_decl.typ.params.list {
+                    let field_wasm_types = self.field_to_wasm_types(field);
+                    if field.name.is_empty() {
+                        for wt in &field_wasm_types {
+                            param_types.push(wt.to_val_type());
+                        }
+                    } else {
+                        for _ in &field.name {
+                            if !field_wasm_types.is_empty() {
+                                param_types.push(field_wasm_types[0].to_val_type());
+                            } else {
+                                param_types.push(ValType::I32);
+                            }
+                        }
+                    }
+                }
+
+                let mut result_types: Vec<ValType> = Vec::new();
+                for field in &func_decl.typ.result.list {
+                    let field_wasm_types = self.field_to_wasm_types(field);
+                    for wt in &field_wasm_types {
+                        result_types.push(wt.to_val_type());
+                    }
+                }
+
+                let type_idx = self.next_type_idx;
+                self.type_section
+                    .ty()
+                    .function(param_types.clone(), result_types.clone());
+                self.next_type_idx += 1;
+
+                let func_idx = self.next_func_idx;
+                self.import_section.import(
+                    "env",
+                    name.as_str(),
+                    wasm_encoder::EntityType::Function(type_idx),
+                );
+                self.next_func_idx += 1;
+                self.import_func_count += 1;
+
+                self.wasm_imports.insert(name.clone(), func_idx);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn collect_stdlib_files_recursive(
+        &self,
+        pkg: &str,
+        sources: &[&str],
+        out: &mut Vec<ast::File>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), Error> {
+        let short = Self::pkg_short_name(pkg).to_string();
+        if !visited.insert(short) {
+            return Ok(());
+        }
+
+        for source in sources {
+            let file = crate::parser::parse_source(source)
+                .map_err(|e| Error::SyntaxError(e.to_string()))?;
+
+            for imp in &file.imports {
+                let path = imp.path.value.trim_matches('"');
+                if let Ok(crate::wasm::stdlib::ImportKind::Stdlib(dep)) =
+                    crate::wasm::stdlib::resolve_import(path)
+                {
+                    if let Some(dep_sources) = crate::wasm::stdlib::get_stdlib_sources(&dep) {
+                        self.collect_stdlib_files_recursive(&dep, dep_sources, out, visited)?;
+                    }
+                }
+            }
+
+            out.push(file);
+        }
+
+        Ok(())
     }
 
     fn emit_alloc_function(&mut self) {
@@ -1319,6 +1443,81 @@ impl WasmCompiler {
 
             let name = &func_decl.name.name;
             let is_method = func_decl.recv.is_some();
+
+            if func_decl.body.is_none() && !is_method {
+                if let Some(&import_idx) = self.wasm_imports.get(name.as_str()) {
+                    let internal_name = self.qualify_pkg_name(name);
+
+                    let mut param_types: Vec<ValType> = Vec::new();
+                    let mut param_names: Vec<String> = Vec::new();
+                    for field in &func_decl.typ.params.list {
+                        let field_wasm_types = self.field_to_wasm_types(field);
+                        if field.name.is_empty() {
+                            for wt in &field_wasm_types {
+                                param_types.push(wt.to_val_type());
+                                param_names.push(format!("_param{}", param_names.len()));
+                            }
+                        } else {
+                            for ident in &field.name {
+                                if !field_wasm_types.is_empty() {
+                                    param_types.push(field_wasm_types[0].to_val_type());
+                                } else {
+                                    param_types.push(ValType::I32);
+                                }
+                                param_names.push(ident.name.clone());
+                            }
+                        }
+                    }
+                    let mut result_types: Vec<ValType> = Vec::new();
+                    let mut result_go_types: Vec<String> = Vec::new();
+                    for field in &func_decl.typ.result.list {
+                        let go_type_name = self.expr_type_name(&field.typ);
+                        let field_wasm_types = self.field_to_wasm_types(field);
+                        for wt in &field_wasm_types {
+                            result_types.push(wt.to_val_type());
+                            result_go_types.push(go_type_name.clone());
+                        }
+                    }
+
+                    let wasm_params: Vec<(String, WasmType)> = param_names
+                        .iter()
+                        .zip(param_types.iter())
+                        .map(|(n, vt)| (n.clone(), match vt {
+                            ValType::I32 => WasmType::I32,
+                            ValType::I64 => WasmType::I64,
+                            ValType::F32 => WasmType::F32,
+                            ValType::F64 => WasmType::F64,
+                            _ => WasmType::I32,
+                        }))
+                        .collect();
+                    let wasm_results: Vec<WasmType> = result_types
+                        .iter()
+                        .map(|vt| match vt {
+                            ValType::I32 => WasmType::I32,
+                            ValType::I64 => WasmType::I64,
+                            ValType::F32 => WasmType::F32,
+                            ValType::F64 => WasmType::F64,
+                            _ => WasmType::I32,
+                        })
+                        .collect();
+
+                    self.functions.push(FuncInfo {
+                        wasm_func_idx: import_idx,
+                        type_idx: 0,
+                        name: internal_name.clone(),
+                        params: wasm_params,
+                        results: wasm_results,
+                        result_go_types,
+                        is_exported: false,
+                        recv_type: None,
+                        is_variadic: false,
+                        variadic_elem_vt: None,
+                        iface_param_indices: Vec::new(),
+                    });
+                    self.forward_declared.insert(internal_name);
+                    continue;
+                }
+            }
 
             let recv_type_name = if let Some(recv) = &func_decl.recv {
                 self.extract_recv_type_name(recv)
@@ -13049,11 +13248,6 @@ impl WasmCompiler {
                         }
                     }
 
-                    return Ok(());
-                }
-
-                if ident.name == "nowUnixNano" && self.current_package.as_deref() == Some("time") {
-                    out.push(Instruction::Call(self.time_now_func_idx));
                     return Ok(());
                 }
 

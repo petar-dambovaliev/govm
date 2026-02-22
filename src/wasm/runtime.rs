@@ -13,6 +13,7 @@ pub struct HostState {
     pub user: String,
     pub config: std::collections::HashMap<String, String>,
     pub logs: Vec<String>,
+    pub monotonic_epoch: std::time::Instant,
 }
 
 impl HostState {
@@ -27,6 +28,7 @@ impl HostState {
             user: String::new(),
             config: std::collections::HashMap::new(),
             logs: Vec::new(),
+            monotonic_epoch: std::time::Instant::now(),
         }
     }
 
@@ -241,12 +243,20 @@ impl UdfRuntime {
 
         linker.func_wrap(
             "env",
-            "time_now_unix_nano",
+            "nowUnixNano",
             |_caller: wasmtime::Caller<'_, HostState>| -> i64 {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_nanos() as i64
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "monotonicNano",
+            |caller: wasmtime::Caller<'_, HostState>| -> i64 {
+                caller.data().monotonic_epoch.elapsed().as_nanos() as i64
             },
         )?;
 

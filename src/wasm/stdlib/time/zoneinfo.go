@@ -4,13 +4,7 @@
 
 package time
 
-import (
-	"errors"
-	"sync"
-	"syscall"
-)
-
-//go:generate env ZONEINFO=$GOROOT/lib/time/zoneinfo.zip go run genzabbrs.go -output zoneinfo_abbrs_windows.go
+import "errors"
 
 // A Location maps time instants to the zone in use at that time.
 // Typically, the Location represents the collection of time offsets
@@ -76,24 +70,14 @@ var UTC *Location = &utcLoc
 var utcLoc = Location{name: "UTC"}
 
 // Local represents the system's local time zone.
-// On Unix systems, Local consults the TZ environment
-// variable to find the time zone to use. No TZ means
-// use the system default /etc/localtime.
-// TZ="" means use UTC.
-// TZ="foo" means use file foo in the system timezone directory.
+// In WASM, Local is always UTC.
 var Local *Location = &localLoc
 
-// localLoc is separate so that initLocal can initialize
-// it even if a client has changed Local.
-var localLoc Location
-var localOnce sync.Once
+var localLoc = Location{name: "UTC"}
 
 func (l *Location) get() *Location {
 	if l == nil {
 		return &utcLoc
-	}
-	if l == &localLoc {
-		localOnce.Do(initLocal)
 	}
 	return l
 }
@@ -104,26 +88,7 @@ func (l *Location) String() string {
 	return l.get().name
 }
 
-var unnamedFixedZones []*Location
-var unnamedFixedZonesOnce sync.Once
-
-// FixedZone returns a [Location] that always uses
-// the given zone name and offset (seconds east of UTC).
 func FixedZone(name string, offset int) *Location {
-	// Most calls to FixedZone have an unnamed zone with an offset by the hour.
-	// Optimize for that case by returning the same *Location for a given hour.
-	const hoursBeforeUTC = 12
-	const hoursAfterUTC = 14
-	hour := offset / 60 / 60
-	if name == "" && -hoursBeforeUTC <= hour && hour <= +hoursAfterUTC && hour*60*60 == offset {
-		unnamedFixedZonesOnce.Do(func() {
-			unnamedFixedZones = make([]*Location, hoursBeforeUTC+1+hoursAfterUTC)
-			for hr := -hoursBeforeUTC; hr <= +hoursAfterUTC; hr++ {
-				unnamedFixedZones[hr+hoursBeforeUTC] = fixedZone("", hr*60*60)
-			}
-		})
-		return unnamedFixedZones[hour+hoursBeforeUTC]
-	}
 	return fixedZone(name, offset)
 }
 
@@ -642,25 +607,9 @@ func (l *Location) lookupName(name string, unix int64) (offset int, ok bool) {
 
 var errLocation = errors.New("time: invalid location name")
 
-var zoneinfo *string
-var zoneinfoOnce sync.Once
-
-// LoadLocation returns a [Location] with the given name.
-//
-// If the name is "" or "UTC", LoadLocation returns [UTC].
-// If the name is "Local", LoadLocation returns [Local].
-//
-// Otherwise, a new [Location] is created where the name is taken
-// to be a location name corresponding to a file
-// in the IANA Time Zone database, such as "America/New_York".
-//
-// LoadLocation looks for the IANA Time Zone database in the following
-// locations in order:
-//
-//   - the directory or uncompressed zip file named by the ZONEINFO environment variable
-//   - on a Unix system, the system standard installation location
-//   - $GOROOT/lib/time/zoneinfo.zip
-//   - the time/tzdata package, if it was imported
+// LoadLocation returns a Location with the given name.
+// In WASM, only "UTC", "Local", and "" are supported.
+// All other names return an error.
 func LoadLocation(name string) (*Location, error) {
 	if name == "" || name == "UTC" {
 		return UTC, nil
@@ -668,43 +617,5 @@ func LoadLocation(name string) (*Location, error) {
 	if name == "Local" {
 		return Local, nil
 	}
-	if containsDotDot(name) || name[0] == '/' || name[0] == '\\' {
-		// No valid IANA Time Zone name contains a single dot,
-		// much less dot dot. Likewise, none begin with a slash.
-		return nil, errLocation
-	}
-	zoneinfoOnce.Do(func() {
-		env, _ := syscall.Getenv("ZONEINFO")
-		zoneinfo = &env
-	})
-	var firstErr error
-	if *zoneinfo != "" {
-		if zoneData, err := loadTzinfoFromDirOrZip(*zoneinfo, name); err == nil {
-			if z, err := LoadLocationFromTZData(name, zoneData); err == nil {
-				return z, nil
-			}
-			firstErr = err
-		} else if err != syscall.ENOENT {
-			firstErr = err
-		}
-	}
-	if z, err := loadLocation(name, platformZoneSources); err == nil {
-		return z, nil
-	} else if firstErr == nil {
-		firstErr = err
-	}
-	return nil, firstErr
-}
-
-// containsDotDot reports whether s contains "..".
-func containsDotDot(s string) bool {
-	if len(s) < 2 {
-		return false
-	}
-	for i := 0; i < len(s)-1; i++ {
-		if s[i] == '.' && s[i+1] == '.' {
-			return true
-		}
-	}
-	return false
+	return nil, errLocation
 }

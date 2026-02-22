@@ -80,10 +80,6 @@ func (t Time) appendStrictRFC3339(b []byte) ([]byte, error) {
 }
 
 func parseRFC3339[bytes []byte | string](s bytes, local *Location) (Time, bool) {
-	// parseUint parses s as an unsigned decimal integer and
-	// verifies that it is within some range.
-	// If it is invalid or out-of-range,
-	// it sets ok to false and returns the min value.
 	ok := true
 	parseUint := func(s bytes, min, max int) (x int) {
 		for _, c := range []byte(s) {
