@@ -20310,6 +20310,10 @@ impl WasmCompiler {
                                 ValType::I64
                             }
                         }
+                        "Float64frombits" => ValType::F64,
+                        "Float64bits" => ValType::I64,
+                        "Float32frombits" => ValType::F32,
+                        "Float32bits" => ValType::I32,
                         _ => {
                             if let Some(fi) = self.find_func_in_pkg(&ident.name) {
                                 fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())

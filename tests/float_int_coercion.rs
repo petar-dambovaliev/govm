@@ -293,3 +293,63 @@ func F() int {
         .expect("F not found");
     assert_eq!(f.call(&mut store, ()).expect("call failed"), 0);
 }
+
+// ==================== Minimal reproduction: one function at a time ====================
+
+#[test]
+fn test_minimal_float64bits_only() {
+    let source = r#"
+package main
+
+func Float64bits(f float64) uint64
+
+func F() uint64 {
+    return Float64bits(1.5)
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), i64>(&mut store, "F")
+        .expect("F not found");
+    let result = f.call(&mut store, ()).expect("call failed");
+    assert_eq!(result as u64, 1.5_f64.to_bits());
+}
+
+#[test]
+fn test_minimal_float64frombits_call() {
+    let source = r#"
+package main
+
+func Float64frombits(b uint64) float64
+
+func F() float64 {
+    return Float64frombits(0)
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .expect("F not found");
+    let result = f.call(&mut store, ()).expect("call failed");
+    assert!((result - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_minimal_float64bits_roundtrip() {
+    let source = r#"
+package main
+
+func Float64bits(f float64) uint64
+func Float64frombits(b uint64) float64
+
+func F() float64 {
+    return Float64frombits(Float64bits(1.5))
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .expect("F not found");
+    let result = f.call(&mut store, ()).expect("call failed");
+    assert!((result - 1.5).abs() < f64::EPSILON);
+}
