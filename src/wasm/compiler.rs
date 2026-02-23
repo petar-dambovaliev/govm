@@ -3147,6 +3147,12 @@ impl WasmCompiler {
                     ValType::F64
                 } else if lhs == ValType::F32 || rhs == ValType::F32 {
                     ValType::F32
+                } else if lhs == ValType::I32 && rhs == ValType::I64
+                    && matches!(op.y.as_ref().unwrap().as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer) {
+                    ValType::I32
+                } else if lhs == ValType::I64 && rhs == ValType::I32
+                    && matches!(op.x.as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer) {
+                    ValType::I32
                 } else if lhs == ValType::I64 || rhs == ValType::I64 {
                     ValType::I64
                 } else {
@@ -4537,9 +4543,12 @@ impl WasmCompiler {
         for field in &decl.typ.result.list {
             let field_wasm_types = self.field_to_wasm_types(field);
             let go_type_name = self.expr_type_name(&field.typ);
-            for wt in &field_wasm_types {
-                result_types.push(wt.to_val_type());
-                result_go_types.push(go_type_name.clone());
+            let count = if field.name.len() > 1 { field.name.len() } else { 1 };
+            for _ in 0..count {
+                for wt in &field_wasm_types {
+                    result_types.push(wt.to_val_type());
+                    result_go_types.push(go_type_name.clone());
+                }
             }
         }
 
@@ -11101,6 +11110,31 @@ impl WasmCompiler {
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
             }
 
+            // Go untyped constant rule: when one operand is I32 (uint32, int32, etc.)
+            // and the other is an integer literal, the literal adopts the I32 type.
+            let rhs_is_int_lit = matches!(y.as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer);
+            let lhs_is_int_lit = matches!(op.x.as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer);
+
+            if lhs_type == ValType::I32 && rhs_type == ValType::I64 && rhs_is_int_lit {
+                self.compile_expression(&op.x, out, locals)?;
+                if let ast::Expression::BasicLit(lit) = y.as_ref() {
+                    let val = Self::parse_go_int(&lit.value).unwrap_or(0) as i32;
+                    out.push(Instruction::I32Const(val));
+                }
+                self.emit_i32_op_signed(op.op, !is_unsigned, out)?;
+                return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
+            }
+
+            if lhs_type == ValType::I64 && rhs_type == ValType::I32 && lhs_is_int_lit {
+                if let ast::Expression::BasicLit(lit) = op.x.as_ref() {
+                    let val = Self::parse_go_int(&lit.value).unwrap_or(0) as i32;
+                    out.push(Instruction::I32Const(val));
+                }
+                self.compile_expression(y, out, locals)?;
+                self.emit_i32_op_signed(op.op, !is_unsigned, out)?;
+                return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
+            }
+
             if lhs_type == ValType::I32 && rhs_type == ValType::I64 {
                 let mut lhs_buf = Vec::new();
                 self.compile_expression(&op.x, &mut lhs_buf, locals)?;
@@ -13251,6 +13285,10 @@ impl WasmCompiler {
                     "Float32frombits" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
+                            let arg_vt = self.infer_val_type(arg, locals);
+                            if arg_vt == ValType::I64 {
+                                out.push(Instruction::I32WrapI64);
+                            }
                             out.push(Instruction::F32ReinterpretI32);
                         }
                         return Ok(GoType::Float32);
@@ -13258,6 +13296,10 @@ impl WasmCompiler {
                     "Float32bits" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
+                            let arg_vt = self.infer_val_type(arg, locals);
+                            if arg_vt == ValType::F64 {
+                                out.push(Instruction::F32DemoteF64);
+                            }
                             out.push(Instruction::I32ReinterpretF32);
                         }
                         return Ok(GoType::Int32);
@@ -15349,6 +15391,10 @@ impl WasmCompiler {
                                 ));
                             }
                             self.compile_expression(&call.args[0], out, locals)?;
+                            let arg_vt = self.infer_val_type(&call.args[0], locals);
+                            if arg_vt == ValType::I64 {
+                                out.push(Instruction::I32WrapI64);
+                            }
                             out.push(Instruction::F32ReinterpretI32);
                             return Ok(GoType::Float32);
                         }
@@ -15359,6 +15405,10 @@ impl WasmCompiler {
                                 ));
                             }
                             self.compile_expression(&call.args[0], out, locals)?;
+                            let arg_vt = self.infer_val_type(&call.args[0], locals);
+                            if arg_vt == ValType::F64 {
+                                out.push(Instruction::F32DemoteF64);
+                            }
                             out.push(Instruction::I32ReinterpretF32);
                             return Ok(GoType::Int32);
                         }
@@ -20262,6 +20312,12 @@ impl WasmCompiler {
                         }
                     } else if lhs == ValType::F32 || rhs == ValType::F32 {
                         ValType::F32
+                    } else if lhs == ValType::I32 && rhs == ValType::I64
+                        && matches!(op.y.as_ref().unwrap().as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer) {
+                        ValType::I32
+                    } else if lhs == ValType::I64 && rhs == ValType::I32
+                        && matches!(op.x.as_ref(), ast::Expression::BasicLit(lit) if lit.kind == LitKind::Integer) {
+                        ValType::I32
                     } else if lhs == ValType::I64 || rhs == ValType::I64 {
                         ValType::I64
                     } else {
@@ -21466,8 +21522,10 @@ impl WasmCompiler {
         if !self.element_section.is_empty() {
             module.section(&self.element_section);
         }
+
         module.section(&self.code_section);
 
         module.finish()
     }
+
 }

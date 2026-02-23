@@ -353,3 +353,48 @@ func F() float64 {
     let result = f.call(&mut store, ()).expect("call failed");
     assert!((result - 1.5).abs() < f64::EPSILON);
 }
+
+#[test]
+fn test_minimal_panic_multi_named_return() {
+    let source = r#"
+package main
+
+func G(x int) (a, b int) {
+    if x == 0 {
+        panic("zero")
+    }
+    a = x
+    b = x + 1
+    return
+}
+
+func F() int {
+    a, b := G(5)
+    return a + b
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), i64>(&mut store, "F")
+        .expect("F not found");
+    assert_eq!(f.call(&mut store, ()).expect("call failed"), 11);
+}
+
+#[test]
+fn test_float32bits_plus_one() {
+    let source = r#"
+package main
+
+func Float32bits(f float32) uint32
+func Float32frombits(b uint32) float32
+
+func F() float32 {
+    return Float32frombits(Float32bits(1.5) + 1)
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f32>(&mut store, "F")
+        .expect("F not found");
+    let _ = f.call(&mut store, ()).expect("call failed");
+}
