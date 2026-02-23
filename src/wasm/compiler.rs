@@ -307,6 +307,8 @@ struct LocalAlloc {
     nested_array_inner_info: HashMap<String, (ValType, u32)>, // inner (elem_type, inner_length) for [M][N]T
     rune_slices: std::collections::HashSet<String>,
     var_go_types: HashMap<String, GoType>,
+    memory_backed_vars: HashMap<String, (u32, ValType)>,
+    pointer_to_struct_vars: std::collections::HashSet<String>,
 }
 
 impl LocalAlloc {
@@ -331,6 +333,8 @@ impl LocalAlloc {
             nested_array_inner_info: HashMap::new(),
             rune_slices: std::collections::HashSet::new(),
             var_go_types: HashMap::new(),
+            memory_backed_vars: HashMap::new(),
+            pointer_to_struct_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -3846,10 +3850,42 @@ impl WasmCompiler {
         let mut locals: Vec<StackLocal> = Vec::new();
         let mut offset: u32 = 0;
 
-        if let Some(body) = &decl.body {
+        let addr_taken = if let Some(body) = &decl.body {
             Self::collect_stack_locals_from_block(
                 &body.list, escaping, &self.struct_defs, &mut locals, &mut offset,
             );
+
+            let addr_taken = Self::analyze_address_taken_vars(body);
+
+            Self::collect_escaped_scalars_from_block(
+                &body.list, &addr_taken, &self.struct_defs, &mut locals, &mut offset,
+            );
+            addr_taken
+        } else {
+            HashSet::new()
+        };
+
+        for field in &decl.typ.params.list {
+            for name in &field.name {
+                if addr_taken.contains(&name.name) {
+                    if locals.iter().any(|l| l.name == name.name) {
+                        continue;
+                    }
+                    let is_struct_param = if let ast::Expression::Ident(ti) = &field.typ {
+                        self.struct_defs.contains_key(&ti.name)
+                    } else { false };
+                    if is_struct_param {
+                        continue;
+                    }
+                    let aligned = (offset + 7) & !7;
+                    locals.push(StackLocal {
+                        name: name.name.clone(),
+                        offset: aligned,
+                        size: 8,
+                    });
+                    offset = aligned + 8;
+                }
+            }
         }
 
         let total_size = (offset + 7) & !7;
@@ -3985,6 +4021,281 @@ impl WasmCompiler {
                         Self::collect_stack_locals_from_stmt(comm, escaping, struct_defs, locals, offset);
                     }
                     Self::collect_stack_locals_from_block(&clause.body, escaping, struct_defs, locals, offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn analyze_address_taken_vars(body: &ast::BlockStmt) -> HashSet<String> {
+        let mut taken = HashSet::new();
+        for stmt in &body.list {
+            Self::scan_address_taken_stmt(stmt, &mut taken);
+        }
+        taken
+    }
+
+    fn scan_address_taken_stmt(stmt: &ast::Statement, taken: &mut HashSet<String>) {
+        match stmt {
+            ast::Statement::Assign(assign) => {
+                for expr in &assign.right {
+                    Self::scan_address_taken_expr(expr, taken);
+                }
+                for expr in &assign.left {
+                    Self::scan_address_taken_expr(expr, taken);
+                }
+            }
+            ast::Statement::Declaration(decl_stmt) => {
+                if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
+                    for spec in &var_decl.specs {
+                        for val in &spec.values {
+                            Self::scan_address_taken_expr(val, taken);
+                        }
+                    }
+                }
+            }
+            ast::Statement::Return(ret) => {
+                for expr in &ret.ret {
+                    Self::scan_address_taken_expr(expr, taken);
+                }
+            }
+            ast::Statement::Expr(es) => {
+                Self::scan_address_taken_expr(&es.expr, taken);
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    Self::scan_address_taken_stmt(init, taken);
+                }
+                Self::scan_address_taken_expr(&if_stmt.cond, taken);
+                for s in &if_stmt.body.list {
+                    Self::scan_address_taken_stmt(s, taken);
+                }
+                if let Some(else_) = &if_stmt.else_ {
+                    Self::scan_address_taken_stmt(else_, taken);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    Self::scan_address_taken_stmt(init, taken);
+                }
+                if let Some(cond) = &for_stmt.cond {
+                    Self::scan_address_taken_stmt(cond, taken);
+                }
+                if let Some(post) = &for_stmt.post {
+                    Self::scan_address_taken_stmt(post, taken);
+                }
+                for s in &for_stmt.body.list {
+                    Self::scan_address_taken_stmt(s, taken);
+                }
+            }
+            ast::Statement::Range(range_stmt) => {
+                Self::scan_address_taken_expr(&range_stmt.expr, taken);
+                for s in &range_stmt.body.list {
+                    Self::scan_address_taken_stmt(s, taken);
+                }
+            }
+            ast::Statement::Block(block) => {
+                for s in &block.list {
+                    Self::scan_address_taken_stmt(s, taken);
+                }
+            }
+            ast::Statement::Switch(sw) => {
+                if let Some(init) = &sw.init {
+                    Self::scan_address_taken_stmt(init, taken);
+                }
+                if let Some(tag) = &sw.tag {
+                    Self::scan_address_taken_expr(tag, taken);
+                }
+                for clause in &sw.block.body {
+                    for e in &clause.list {
+                        Self::scan_address_taken_expr(e, taken);
+                    }
+                    for s in clause.body.iter() {
+                        Self::scan_address_taken_stmt(s, taken);
+                    }
+                }
+            }
+            ast::Statement::IncDec(incdec) => {
+                Self::scan_address_taken_expr(&incdec.expr, taken);
+            }
+            ast::Statement::Label(labeled) => {
+                Self::scan_address_taken_stmt(&labeled.stmt, taken);
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_address_taken_expr(expr: &ast::Expression, taken: &mut HashSet<String>) {
+        match expr {
+            ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
+                if let ast::Expression::Ident(id) = op.x.as_ref() {
+                    taken.insert(id.name.clone());
+                }
+                Self::scan_address_taken_expr(&op.x, taken);
+            }
+            ast::Expression::Operation(op) => {
+                Self::scan_address_taken_expr(&op.x, taken);
+                if let Some(ref y) = op.y {
+                    Self::scan_address_taken_expr(y, taken);
+                }
+            }
+            ast::Expression::Call(call) => {
+                Self::scan_address_taken_expr(&call.func, taken);
+                for arg in &call.args {
+                    Self::scan_address_taken_expr(arg, taken);
+                }
+            }
+            ast::Expression::Paren(p) => Self::scan_address_taken_expr(&p.expr, taken),
+            ast::Expression::Index(idx) => {
+                if let Some(ref left) = idx.left {
+                    Self::scan_address_taken_expr(left, taken);
+                }
+                Self::scan_address_taken_expr(&idx.index, taken);
+            }
+            ast::Expression::Selector(sel) => {
+                Self::scan_address_taken_expr(&sel.x, taken);
+            }
+            ast::Expression::CompositeLit(comp) => {
+                for kv in &comp.val.values {
+                    if let Some(key) = &kv.key {
+                        if let ast::Element::Expr(e) = key {
+                            Self::scan_address_taken_expr(e, taken);
+                        }
+                    }
+                    if let ast::Element::Expr(e) = &kv.val {
+                        Self::scan_address_taken_expr(e, taken);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_struct_expr(expr: &ast::Expression, struct_defs: &HashMap<String, StructDef>) -> bool {
+        match expr {
+            ast::Expression::CompositeLit(comp) => {
+                if let ast::Expression::Ident(ti) = comp.typ.as_ref() {
+                    struct_defs.contains_key(&ti.name)
+                } else { false }
+            }
+            ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
+                Self::is_struct_expr(&op.x, struct_defs)
+            }
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(fn_id) = call.func.as_ref() {
+                    if fn_id.name == "new" {
+                        if let Some(ast::Expression::Ident(ti)) = call.args.first() {
+                            return struct_defs.contains_key(&ti.name);
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn collect_escaped_scalars_from_block(
+        stmts: &[ast::Statement],
+        escaping: &HashSet<String>,
+        struct_defs: &HashMap<String, StructDef>,
+        locals: &mut Vec<StackLocal>,
+        offset: &mut u32,
+    ) {
+        for stmt in stmts {
+            Self::collect_escaped_scalars_from_stmt(stmt, escaping, struct_defs, locals, offset);
+        }
+    }
+
+    fn collect_escaped_scalars_from_stmt(
+        stmt: &ast::Statement,
+        escaping: &HashSet<String>,
+        struct_defs: &HashMap<String, StructDef>,
+        locals: &mut Vec<StackLocal>,
+        offset: &mut u32,
+    ) {
+        match stmt {
+            ast::Statement::Assign(assign) if matches!(assign.op, Operator::Define) => {
+                for (idx, lhs) in assign.left.iter().enumerate() {
+                    if let ast::Expression::Ident(id) = lhs {
+                        if !escaping.contains(&id.name) {
+                            continue;
+                        }
+                        if locals.iter().any(|l| l.name == id.name) {
+                            continue;
+                        }
+                        let rhs_is_struct = if let Some(rhs) = assign.right.get(idx) {
+                            Self::is_struct_expr(rhs, struct_defs)
+                        } else { false };
+                        if rhs_is_struct {
+                            continue;
+                        }
+                        let aligned = (*offset + 7) & !7;
+                        locals.push(StackLocal {
+                            name: id.name.clone(),
+                            offset: aligned,
+                            size: 8,
+                        });
+                        *offset = aligned + 8;
+                    }
+                }
+            }
+            ast::Statement::Declaration(decl_stmt) => {
+                if let ast::DeclStmt::Variable(var_decl) = decl_stmt {
+                    for spec in &var_decl.specs {
+                        for name in &spec.name {
+                            if !escaping.contains(&name.name) {
+                                continue;
+                            }
+                            if locals.iter().any(|l| l.name == name.name) {
+                                continue;
+                            }
+                            let is_struct = if let Some(ref typ) = spec.typ {
+                                if let ast::Expression::Ident(ti) = typ {
+                                    struct_defs.contains_key(&ti.name)
+                                } else { false }
+                            } else { false };
+                            if is_struct {
+                                continue;
+                            }
+                            let aligned = (*offset + 7) & !7;
+                            locals.push(StackLocal {
+                                name: name.name.clone(),
+                                offset: aligned,
+                                size: 8,
+                            });
+                            *offset = aligned + 8;
+                        }
+                    }
+                }
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    Self::collect_escaped_scalars_from_stmt(init, escaping, struct_defs, locals, offset);
+                }
+                Self::collect_escaped_scalars_from_block(&if_stmt.body.list, escaping, struct_defs, locals, offset);
+                if let Some(else_) = &if_stmt.else_ {
+                    Self::collect_escaped_scalars_from_stmt(else_, escaping, struct_defs, locals, offset);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    Self::collect_escaped_scalars_from_stmt(init, escaping, struct_defs, locals, offset);
+                }
+                Self::collect_escaped_scalars_from_block(&for_stmt.body.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Range(range_stmt) => {
+                Self::collect_escaped_scalars_from_block(&range_stmt.body.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Block(block) => {
+                Self::collect_escaped_scalars_from_block(&block.list, escaping, struct_defs, locals, offset);
+            }
+            ast::Statement::Switch(sw) => {
+                if let Some(init) = &sw.init {
+                    Self::collect_escaped_scalars_from_stmt(init, escaping, struct_defs, locals, offset);
+                }
+                for clause in &sw.block.body {
+                    Self::collect_escaped_scalars_from_block(&clause.body, escaping, struct_defs, locals, offset);
                 }
             }
             _ => {}
@@ -4429,6 +4740,7 @@ impl WasmCompiler {
                     if self.struct_defs.contains_key(&type_ident.name) {
                         for name_ident in &field.name {
                             locals.set_var_struct_type(&name_ident.name, &type_ident.name);
+                            locals.pointer_to_struct_vars.insert(name_ident.name.clone());
                         }
                     } else {
                         let ptr_tag = match type_ident.name.as_str() {
@@ -4505,6 +4817,49 @@ impl WasmCompiler {
         } else {
             StackFrameInfo::default()
         };
+
+        if let Some(body) = &decl.body {
+            let addr_taken_set = Self::analyze_address_taken_vars(body);
+            for sl in &stack_frame.locals {
+                if addr_taken_set.contains(&sl.name) {
+                    let vt = {
+                        let mut found_vt = ValType::I64;
+                        for field in &decl.typ.params.list {
+                            for name in &field.name {
+                                if name.name == sl.name {
+                                    if let ast::Expression::Ident(ti) = &field.typ {
+                                        found_vt = match ti.name.as_str() {
+                                            "float32" => ValType::F32,
+                                            "float64" => ValType::F64,
+                                            "int32" | "uint32" | "int16" | "uint16" |
+                                            "int8" | "uint8" | "byte" | "bool" => ValType::I32,
+                                            _ => ValType::I64,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                        found_vt
+                    };
+                    locals.memory_backed_vars.insert(sl.name.clone(), (sl.offset, vt));
+                }
+            }
+        }
+
+        if let Some(fb) = stack_frame.frame_base_local {
+            for (name, &(offset, vt)) in &locals.memory_backed_vars {
+                if let Some(param_idx) = locals.find(name) {
+                    func_body.push(Instruction::LocalGet(fb));
+                    if offset > 0 {
+                        func_body.push(Instruction::I32Const(offset as i32));
+                        func_body.push(Instruction::I32Add);
+                    }
+                    func_body.push(Instruction::LocalGet(param_idx));
+                    let (_, align) = Self::elem_size_and_align(vt);
+                    Self::emit_typed_store(vt, 0, align, &mut func_body);
+                }
+            }
+        }
 
         let saved_stack_frame = std::mem::replace(
             &mut self.current_stack_frame,
@@ -5221,11 +5576,15 @@ impl WasmCompiler {
                                             &ident.name,
                                             &type_ident.name,
                                         );
+                                        if self.struct_defs.contains_key(&type_ident.name) {
+                                            locals.pointer_to_struct_vars.insert(ident.name.clone());
+                                        }
                                     }
                                 } else if let ast::Expression::Ident(ref_ident) = &*addr_op.x {
-                                    let ptr_tag = if let Some(st) = locals.get_var_struct_type(&ref_ident.name) {
-                                        if self.struct_defs.contains_key(st) {
-                                            Some(st.to_string())
+                                    let ptr_tag = if let Some(st) = locals.get_var_struct_type(&ref_ident.name).map(|s| s.to_string()) {
+                                        if self.struct_defs.contains_key(&st) {
+                                            locals.pointer_to_struct_vars.insert(ident.name.clone());
+                                            Some(st)
                                         } else {
                                             None
                                         }
@@ -5337,6 +5696,7 @@ impl WasmCompiler {
                                                 "float64" => "__ptr_f64",
                                                 _ => {
                                                     if self.struct_defs.contains_key(&ti.name) {
+                                                        locals.pointer_to_struct_vars.insert(ident.name.clone());
                                                         &ti.name
                                                     } else {
                                                         "__ptr_i32"
@@ -5571,6 +5931,22 @@ impl WasmCompiler {
                             }
                         }
 
+                        if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                            if let Some(struct_type) = locals.get_var_struct_type(&rhs_ident.name).map(|s| s.to_string()) {
+                                if locals.get_var_struct_type(&ident.name).is_none() {
+                                    locals.set_var_struct_type(&ident.name, &struct_type);
+                                }
+                            }
+                            if locals.pointer_to_struct_vars.contains(&rhs_ident.name) {
+                                locals.pointer_to_struct_vars.insert(ident.name.clone());
+                            }
+                            if let Some(&info) = locals.array_info.get(&rhs_ident.name) {
+                                if !locals.array_info.contains_key(&ident.name) {
+                                    locals.array_info.insert(ident.name.clone(), info);
+                                }
+                            }
+                        }
+
                         if let ast::Expression::FuncLit(_) = &assign.right[i] {
                             locals.closure_info.insert(
                                 ident.name.clone(),
@@ -5631,10 +6007,39 @@ impl WasmCompiler {
                             let (ptr_local, len_local) = locals.string_locals[&ident.name];
                             out.push(Instruction::LocalSet(len_local));
                             out.push(Instruction::LocalSet(ptr_local));
+                        } else if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
+                            if let Some(sf) = &self.current_stack_frame {
+                                if let Some(fb) = sf.frame_base_local {
+                                    let val_tmp = locals.add_local(
+                                        &format!("__mb_val_{}", locals.locals.len()),
+                                        mb_vt,
+                                    );
+                                    Self::emit_typed_coerce(vt, mb_vt, out)?;
+                                    out.push(Instruction::LocalSet(val_tmp));
+                                    out.push(Instruction::LocalGet(fb));
+                                    if mb_offset > 0 {
+                                        out.push(Instruction::I32Const(mb_offset as i32));
+                                        out.push(Instruction::I32Add);
+                                    }
+                                    out.push(Instruction::LocalGet(val_tmp));
+                                    let (_, align) = Self::elem_size_and_align(mb_vt);
+                                    Self::emit_typed_store(mb_vt, 0, align, out);
+                                }
+                            }
                         } else {
-                            let var_vt = locals.find_type(&ident.name).unwrap_or(vt);
-                            if vt != var_vt {
-                                Self::emit_typed_coerce(vt, var_vt, out)?;
+                            let needs_deep_copy = if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                            } else { false };
+                            if needs_deep_copy {
+                                if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                    let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                    self.emit_value_deep_copy(size, out, locals)?;
+                                }
+                            } else {
+                                let var_vt = locals.find_type(&ident.name).unwrap_or(vt);
+                                if vt != var_vt {
+                                    Self::emit_typed_coerce(vt, var_vt, out)?;
+                                }
                             }
                             out.push(Instruction::LocalSet(local_idx));
                         }
@@ -5980,16 +6385,105 @@ impl WasmCompiler {
                             }
                             continue;
                         }
+                        if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
+                            if let Some(sf) = &self.current_stack_frame {
+                                if let Some(fb) = sf.frame_base_local {
+                                    match assign.op {
+                                        Operator::Assign => {
+                                            let val_tmp = locals.add_local(
+                                                &format!("__mb_asgn_{}", locals.locals.len()),
+                                                mb_vt,
+                                            );
+                                            let rhs_vt = if i < assign.right.len() {
+                                                self.infer_val_type(&assign.right[i], locals)
+                                            } else { mb_vt };
+                                            if rhs_vt != mb_vt {
+                                                Self::emit_typed_coerce(rhs_vt, mb_vt, out)?;
+                                            }
+                                            out.push(Instruction::LocalSet(val_tmp));
+                                            out.push(Instruction::LocalGet(fb));
+                                            if mb_offset > 0 {
+                                                out.push(Instruction::I32Const(mb_offset as i32));
+                                                out.push(Instruction::I32Add);
+                                            }
+                                            out.push(Instruction::LocalGet(val_tmp));
+                                            let (_, align) = Self::elem_size_and_align(mb_vt);
+                                            Self::emit_typed_store(mb_vt, 0, align, out);
+                                        }
+                                        Operator::AddAssign | Operator::SubAssign |
+                                        Operator::MulAssign | Operator::QuoAssign |
+                                        Operator::RemAssign => {
+                                            let rhs_tmp = locals.add_local(
+                                                &format!("__mb_rhs_{}", locals.locals.len()),
+                                                mb_vt,
+                                            );
+                                            let rhs_vt = if i < assign.right.len() {
+                                                self.infer_val_type(&assign.right[i], locals)
+                                            } else { mb_vt };
+                                            if rhs_vt != mb_vt {
+                                                Self::emit_typed_coerce(rhs_vt, mb_vt, out)?;
+                                            }
+                                            out.push(Instruction::LocalSet(rhs_tmp));
+
+                                            out.push(Instruction::LocalGet(fb));
+                                            if mb_offset > 0 {
+                                                out.push(Instruction::I32Const(mb_offset as i32));
+                                                out.push(Instruction::I32Add);
+                                            }
+                                            let addr_tmp = locals.add_local(
+                                                &format!("__mb_addr_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::LocalTee(addr_tmp));
+
+                                            let (_, align) = Self::elem_size_and_align(mb_vt);
+                                            Self::emit_typed_load(mb_vt, 0, align, out);
+                                            out.push(Instruction::LocalGet(rhs_tmp));
+                                            let op_instr = match assign.op {
+                                                Operator::AddAssign => Self::typed_add(mb_vt),
+                                                Operator::SubAssign => Self::typed_sub(mb_vt),
+                                                Operator::MulAssign => Self::typed_mul(mb_vt),
+                                                _ => Self::typed_add(mb_vt),
+                                            };
+                                            out.push(op_instr);
+
+                                            let result_tmp = locals.add_local(
+                                                &format!("__mb_res_{}", locals.locals.len()),
+                                                mb_vt,
+                                            );
+                                            out.push(Instruction::LocalSet(result_tmp));
+                                            out.push(Instruction::LocalGet(addr_tmp));
+                                            out.push(Instruction::LocalGet(result_tmp));
+                                            Self::emit_typed_store(mb_vt, 0, align, out);
+                                        }
+                                        _ => {}
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some(idx) = locals.find(&ident.name) {
                             let vt = locals
                                 .find_type(&ident.name)
                                 .unwrap_or(ValType::I64);
                             match assign.op {
                                 Operator::Assign => {
-                                    if i < assign.right.len() {
-                                        let rhs_vt = self.infer_val_type(&assign.right[i], locals);
-                                        if rhs_vt != vt {
-                                            Self::emit_typed_coerce(rhs_vt, vt, out)?;
+                                    let needs_deep_copy = if i < assign.right.len() {
+                                        if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                            self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                                        } else { false }
+                                    } else { false };
+                                    if needs_deep_copy {
+                                        if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                            let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                            self.emit_value_deep_copy(size, out, locals)?;
+                                        }
+                                    } else {
+                                        if i < assign.right.len() {
+                                            let rhs_vt = self.infer_val_type(&assign.right[i], locals);
+                                            if rhs_vt != vt {
+                                                Self::emit_typed_coerce(rhs_vt, vt, out)?;
+                                            }
                                         }
                                     }
                                     out.push(Instruction::LocalSet(idx));
@@ -8593,7 +9087,33 @@ impl WasmCompiler {
     ) -> Result<(), Error> {
         match &incdec.expr {
             ast::Expression::Ident(ident) => {
-                if let Some(idx) = locals.find(&ident.name) {
+                if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
+                    if let Some(sf) = &self.current_stack_frame {
+                        if let Some(fb) = sf.frame_base_local {
+                            out.push(Instruction::LocalGet(fb));
+                            if mb_offset > 0 {
+                                out.push(Instruction::I32Const(mb_offset as i32));
+                                out.push(Instruction::I32Add);
+                            }
+                            let addr_tmp = locals.add_local(
+                                &format!("__mb_incdec_addr_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            out.push(Instruction::LocalTee(addr_tmp));
+                            let (_, align) = Self::elem_size_and_align(mb_vt);
+                            Self::emit_typed_load(mb_vt, 0, align, out);
+                            Self::emit_incdec_op(incdec.op, mb_vt, out)?;
+                            let result_tmp = locals.add_local(
+                                &format!("__mb_incdec_res_{}", locals.locals.len()),
+                                mb_vt,
+                            );
+                            out.push(Instruction::LocalSet(result_tmp));
+                            out.push(Instruction::LocalGet(addr_tmp));
+                            out.push(Instruction::LocalGet(result_tmp));
+                            Self::emit_typed_store(mb_vt, 0, align, out);
+                        }
+                    }
+                } else if let Some(idx) = locals.find(&ident.name) {
                     out.push(Instruction::LocalGet(idx));
                     let vt = self.infer_val_type(&incdec.expr, locals);
                     Self::emit_incdec_op(incdec.op, vt, out)?;
@@ -8836,6 +9356,18 @@ impl WasmCompiler {
                                     "__string",
                                 );
                             }
+                            if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
+                                if let Some(struct_type) = locals.get_var_struct_type(&rhs_ident.name).map(|s| s.to_string()) {
+                                    if locals.get_var_struct_type(&ident.name).is_none() {
+                                        locals.set_var_struct_type(&ident.name, &struct_type);
+                                    }
+                                }
+                                if let Some(&info) = locals.array_info.get(&rhs_ident.name) {
+                                    if !locals.array_info.contains_key(&ident.name) {
+                                        locals.array_info.insert(ident.name.clone(), info);
+                                    }
+                                }
+                            }
                         }
 
                         if is_string {
@@ -8902,11 +9434,45 @@ impl WasmCompiler {
                                 let (ptr_local, len_local) = locals.string_locals[&ident.name];
                                 out.push(Instruction::LocalSet(len_local));
                                 out.push(Instruction::LocalSet(ptr_local));
+                            } else if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
+                                if let Some(sf) = &self.current_stack_frame {
+                                    if let Some(fb) = sf.frame_base_local {
+                                        let val_tmp = locals.add_local(
+                                            &format!("__mb_decl_{}", locals.locals.len()),
+                                            mb_vt,
+                                        );
+                                        let expr_vt = expr_type.wasm_type();
+                                        if expr_vt != mb_vt {
+                                            Self::emit_typed_coerce(expr_vt, mb_vt, out)?;
+                                        }
+                                        out.push(Instruction::LocalSet(val_tmp));
+                                        out.push(Instruction::LocalGet(fb));
+                                        if mb_offset > 0 {
+                                            out.push(Instruction::I32Const(mb_offset as i32));
+                                            out.push(Instruction::I32Add);
+                                        }
+                                        out.push(Instruction::LocalGet(val_tmp));
+                                        let (_, align) = Self::elem_size_and_align(mb_vt);
+                                        Self::emit_typed_store(mb_vt, 0, align, out);
+                                    }
+                                }
                             } else {
-                                if spec.typ.is_some() {
-                                    let expr_vt = expr_type.wasm_type();
-                                    if expr_vt != vt {
-                                        Self::emit_typed_coerce(expr_vt, vt, out)?;
+                                let needs_deep_copy = if i < spec.values.len() {
+                                    if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
+                                        self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                                    } else { false }
+                                } else { false };
+                                if needs_deep_copy {
+                                    if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
+                                        let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                        self.emit_value_deep_copy(size, out, locals)?;
+                                    }
+                                } else {
+                                    if spec.typ.is_some() {
+                                        let expr_vt = expr_type.wasm_type();
+                                        if expr_vt != vt {
+                                            Self::emit_typed_coerce(expr_vt, vt, out)?;
+                                        }
                                     }
                                 }
                                 out.push(Instruction::LocalSet(local_idx));
@@ -9378,6 +9944,21 @@ impl WasmCompiler {
             out.push(Instruction::LocalGet(ptr_local));
             out.push(Instruction::LocalGet(len_local));
             return Ok(GoType::String);
+        }
+
+        if let Some(&(offset, vt)) = locals.memory_backed_vars.get(&ident.name) {
+            if let Some(sf) = &self.current_stack_frame {
+                if let Some(fb) = sf.frame_base_local {
+                    out.push(Instruction::LocalGet(fb));
+                    if offset > 0 {
+                        out.push(Instruction::I32Const(offset as i32));
+                        out.push(Instruction::I32Add);
+                    }
+                    let (_, align) = Self::elem_size_and_align(vt);
+                    Self::emit_typed_load(vt, 0, align, out);
+                    return Ok(GoType::from_val_type(vt));
+                }
+            }
         }
 
         if let Some(idx) = locals.find(&ident.name) {
@@ -10688,6 +11269,28 @@ impl WasmCompiler {
             }
             Operator::And => {
                 // Address-of: &x
+                let is_memory_backed = if let ast::Expression::Ident(id) = &*op.x {
+                    locals.memory_backed_vars.contains_key(&id.name)
+                } else {
+                    false
+                };
+
+                if is_memory_backed {
+                    if let ast::Expression::Ident(id) = &*op.x {
+                        if let Some(&(mb_offset, _mb_vt)) = locals.memory_backed_vars.get(&id.name) {
+                            if let Some(sf) = &self.current_stack_frame {
+                                if let Some(fb) = sf.frame_base_local {
+                                    out.push(Instruction::LocalGet(fb));
+                                    if mb_offset > 0 {
+                                        out.push(Instruction::I32Const(mb_offset as i32));
+                                        out.push(Instruction::I32Add);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+
                 let is_struct_var = if let ast::Expression::Ident(id) = &*op.x {
                     locals.get_var_struct_type(&id.name).map_or(false, |t| {
                         self.struct_defs.contains_key(t) || t == "__slice" || t == "__map"
@@ -10735,6 +11338,7 @@ impl WasmCompiler {
                     Self::emit_typed_store(val_vt, 0, align, out);
                     out.push(Instruction::LocalGet(ptr_tmp));
                 }
+                } // close else for is_memory_backed
             }
             _ => {
                 return Err(Error::InternalError(format!(
@@ -14074,6 +14678,11 @@ impl WasmCompiler {
                             self.compile_expression(arg, out, locals)?;
                             let is_str_arg = self.is_string_expr(arg, locals);
                             if !is_str_arg {
+                                if let ast::Expression::Ident(arg_ident) = arg {
+                                    if let Some(copy_size) = self.get_value_copy_size(&arg_ident.name, locals) {
+                                        self.emit_value_deep_copy(copy_size, out, locals)?;
+                                    }
+                                }
                                 if let Some(expected_wt) = func_info.params.get(wasm_param_idx_local) {
                                     let expected_vt = expected_wt.1.to_val_type();
                                     let actual_vt = self.infer_val_type(arg, locals);
@@ -18731,6 +19340,66 @@ impl WasmCompiler {
                 memory_index: 0,
             })),
         }
+    }
+
+    fn get_value_copy_size(&self, var_name: &str, locals: &LocalAlloc) -> Option<u32> {
+        if locals.pointer_to_struct_vars.contains(var_name) {
+            return None;
+        }
+        if let Some(type_name) = locals.get_var_struct_type(var_name) {
+            if let Some(sd) = self.struct_defs.get(type_name) {
+                return Some(sd.total_size);
+            }
+        }
+        if let Some(&(elem_vt, arr_len)) = locals.array_info.get(var_name) {
+            let (elem_size, _) = Self::elem_size_and_align(elem_vt);
+            return Some(elem_size as u32 * arr_len);
+        }
+        None
+    }
+
+    fn get_struct_copy_size_from_type(&self, type_name: &str) -> Option<u32> {
+        if let Some(sd) = self.struct_defs.get(type_name) {
+            Some(sd.total_size)
+        } else {
+            None
+        }
+    }
+
+    /// Emit instructions that deep-copy a heap-allocated value (struct or array).
+    /// Expects the source pointer on top of the stack.
+    /// Leaves the new (destination) pointer on top of the stack.
+    fn emit_value_deep_copy(
+        &self,
+        size: u32,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        let src_tmp = locals.add_local(
+            &format!("__copy_src_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::LocalSet(src_tmp));
+
+        out.push(Instruction::I32Const(size as i32));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        let dst_tmp = locals.add_local(
+            &format!("__copy_dst_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::LocalSet(dst_tmp));
+
+        // memory.copy(dst, src, size)
+        out.push(Instruction::LocalGet(dst_tmp));
+        out.push(Instruction::LocalGet(src_tmp));
+        out.push(Instruction::I32Const(size as i32));
+        out.push(Instruction::MemoryCopy {
+            dst_mem: 0,
+            src_mem: 0,
+        });
+
+        out.push(Instruction::LocalGet(dst_tmp));
+        Ok(())
     }
 
     fn reject_unsupported_type(typ: &ast::Expression) -> Result<(), Error> {

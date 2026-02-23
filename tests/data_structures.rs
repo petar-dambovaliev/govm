@@ -48,6 +48,28 @@ func F() int {
 }
 
 #[test]
+fn test_struct_assignment_copies_value() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func F() int {
+    a := Point{X: 1, Y: 2}
+    b := a
+    b.X = 99
+    return a.X
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 1);
+}
+
+#[test]
 fn test_struct_passed_to_function_read() {
     let source = r#"
 package main
@@ -69,6 +91,32 @@ func F() int {
     let (mut store, instance) = compile_and_instantiate(source);
     let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 10);
+}
+
+#[test]
+fn test_struct_passed_to_function_is_copy() {
+    let source = r#"
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+func mutate(p Point) int {
+    p.X = 99
+    return p.X
+}
+
+func F() int {
+    a := Point{X: 1, Y: 2}
+    mutate(a)
+    return a.X
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 1);
 }
 
 #[test]
@@ -234,6 +282,7 @@ func F() int {
     let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 3);
 }
+
 
 #[test]
 fn test_slice_len_cap_invariant() {
@@ -565,6 +614,23 @@ func F() int {
 }
 
 #[test]
+fn test_array_assignment_copies() {
+    let source = r#"
+package main
+
+func F() int {
+    a := [3]int{1, 2, 3}
+    b := a
+    b[0] = 99
+    return a[0]
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 1);
+}
+
+#[test]
 fn test_array_passed_to_function_read() {
     let source = r#"
 package main
@@ -581,6 +647,27 @@ func F() int {
     let (mut store, instance) = compile_and_instantiate(source);
     let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 60);
+}
+
+#[test]
+fn test_array_passed_to_function_copies() {
+    let source = r#"
+package main
+
+func mutate(arr [3]int) int {
+    arr[0] = 99
+    return arr[0]
+}
+
+func F() int {
+    a := [3]int{1, 2, 3}
+    mutate(a)
+    return a[0]
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 1);
 }
 
 #[test]
@@ -703,6 +790,23 @@ func F() int {
 }
 
 #[test]
+fn test_pointer_modification_through_deref() {
+    let source = r#"
+package main
+
+func F() int {
+    x := 10
+    p := &x
+    *p = 20
+    return x
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 20);
+}
+
+#[test]
 fn test_pointer_struct_auto_deref() {
     let source = r#"
 package main
@@ -776,6 +880,28 @@ func F() int {
     let (mut store, instance) = compile_and_instantiate(source);
     let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 42);
+}
+
+#[test]
+fn test_pointer_shared_mutation() {
+    let source = r#"
+package main
+
+func inc(p *int) {
+    *p = *p + 1
+}
+
+func F() int {
+    x := 0
+    inc(&x)
+    inc(&x)
+    inc(&x)
+    return x
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance.get_typed_func::<(), i64>(&mut store, "F").unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 3);
 }
 
 // =============================================================================
