@@ -8881,7 +8881,7 @@ impl WasmCompiler {
 
                             let compile_result = self.compile_expression(&spec.values[i], out, locals);
                             self.stack_alloc_target = None;
-                            compile_result?;
+                            let expr_type = compile_result?;
                             if is_iface {
                                 let rhs_vt = self.infer_val_type(&spec.values[i], locals);
                                 let rhs_type_name = self.infer_concrete_type_name(&spec.values[i], locals);
@@ -8903,6 +8903,12 @@ impl WasmCompiler {
                                 out.push(Instruction::LocalSet(len_local));
                                 out.push(Instruction::LocalSet(ptr_local));
                             } else {
+                                if spec.typ.is_some() {
+                                    let expr_vt = expr_type.wasm_type();
+                                    if expr_vt != vt {
+                                        Self::emit_typed_coerce(expr_vt, vt, out)?;
+                                    }
+                                }
                                 out.push(Instruction::LocalSet(local_idx));
                             }
                         } else if let Some(ref typ) = spec.typ {

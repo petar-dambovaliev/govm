@@ -1378,3 +1378,272 @@ func F() int {
         .unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 15);
 }
+
+// =============================================================================
+// 11. Untyped Constant Coercion
+//     Go spec: untyped constants have a default type but coerce to the type
+//     demanded by context. Untyped int -> float64, untyped float (whole number)
+//     -> int, untyped int -> int32, etc.
+// =============================================================================
+
+#[test]
+fn test_untyped_int_const_coerces_to_float64_var() {
+    let source = r#"
+package main
+
+const x = 42
+
+func F() float64 {
+    var f float64 = x
+    return f
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 42.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_int_const_coerces_to_float64_return() {
+    let source = r#"
+package main
+
+const x = 5
+
+func F() float64 {
+    return x
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 5.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_float_whole_coerces_to_int() {
+    let source = r#"
+package main
+
+const x = 3.0
+
+func F() int {
+    var i int = x
+    return i
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), i64>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 3);
+}
+
+#[test]
+fn test_untyped_float_whole_coerces_to_int_return() {
+    let source = r#"
+package main
+
+const x = 7.0
+
+func F() int {
+    return x
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), i64>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 7);
+}
+
+#[test]
+fn test_untyped_int_const_in_float64_arithmetic() {
+    let source = r#"
+package main
+
+const scale = 2
+
+func F(x float64) float64 {
+    return x * scale
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<f64, f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, 3.5).unwrap() - 7.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_int_const_as_float64_func_arg() {
+    let source = r#"
+package main
+
+const val = 10
+
+func mul(a float64, b float64) float64 {
+    return a * b
+}
+
+func F() float64 {
+    return mul(val, 2.5)
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 25.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_int_const_in_float64_comparison() {
+    let source = r#"
+package main
+
+func F(x float64) bool {
+    return x > 3
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<f64, i32>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, 3.5).unwrap(), 1);
+    assert_eq!(f.call(&mut store, 2.9).unwrap(), 0);
+}
+
+#[test]
+fn test_untyped_int_const_coerces_to_int32() {
+    let source = r#"
+package main
+
+const a = 10
+
+func F(b int32) int32 {
+    return a + b
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<i32, i32>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, 5).unwrap(), 15);
+}
+
+#[test]
+fn test_untyped_int_and_float_const_mixed() {
+    let source = r#"
+package main
+
+const a = 1
+const b = 2.5
+
+func F() float64 {
+    return a + b
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 3.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_int_const_in_short_var_with_float() {
+    let source = r#"
+package main
+
+const c = 4
+
+func F() float64 {
+    x := 1.5 + c
+    return x
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 5.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_float_const_in_int_arithmetic() {
+    let source = r#"
+package main
+
+const c = 10.0
+
+func F(x int) int {
+    return x + c
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<i64, i64>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, 5).unwrap(), 15);
+}
+
+#[test]
+fn test_untyped_const_division_coerces_to_float() {
+    let source = r#"
+package main
+
+const numerator = 7
+const denominator = 2.0
+
+func F() float64 {
+    return numerator / denominator
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 3.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_untyped_int_const_coerces_to_uint64() {
+    let source = r#"
+package main
+
+const c = 100
+
+func F(x uint64) uint64 {
+    return x + c
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<i64, i64>(&mut store, "F")
+        .unwrap();
+    assert_eq!(f.call(&mut store, 50).unwrap(), 150);
+}
+
+#[test]
+fn test_untyped_const_multiple_coercion_sites() {
+    let source = r#"
+package main
+
+const c = 5
+
+func F() float64 {
+    var i int = c
+    var f float64 = c
+    return float64(i) + f
+}
+"#;
+    let (mut store, instance) = compile_and_instantiate(source);
+    let f = instance
+        .get_typed_func::<(), f64>(&mut store, "F")
+        .unwrap();
+    assert!((f.call(&mut store, ()).unwrap() - 10.0).abs() < f64::EPSILON);
+}
