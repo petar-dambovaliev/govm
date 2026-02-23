@@ -260,6 +260,38 @@ impl UdfRuntime {
             },
         )?;
 
+        linker.func_wrap(
+            "env",
+            "Float64bits",
+            |_caller: wasmtime::Caller<'_, HostState>, f: f64| -> i64 {
+                f.to_bits() as i64
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "Float64frombits",
+            |_caller: wasmtime::Caller<'_, HostState>, b: i64| -> f64 {
+                f64::from_bits(b as u64)
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "Float32bits",
+            |_caller: wasmtime::Caller<'_, HostState>, f: f32| -> i32 {
+                f.to_bits() as i32
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "Float32frombits",
+            |_caller: wasmtime::Caller<'_, HostState>, b: i32| -> f32 {
+                f32::from_bits(b as u32)
+            },
+        )?;
+
         Ok(())
     }
 

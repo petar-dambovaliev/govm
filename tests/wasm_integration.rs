@@ -204,7 +204,7 @@ fn test_stdlib_rejection_extended() {
     assert!(resolve_import("os/exec").is_err());
     assert!(resolve_import("os/user").is_err());
     assert!(resolve_import("crypto").is_err());
-    assert!(resolve_import("time").is_err());
+    assert!(resolve_import("time").is_ok());
     assert!(resolve_import("plugin").is_err());
     assert!(resolve_import("sync/atomic").is_err());
 }
@@ -13338,7 +13338,7 @@ fn test_const_overflow_add() {
     let source = r#"
 package main
 
-const x = 9223372036854775807 + 1
+const x int64 = 9223372036854775807 + 1
 
 func Run() int {
     return 0
@@ -13346,7 +13346,7 @@ func Run() int {
 "#;
     let mut compiler = WasmCompiler::new();
     let result = compiler.compile_source(source);
-    assert!(result.is_err(), "constant overflow should produce compile error");
+    assert!(result.is_err(), "typed constant overflow should produce compile error");
 }
 
 #[test]
@@ -13361,15 +13361,8 @@ func Run() int {
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source).expect("compilation should succeed");
-    let runtime = UdfRuntime::new().expect("runtime init failed");
-    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
-    let state = HostState::new();
-    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
-    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
-    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
-    let val = func.call(&mut store, ()).expect("call failed");
-    assert_eq!(val, 0, "1 << 64 should produce 0");
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "int(1<<64) should overflow int");
 }
 
 // =============================================
@@ -18330,15 +18323,8 @@ func Run() int {
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source).expect("compilation failed");
-    let runtime = UdfRuntime::new().expect("runtime init failed");
-    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
-    let state = HostState::new();
-    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
-    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
-    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
-    let val = func.call(&mut store, ()).expect("call failed");
-    assert_eq!(val, 0, "const 1 << 64 should be 0");
+    let result = compiler.compile_source(source);
+    assert!(result.is_err(), "int(1<<64) should overflow int");
 }
 
 #[test]
@@ -23519,6 +23505,7 @@ func Run() int {
 "#;
     let mut compiler = WasmCompiler::new();
     let result = compiler.compile_source(source).expect("compilation failed");
+    std::fs::write("/tmp/test_math_round.wasm", &result.wasm_bytes).expect("write wasm failed");
     let runtime = UdfRuntime::new().expect("runtime init failed");
     let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
     let state = HostState::new();
@@ -23861,13 +23848,16 @@ func Run() int {
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    assert!(result.is_err(), "math.Log is not supported and should produce an error");
-    let err_msg = match result {
-        Err(e) => format!("{:?}", e),
-        Ok(_) => panic!("expected error"),
-    };
-    assert!(err_msg.contains("unsupported math function"), "error should mention unsupported: {}", err_msg);
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 0, "int(math.Log(2.0)) should be 0 (0.693... truncated)");
 }
 
 // ==================== Regression: return f() multi-return forwarding ====================

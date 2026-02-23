@@ -556,9 +556,11 @@ impl Scanner {
         }
 
         let char_count = numlit.len();
+        let is_hex = numlit.starts_with("0x") || numlit.starts_with("0X");
         if self.next_char(char_count) == Some('i') {
             Ok((Token::Literal(LitKind::Imag, numlit + "i"), char_count + 1))
         } else if numlit.find('.').is_some()
+            || (!is_hex && (numlit.contains('e') || numlit.contains('E')))
             || numlit.contains('p') || numlit.contains('P')
         {
             Ok((Token::Literal(LitKind::Float, numlit), char_count))

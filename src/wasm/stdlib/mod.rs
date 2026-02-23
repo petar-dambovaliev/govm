@@ -6,6 +6,7 @@ lazy_static::lazy_static! {
         s.insert("strings");
         s.insert("strconv");
         s.insert("math");
+        s.insert("math/bits");
         s.insert("sort");
         s.insert("fmt");
         s.insert("unicode");
