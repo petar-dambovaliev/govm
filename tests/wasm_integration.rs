@@ -5964,29 +5964,152 @@ func Bad() int {
 }
 
 #[test]
-fn test_goto_error() {
+fn test_goto_forward() {
     let source = r#"
 package main
 
-func Bad() int {
+func Run() int {
+    x := 10
     goto end
+    x = 99
 end:
-    return 1
+    return x
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    match result {
-        Ok(_) => panic!("goto should produce a compile error"),
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("goto is not supported"),
-                "expected goto not supported error, got: {}",
-                err_msg
-            );
-        }
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "forward goto should skip x = 99");
+}
+
+#[test]
+fn test_goto_backward() {
+    let source = r#"
+package main
+
+func Run() int {
+    sum := 0
+    i := 0
+loop:
+    if i >= 5 {
+        goto done
     }
+    sum = sum + i
+    i = i + 1
+    goto loop
+done:
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10, "backward goto should compute sum 0+1+2+3+4 = 10");
+}
+
+#[test]
+fn test_goto_inside_if() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 1
+    if x == 1 {
+        goto skip
+    }
+    x = 100
+skip:
+    return x + 1
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 2, "goto from inside if should skip x = 100");
+}
+
+#[test]
+fn test_goto_multiple_labels() {
+    let source = r#"
+package main
+
+func Run() int {
+    x := 0
+    goto second
+first:
+    x = x + 1
+    goto third
+second:
+    x = x + 10
+    goto first
+third:
+    return x
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 11, "multiple labels: 0 -> second(+10) -> first(+1) -> third = 11");
+}
+
+#[test]
+fn test_goto_with_labeled_for() {
+    let source = r#"
+package main
+
+func Run() int {
+    sum := 0
+    i := 0
+start:
+    for i < 3 {
+        sum = sum + i
+        i = i + 1
+    }
+    if sum < 10 {
+        i = 0
+        goto start
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    // First pass: sum = 0+1+2 = 3, 3 < 10 so goto start, i reset to 0
+    // Second pass: sum = 3+0+1+2 = 6, 6 < 10 so goto start, i reset to 0
+    // Third pass: sum = 6+0+1+2 = 9, 9 < 10 so goto start, i reset to 0
+    // Fourth pass: sum = 9+0+1+2 = 12, 12 >= 10 so return 12
+    assert_eq!(val, 12, "goto with for loop should accumulate until sum >= 10");
 }
 
 #[test]

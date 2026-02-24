@@ -488,7 +488,14 @@ impl WasmCompiler {
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();
             self.current_result_go_types = result_go_types.clone();
-            self.compile_block(&body, &mut func_body, &mut locals, &result_types)?;
+            let goto_targets = Self::scan_goto_targets(body);
+            if goto_targets.is_empty() {
+                self.compile_block(&body, &mut func_body, &mut locals, &result_types)?;
+            } else {
+                self.compile_block_with_goto_dispatch(
+                    body, &mut func_body, &mut locals, &result_types, goto_targets,
+                )?;
+            }
             self.named_returns = Vec::new();
             self.current_result_types = Vec::new();
             self.current_result_go_types = Vec::new();
@@ -705,7 +712,14 @@ impl WasmCompiler {
 
         let mut body: Vec<Instruction<'static>> = Vec::new();
         self.deferred_calls.push(Vec::new());
-        self.compile_block(&func_lit.body, &mut body, &mut inner_locals, &result_types)?;
+        let goto_targets = Self::scan_goto_targets(&func_lit.body);
+        if goto_targets.is_empty() {
+            self.compile_block(&func_lit.body, &mut body, &mut inner_locals, &result_types)?;
+        } else {
+            self.compile_block_with_goto_dispatch(
+                &func_lit.body, &mut body, &mut inner_locals, &result_types, goto_targets,
+            )?;
+        }
         self.emit_deferred_calls(&mut body);
         self.deferred_calls.pop();
 

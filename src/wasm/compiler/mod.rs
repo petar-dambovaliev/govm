@@ -531,6 +531,11 @@ pub struct WasmCompiler {
     // Map type info stored per struct field: ("StructName", "fieldName") -> MapTypeInfo
     struct_field_map_types: HashMap<(String, String), MapTypeInfo>,
 
+    // Goto dispatch state
+    goto_target_local: Option<u32>,
+    goto_label_segments: HashMap<String, u32>,
+    goto_segment_depth: u32,
+
     // Current function's stack frame info for escape-analysis-driven stack allocation
     current_stack_frame: Option<StackFrameInfo>,
     // When set, the next allocation should use the stack frame slot for this variable
@@ -632,6 +637,9 @@ impl WasmCompiler {
             generic_types: HashMap::new(),
             monomorphized: HashMap::new(),
             struct_field_map_types: HashMap::new(),
+            goto_target_local: None,
+            goto_label_segments: HashMap::new(),
+            goto_segment_depth: 0,
             current_stack_frame: None,
             stack_alloc_target: None,
 

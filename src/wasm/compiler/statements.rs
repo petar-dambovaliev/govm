@@ -2727,13 +2727,25 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
     ) -> Result<(), Error> {
         if branch.key == Keyword::Goto {
-            // goto is intentionally excluded: WASM uses structured control flow (block/loop/if)
-            // which cannot directly represent arbitrary jumps. While goto could be emulated with
-            // a loop+switch dispatch, it is rarely used in practice and not worth the complexity
-            // for UDF workloads.
-            return Err(Error::InternalError(
-                "goto is not supported in WASM UDFs".to_string(),
-            ));
+            let label = branch
+                .ident
+                .as_ref()
+                .ok_or_else(|| Error::InternalError("goto without label".to_string()))?
+                .name
+                .clone();
+            let seg_idx = *self.goto_label_segments.get(&label).ok_or_else(|| {
+                Error::InternalError(format!("undefined goto label: {}", label))
+            })?;
+            let target_local = self.goto_target_local.ok_or_else(|| {
+                Error::InternalError("goto outside dispatch context".to_string())
+            })?;
+
+            out.push(Instruction::I32Const(seg_idx as i32));
+            out.push(Instruction::LocalSet(target_local));
+
+            let depth = self.calculate_goto_dispatch_depth()?;
+            out.push(Instruction::Br(depth));
+            return Ok(());
         }
         if branch.key == Keyword::FallThrough {
             // Fallthrough is handled by compile_switch; if we reach here,
@@ -3836,5 +3848,197 @@ impl WasmCompiler {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn scan_goto_targets(body: &ast::BlockStmt) -> HashSet<String> {
+        let mut targets = HashSet::new();
+        Self::collect_goto_targets(&body.list, &mut targets);
+        targets
+    }
+
+    fn collect_goto_targets(stmts: &[ast::Statement], targets: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                ast::Statement::Branch(b) if b.key == Keyword::Goto => {
+                    if let Some(ref ident) = b.ident {
+                        targets.insert(ident.name.clone());
+                    }
+                }
+                ast::Statement::If(if_stmt) => {
+                    Self::collect_goto_targets(&if_stmt.body.list, targets);
+                    if let Some(ref els) = if_stmt.else_ {
+                        if let ast::Statement::Block(block) = els.as_ref() {
+                            Self::collect_goto_targets(&block.list, targets);
+                        } else {
+                            Self::collect_goto_targets(std::slice::from_ref(els.as_ref()), targets);
+                        }
+                    }
+                }
+                ast::Statement::For(for_stmt) => {
+                    Self::collect_goto_targets(&for_stmt.body.list, targets);
+                }
+                ast::Statement::Range(range) => {
+                    Self::collect_goto_targets(&range.body.list, targets);
+                }
+                ast::Statement::Block(block) => {
+                    Self::collect_goto_targets(&block.list, targets);
+                }
+                ast::Statement::Switch(sw) => {
+                    for case in &sw.block.body {
+                        Self::collect_goto_targets(&case.body, targets);
+                    }
+                }
+                ast::Statement::TypeSwitch(ts) => {
+                    for case in &ts.block.body {
+                        Self::collect_goto_targets(&case.body, targets);
+                    }
+                }
+                ast::Statement::Label(labeled) => {
+                    Self::collect_goto_targets(
+                        std::slice::from_ref(labeled.stmt.as_ref()),
+                        targets,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn split_goto_segments<'a>(
+        stmts: &'a [ast::Statement],
+        goto_targets: &HashSet<String>,
+    ) -> (Vec<&'a [ast::Statement]>, HashMap<String, u32>) {
+        let mut segments: Vec<&'a [ast::Statement]> = Vec::new();
+        let mut label_to_segment: HashMap<String, u32> = HashMap::new();
+        let mut seg_start: usize = 0;
+
+        for (i, stmt) in stmts.iter().enumerate() {
+            if let ast::Statement::Label(labeled) = stmt {
+                if goto_targets.contains(&labeled.name.name) {
+                    segments.push(&stmts[seg_start..i]);
+                    label_to_segment.insert(labeled.name.name.clone(), segments.len() as u32);
+                    seg_start = i;
+                }
+            }
+        }
+        segments.push(&stmts[seg_start..]);
+        (segments, label_to_segment)
+    }
+
+    pub(crate) fn compile_block_with_goto_dispatch(
+        &mut self,
+        body: &ast::BlockStmt,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+        result_types: &[ValType],
+        goto_targets: HashSet<String>,
+    ) -> Result<(), Error> {
+        let (segments, label_to_segment) =
+            Self::split_goto_segments(&body.list, &goto_targets);
+        let num_segments = segments.len();
+
+        let target_local = locals.add_local("__goto_target", ValType::I32);
+
+        let saved_target_local = self.goto_target_local.take();
+        let saved_label_segments = std::mem::take(&mut self.goto_label_segments);
+        let saved_segment_depth = self.goto_segment_depth;
+
+        self.goto_target_local = Some(target_local);
+        self.goto_label_segments = label_to_segment;
+
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(target_local));
+
+        out.push(Instruction::Block(BlockType::Empty)); // $exit
+        out.push(Instruction::Loop(BlockType::Empty));   // $dispatch
+
+        for _ in 0..num_segments {
+            out.push(Instruction::Block(BlockType::Empty));
+        }
+
+        out.push(Instruction::LocalGet(target_local));
+        let br_targets: Vec<u32> = (0..num_segments as u32).collect();
+        let default_target = (num_segments - 1) as u32;
+        out.push(Instruction::BrTable(
+            br_targets.into(),
+            default_target,
+        ));
+
+        out.push(Instruction::End); // close innermost block (segment 0 dispatch target)
+
+        self.loop_depth
+            .push((Some("__goto_dispatch".to_string()), 0, false, true));
+
+        locals.push_scope();
+
+        for k in 0..num_segments {
+            self.goto_segment_depth = (num_segments - 1 - k) as u32;
+
+            if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
+                *depth = self.goto_segment_depth;
+            }
+
+            for stmt in segments[k] {
+                self.compile_statement(stmt, out, locals, result_types)?;
+            }
+
+            if k < num_segments - 1 {
+                out.push(Instruction::End); // close next segment's block
+            }
+        }
+
+        out.push(Instruction::Br(1)); // exit past $exit block
+
+        locals.pop_scope();
+
+        self.loop_depth.pop();
+
+        out.push(Instruction::End); // $dispatch loop
+        out.push(Instruction::End); // $exit block
+
+        self.goto_target_local = saved_target_local;
+        self.goto_label_segments = saved_label_segments;
+        self.goto_segment_depth = saved_segment_depth;
+
+        Ok(())
+    }
+
+    fn calculate_goto_dispatch_depth(&self) -> Result<u32, Error> {
+        let dispatch_idx = self
+            .loop_depth
+            .iter()
+            .rposition(|(lbl, _, _, _)| lbl.as_deref() == Some("__goto_dispatch"))
+            .ok_or_else(|| {
+                Error::InternalError("goto outside dispatch context".to_string())
+            })?;
+
+        let innermost = self.loop_depth.len() - 1;
+        let inner_extra = self.loop_depth[innermost].1;
+
+        if innermost == dispatch_idx {
+            return Ok(inner_extra);
+        }
+
+        let mut intermediate_depth: u32 = 0;
+
+        let entry = &self.loop_depth[innermost];
+        if entry.3 {
+            intermediate_depth += 2 + entry.2 as u32;
+        } else {
+            intermediate_depth += 1;
+        }
+
+        for i in (dispatch_idx + 1..innermost).rev() {
+            let entry = &self.loop_depth[i];
+            if entry.3 {
+                intermediate_depth += 2 + entry.2 as u32 + entry.1;
+            } else {
+                intermediate_depth += 1 + entry.1;
+            }
+        }
+
+        let dispatch_depth = self.loop_depth[dispatch_idx].1;
+
+        Ok(inner_extra + intermediate_depth + dispatch_depth)
     }
 }
