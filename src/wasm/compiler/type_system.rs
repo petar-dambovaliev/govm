@@ -969,7 +969,15 @@ impl WasmCompiler {
                 }
                 "error" | "any" => ValType::I32,
                 name if self.iface_defs.contains_key(name) => ValType::I32,
-                _ => ValType::I32,
+                name => {
+                    let resolved_name = self.resolve_struct_in_pkg(name);
+                    if let Some(sd) = self.struct_defs.get(&resolved_name) {
+                        if let Some(gc_idx) = sd.gc_type_idx {
+                            return Self::gc_ref_val_type(gc_idx);
+                        }
+                    }
+                    ValType::I32
+                }
             },
             ast::Expression::TypePointer(_) => ValType::I32,
             ast::Expression::TypeSlice(_) => ValType::I32,
@@ -981,7 +989,10 @@ impl WasmCompiler {
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
                     let qualified = format!("{}.{}", pkg.name, sel.sel.name);
-                    if self.struct_defs.contains_key(&qualified) {
+                    if let Some(sd) = self.struct_defs.get(&qualified) {
+                        if let Some(gc_idx) = sd.gc_type_idx {
+                            return Self::gc_ref_val_type(gc_idx);
+                        }
                         return ValType::I32;
                     }
                     if self.iface_defs.contains_key(&qualified) || sel.sel.name == "error" {

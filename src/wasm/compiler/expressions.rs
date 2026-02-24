@@ -1098,132 +1098,252 @@ impl WasmCompiler {
             Error::InternalError(format!("struct type '{}' not found", struct_type))
         })?;
 
-        self.compile_expression(lhs, out, locals)?;
-        let lhs_ptr = locals.add_local(
-            &format!("__scmp_l_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::LocalSet(lhs_ptr));
+        let gc_mode = sdef.gc_type_idx.is_some();
+        let gc_type_idx = sdef.gc_type_idx.unwrap_or(0);
 
-        self.compile_expression(rhs, out, locals)?;
-        let rhs_ptr = locals.add_local(
-            &format!("__scmp_r_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::LocalSet(rhs_ptr));
+        if gc_mode {
+            let ref_vt = Self::gc_ref_val_type(gc_type_idx);
+            self.compile_expression(lhs, out, locals)?;
+            let lhs_ref = locals.add_local(
+                &format!("__scmp_l_{}", locals.locals.len()), ref_vt,
+            );
+            out.push(Instruction::LocalSet(lhs_ref));
 
-        let result = locals.add_local(
-            &format!("__scmp_res_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::I32Const(1)); // assume equal
-        out.push(Instruction::LocalSet(result));
+            self.compile_expression(rhs, out, locals)?;
+            let rhs_ref = locals.add_local(
+                &format!("__scmp_r_{}", locals.locals.len()), ref_vt,
+            );
+            out.push(Instruction::LocalSet(rhs_ref));
 
-        out.push(Instruction::Block(BlockType::Empty));
-        for field in &sdef.fields {
-            let offset = field.offset as u64;
-            if field.go_type_tag.as_deref() == Some("__string") {
-                // Compare string fields: load (ptr, len) from each side
-                out.push(Instruction::LocalGet(lhs_ptr));
-                out.push(Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                let l_sptr = locals.add_local(&format!("__scf_lp_{}", locals.locals.len()), ValType::I32);
-                out.push(Instruction::LocalSet(l_sptr));
-                out.push(Instruction::LocalGet(lhs_ptr));
-                out.push(Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                let l_slen = locals.add_local(&format!("__scf_ll_{}", locals.locals.len()), ValType::I32);
-                out.push(Instruction::LocalSet(l_slen));
+            let result = locals.add_local(
+                &format!("__scmp_res_{}", locals.locals.len()), ValType::I32,
+            );
+            out.push(Instruction::I32Const(1));
+            out.push(Instruction::LocalSet(result));
 
-                out.push(Instruction::LocalGet(rhs_ptr));
-                out.push(Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                let r_sptr = locals.add_local(&format!("__scf_rp_{}", locals.locals.len()), ValType::I32);
-                out.push(Instruction::LocalSet(r_sptr));
-                out.push(Instruction::LocalGet(rhs_ptr));
-                out.push(Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                let r_slen = locals.add_local(&format!("__scf_rl_{}", locals.locals.len()), ValType::I32);
-                out.push(Instruction::LocalSet(r_slen));
+            out.push(Instruction::Block(BlockType::Empty));
+            for field in &sdef.fields {
+                if field.go_type_tag.as_deref() == Some("__string") && self.gc_builtin_types.go_string.is_some() {
+                    let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+                    let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
+                    let gs_vt = Self::gc_ref_val_type(go_string_idx);
+                    let ba_vt = Self::gc_ref_val_type(byte_array_idx);
 
-                // Check lengths first
-                out.push(Instruction::LocalGet(l_slen));
-                out.push(Instruction::LocalGet(r_slen));
-                out.push(Instruction::I32Ne);
-                out.push(Instruction::If(BlockType::Empty));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(result));
-                out.push(Instruction::Br(1)); // break out of block
-                out.push(Instruction::End);
+                    let l_gs = locals.add_local(&format!("__scf_lgs_{}", locals.locals.len()), gs_vt);
+                    let r_gs = locals.add_local(&format!("__scf_rgs_{}", locals.locals.len()), gs_vt);
 
-                // Byte-by-byte comparison
-                let si = locals.add_local(&format!("__scf_si_{}", locals.locals.len()), ValType::I32);
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(si));
-                out.push(Instruction::Block(BlockType::Empty));
-                out.push(Instruction::Loop(BlockType::Empty));
-                out.push(Instruction::LocalGet(si));
-                out.push(Instruction::LocalGet(l_slen));
-                out.push(Instruction::I32GeU);
-                out.push(Instruction::BrIf(1));
-                out.push(Instruction::LocalGet(l_sptr));
-                out.push(Instruction::LocalGet(si));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                out.push(Instruction::LocalGet(r_sptr));
-                out.push(Instruction::LocalGet(si));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                out.push(Instruction::I32Ne);
-                out.push(Instruction::If(BlockType::Empty));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(result));
-                out.push(Instruction::Br(3)); // break out of outer block
-                out.push(Instruction::End);
-                out.push(Instruction::LocalGet(si));
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::LocalSet(si));
-                out.push(Instruction::Br(0));
-                out.push(Instruction::End); // loop
-                out.push(Instruction::End); // block
-            } else {
-                // Numeric field comparison
-                let (load_instr_l, load_instr_r, ne_instr) = match field.wasm_type {
-                    WasmType::I64 => (
-                        Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }),
-                        Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }),
-                        Instruction::I64Ne,
-                    ),
-                    WasmType::F64 => (
-                        Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }),
-                        Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }),
-                        Instruction::F64Ne,
-                    ),
-                    WasmType::F32 => (
-                        Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }),
-                        Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }),
-                        Instruction::F32Ne,
-                    ),
-                    WasmType::I32 | WasmType::Ref(_) => (
-                        Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
-                        Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
-                        Instruction::I32Ne,
-                    ),
-                };
-                out.push(Instruction::LocalGet(lhs_ptr));
-                out.push(load_instr_l);
-                out.push(Instruction::LocalGet(rhs_ptr));
-                out.push(load_instr_r);
-                out.push(ne_instr);
-                out.push(Instruction::If(BlockType::Empty));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(result));
-                out.push(Instruction::Br(1));
-                out.push(Instruction::End);
+                    out.push(Instruction::LocalGet(lhs_ref));
+                    out.push(Instruction::StructGet { struct_type_index: gc_type_idx, field_index: field.field_index });
+                    out.push(Instruction::LocalSet(l_gs));
+                    out.push(Instruction::LocalGet(rhs_ref));
+                    out.push(Instruction::StructGet { struct_type_index: gc_type_idx, field_index: field.field_index });
+                    out.push(Instruction::LocalSet(r_gs));
+
+                    let l_len = locals.add_local(&format!("__scf_ll_{}", locals.locals.len()), ValType::I32);
+                    let r_len = locals.add_local(&format!("__scf_rl_{}", locals.locals.len()), ValType::I32);
+                    let l_arr = locals.add_local(&format!("__scf_la_{}", locals.locals.len()), ba_vt);
+                    let r_arr = locals.add_local(&format!("__scf_ra_{}", locals.locals.len()), ba_vt);
+
+                    out.push(Instruction::LocalGet(l_gs));
+                    out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+                    out.push(Instruction::LocalSet(l_len));
+                    out.push(Instruction::LocalGet(r_gs));
+                    out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+                    out.push(Instruction::LocalSet(r_len));
+
+                    out.push(Instruction::LocalGet(l_len));
+                    out.push(Instruction::LocalGet(r_len));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(1));
+                    out.push(Instruction::End);
+
+                    out.push(Instruction::LocalGet(l_gs));
+                    out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 0 });
+                    out.push(Instruction::LocalSet(l_arr));
+                    out.push(Instruction::LocalGet(r_gs));
+                    out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 0 });
+                    out.push(Instruction::LocalSet(r_arr));
+
+                    let si = locals.add_local(&format!("__scf_si_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(si));
+                    out.push(Instruction::Block(BlockType::Empty));
+                    out.push(Instruction::Loop(BlockType::Empty));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::LocalGet(l_len));
+                    out.push(Instruction::I32GeU);
+                    out.push(Instruction::BrIf(1));
+                    out.push(Instruction::LocalGet(l_arr));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::ArrayGet(byte_array_idx));
+                    out.push(Instruction::LocalGet(r_arr));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::ArrayGet(byte_array_idx));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(3));
+                    out.push(Instruction::End);
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::LocalSet(si));
+                    out.push(Instruction::Br(0));
+                    out.push(Instruction::End); // loop
+                    out.push(Instruction::End); // block
+                } else {
+                    out.push(Instruction::LocalGet(lhs_ref));
+                    out.push(Instruction::StructGet { struct_type_index: gc_type_idx, field_index: field.field_index });
+                    out.push(Instruction::LocalGet(rhs_ref));
+                    out.push(Instruction::StructGet { struct_type_index: gc_type_idx, field_index: field.field_index });
+                    let ne_instr = match field.wasm_type {
+                        WasmType::I64 => Instruction::I64Ne,
+                        WasmType::F64 => Instruction::F64Ne,
+                        WasmType::F32 => Instruction::F32Ne,
+                        _ => Instruction::I32Ne,
+                    };
+                    out.push(ne_instr);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(1));
+                    out.push(Instruction::End);
+                }
             }
-        }
-        out.push(Instruction::End); // block
+            out.push(Instruction::End); // block
 
-        out.push(Instruction::LocalGet(result));
-        if op == Operator::NotEqual {
-            out.push(Instruction::I32Eqz);
+            out.push(Instruction::LocalGet(result));
+            if op == Operator::NotEqual {
+                out.push(Instruction::I32Eqz);
+            }
+        } else {
+            self.compile_expression(lhs, out, locals)?;
+            let lhs_ptr = locals.add_local(
+                &format!("__scmp_l_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalSet(lhs_ptr));
+
+            self.compile_expression(rhs, out, locals)?;
+            let rhs_ptr = locals.add_local(
+                &format!("__scmp_r_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::LocalSet(rhs_ptr));
+
+            let result = locals.add_local(
+                &format!("__scmp_res_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            out.push(Instruction::I32Const(1)); // assume equal
+            out.push(Instruction::LocalSet(result));
+
+            out.push(Instruction::Block(BlockType::Empty));
+            for field in &sdef.fields {
+                let offset = field.offset as u64;
+                if field.go_type_tag.as_deref() == Some("__string") {
+                    out.push(Instruction::LocalGet(lhs_ptr));
+                    out.push(Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                    let l_sptr = locals.add_local(&format!("__scf_lp_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalSet(l_sptr));
+                    out.push(Instruction::LocalGet(lhs_ptr));
+                    out.push(Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                    let l_slen = locals.add_local(&format!("__scf_ll_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalSet(l_slen));
+
+                    out.push(Instruction::LocalGet(rhs_ptr));
+                    out.push(Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                    let r_sptr = locals.add_local(&format!("__scf_rp_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalSet(r_sptr));
+                    out.push(Instruction::LocalGet(rhs_ptr));
+                    out.push(Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                    let r_slen = locals.add_local(&format!("__scf_rl_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalSet(r_slen));
+
+                    out.push(Instruction::LocalGet(l_slen));
+                    out.push(Instruction::LocalGet(r_slen));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(1));
+                    out.push(Instruction::End);
+
+                    let si = locals.add_local(&format!("__scf_si_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(si));
+                    out.push(Instruction::Block(BlockType::Empty));
+                    out.push(Instruction::Loop(BlockType::Empty));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::LocalGet(l_slen));
+                    out.push(Instruction::I32GeU);
+                    out.push(Instruction::BrIf(1));
+                    out.push(Instruction::LocalGet(l_sptr));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::LocalGet(r_sptr));
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(3));
+                    out.push(Instruction::End);
+                    out.push(Instruction::LocalGet(si));
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::LocalSet(si));
+                    out.push(Instruction::Br(0));
+                    out.push(Instruction::End); // loop
+                    out.push(Instruction::End); // block
+                } else {
+                    let (load_instr_l, load_instr_r, ne_instr) = match field.wasm_type {
+                        WasmType::I64 => (
+                            Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }),
+                            Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }),
+                            Instruction::I64Ne,
+                        ),
+                        WasmType::F64 => (
+                            Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }),
+                            Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }),
+                            Instruction::F64Ne,
+                        ),
+                        WasmType::F32 => (
+                            Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }),
+                            Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }),
+                            Instruction::F32Ne,
+                        ),
+                        WasmType::I32 | WasmType::Ref(_) => (
+                            Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
+                            Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
+                            Instruction::I32Ne,
+                        ),
+                    };
+                    out.push(Instruction::LocalGet(lhs_ptr));
+                    out.push(load_instr_l);
+                    out.push(Instruction::LocalGet(rhs_ptr));
+                    out.push(load_instr_r);
+                    out.push(ne_instr);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(1));
+                    out.push(Instruction::End);
+                }
+            }
+            out.push(Instruction::End); // block
+
+            out.push(Instruction::LocalGet(result));
+            if op == Operator::NotEqual {
+                out.push(Instruction::I32Eqz);
+            }
         }
         Ok(())
     }
@@ -3159,30 +3279,39 @@ impl WasmCompiler {
             let go_type_tag = field.go_type_tag.clone();
 
             if go_type_tag.as_deref() == Some("__string") {
-                self.compile_expression(elem_expr, out, locals)?;
-                let str_len_tmp = locals.add_local(
-                    &format!("__gc_str_len_{}", locals.locals.len()), ValType::I32,
-                );
-                let str_ptr_tmp = locals.add_local(
-                    &format!("__gc_str_ptr_{}", locals.locals.len()), ValType::I32,
-                );
-                out.push(Instruction::LocalSet(str_len_tmp));
-                out.push(Instruction::LocalSet(str_ptr_tmp));
-                out.push(Instruction::LocalGet(ref_local));
-                out.push(Instruction::LocalGet(str_ptr_tmp));
-                out.push(Instruction::StructSet {
-                    struct_type_index: gc_type_idx,
-                    field_index,
-                });
-                if let Some(len_field) = struct_def.fields.iter().find(|f| {
-                    f.name == format!("{}_1", field.name) || f.field_index == field_index + 1
-                }) {
+                if self.gc_builtin_types.go_string.is_some() {
                     out.push(Instruction::LocalGet(ref_local));
-                    out.push(Instruction::LocalGet(str_len_tmp));
+                    self.compile_expression(elem_expr, out, locals)?;
                     out.push(Instruction::StructSet {
                         struct_type_index: gc_type_idx,
-                        field_index: len_field.field_index,
+                        field_index,
                     });
+                } else {
+                    self.compile_expression(elem_expr, out, locals)?;
+                    let str_len_tmp = locals.add_local(
+                        &format!("__gc_str_len_{}", locals.locals.len()), ValType::I32,
+                    );
+                    let str_ptr_tmp = locals.add_local(
+                        &format!("__gc_str_ptr_{}", locals.locals.len()), ValType::I32,
+                    );
+                    out.push(Instruction::LocalSet(str_len_tmp));
+                    out.push(Instruction::LocalSet(str_ptr_tmp));
+                    out.push(Instruction::LocalGet(ref_local));
+                    out.push(Instruction::LocalGet(str_ptr_tmp));
+                    out.push(Instruction::StructSet {
+                        struct_type_index: gc_type_idx,
+                        field_index,
+                    });
+                    if let Some(len_field) = struct_def.fields.iter().find(|f| {
+                        f.name == format!("{}_1", field.name) || f.field_index == field_index + 1
+                    }) {
+                        out.push(Instruction::LocalGet(ref_local));
+                        out.push(Instruction::LocalGet(str_len_tmp));
+                        out.push(Instruction::StructSet {
+                            struct_type_index: gc_type_idx,
+                            field_index: len_field.field_index,
+                        });
+                    }
                 }
                 continue;
             }
