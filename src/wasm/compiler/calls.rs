@@ -1358,6 +1358,20 @@ impl WasmCompiler {
                     _ => {}
                 }
 
+                // Check if it's a function-typed parameter (call_indirect)
+                if let Some(ftp) = locals.func_typed_params.get(&ident.name).cloned() {
+                    out.push(Instruction::LocalGet(ftp.env_ptr_local));
+                    for arg in &call.args {
+                        self.compile_expression(arg, out, locals)?;
+                    }
+                    out.push(Instruction::LocalGet(ftp.func_idx_local));
+                    out.push(Instruction::CallIndirect {
+                        type_index: ftp.call_type_idx,
+                        table_index: 0,
+                    });
+                    return Ok(GoType::Int32);
+                }
+
                 // Check if it's a closure variable or method expression
                 if let Some(&(func_idx, env_local)) =
                     locals.closure_info.get(&ident.name)

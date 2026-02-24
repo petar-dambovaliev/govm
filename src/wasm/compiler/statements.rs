@@ -1946,16 +1946,14 @@ impl WasmCompiler {
         result_types: &[ValType],
         label: Option<String>,
     ) -> Result<(), Error> {
-        // Reject range over a bare function name (Go 1.23+ iterator protocol).
-        // NOTE: this only catches local functions by name; qualified iterators
-        // (e.g. iter.Seq) are not detected here because Go 1.23 range-over-func
-        // is out of scope for this compiler.
+        // Check for range-over-function iterator pattern (Go 1.22+)
         if let ast::Expression::Ident(fn_ident) = &range.expr {
-            if self.functions.iter().any(|f| f.name == fn_ident.name && f.recv_type.is_none()) {
-                return Err(Error::SyntaxError(format!(
-                    "range over function ('for range {}') is not supported; range-over-function iterators (Go 1.23+) are not implemented",
-                    fn_ident.name
-                )));
+            let qualified = self.qualify_pkg_name(&fn_ident.name);
+            if let Some(info) = self.iter_func_info.get(&qualified).cloned() {
+                return self.compile_range_over_func(range, &info, out, locals, label);
+            }
+            if let Some(info) = self.iter_func_info.get(&fn_ident.name).cloned() {
+                return self.compile_range_over_func(range, &info, out, locals, label);
             }
         }
 
@@ -2760,6 +2758,13 @@ impl WasmCompiler {
 
         match branch.key {
             Keyword::Break => {
+                if let Some((label, _, _, _)) = self.loop_depth.last() {
+                    if label.as_deref() == Some("__range_over_func") {
+                        out.push(Instruction::I32Const(0));
+                        out.push(Instruction::Return);
+                        return Ok(());
+                    }
+                }
                 let (extra, has_post, is_loop) = self
                     .loop_depth
                     .last()
@@ -2775,6 +2780,12 @@ impl WasmCompiler {
                 let mut depth: u32 = 0;
                 let mut found = false;
                 for entry in self.loop_depth.iter().rev() {
+                    if entry.0.as_deref() == Some("__range_over_func") {
+                        out.push(Instruction::I32Const(1));
+                        out.push(Instruction::Return);
+                        found = true;
+                        break;
+                    }
                     if entry.3 {
                         depth += entry.1;
                         out.push(Instruction::Br(depth));
@@ -4040,5 +4051,205 @@ impl WasmCompiler {
         let dispatch_depth = self.loop_depth[dispatch_idx].1;
 
         Ok(inner_extra + intermediate_depth + dispatch_depth)
+    }
+
+    pub(crate) fn compile_range_over_func(
+        &mut self,
+        range: &ast::RangeStmt,
+        iter_info: &IterFuncInfo,
+        out: &mut Vec<Instruction<'static>>,
+        outer_locals: &mut LocalAlloc,
+        _label: Option<String>,
+    ) -> Result<(), Error> {
+        let yield_param_types = iter_info.yield_param_types.clone();
+        let iter_func_idx = iter_info.func_idx;
+
+        // Build the yield closure as a separate WASM function.
+        // Signature: (env_ptr: i32, [key: K, [value: V]]) -> i32  (bool)
+        let func_idx = self.next_func_idx;
+
+        let mut go_param_names: Vec<String> = Vec::new();
+        let mut go_param_types: Vec<ValType> = Vec::new();
+
+        // Key parameter
+        if let Some(key_expr) = &range.key {
+            if let ast::Expression::Ident(id) = key_expr {
+                if id.name != "_" {
+                    go_param_names.push(id.name.clone());
+                } else {
+                    go_param_names.push(format!("_yield_param_{}", go_param_names.len()));
+                }
+            } else {
+                go_param_names.push(format!("_yield_param_{}", go_param_names.len()));
+            }
+            if !yield_param_types.is_empty() {
+                go_param_types.push(yield_param_types[0]);
+            }
+        } else if !yield_param_types.is_empty() {
+            go_param_names.push("_yield_k".to_string());
+            go_param_types.push(yield_param_types[0]);
+        }
+
+        // Value parameter
+        if let Some(val_expr) = &range.value {
+            if let ast::Expression::Ident(id) = val_expr {
+                if id.name != "_" {
+                    go_param_names.push(id.name.clone());
+                } else {
+                    go_param_names.push(format!("_yield_param_{}", go_param_names.len()));
+                }
+            } else {
+                go_param_names.push(format!("_yield_param_{}", go_param_names.len()));
+            }
+            if yield_param_types.len() > 1 {
+                go_param_types.push(yield_param_types[1]);
+            }
+        } else if yield_param_types.len() > 1 {
+            go_param_names.push("_yield_v".to_string());
+            go_param_types.push(yield_param_types[1]);
+        }
+
+        let result_types: Vec<ValType> = vec![ValType::I32]; // bool return
+
+        let mut full_param_types: Vec<ValType> = vec![ValType::I32]; // env_ptr
+        full_param_types.extend_from_slice(&go_param_types);
+
+        let type_idx = self.next_type_idx;
+        self.type_section
+            .ty()
+            .function(full_param_types.clone(), result_types.clone());
+        self.next_type_idx += 1;
+        self.needs_func_table = true;
+
+        self.function_section.function(type_idx);
+        self.next_func_idx += 1;
+
+        let closure_name = format!("__yield_closure_{}", func_idx);
+        let wasm_params: Vec<(String, WasmType)> = go_param_names
+            .iter()
+            .zip(go_param_types.iter())
+            .map(|(n, vt)| (n.clone(), match vt {
+                ValType::I32 => WasmType::I32,
+                ValType::I64 => WasmType::I64,
+                ValType::F32 => WasmType::F32,
+                ValType::F64 => WasmType::F64,
+                _ => WasmType::I32,
+            }))
+            .collect();
+
+        self.functions.push(FuncInfo {
+            wasm_func_idx: func_idx,
+            type_idx,
+            name: closure_name,
+            params: wasm_params,
+            results: vec![WasmType::I32],
+            result_go_types: vec![],
+            is_exported: false,
+            recv_type: None,
+            is_variadic: false,
+            variadic_elem_vt: None,
+            iface_param_indices: vec![],
+        });
+
+        // Build inner locals: env_ptr + yield params
+        let mut inner_params: Vec<(String, ValType)> =
+            vec![("__env_ptr".to_string(), ValType::I32)];
+        for (name, vt) in go_param_names.iter().zip(go_param_types.iter()) {
+            inner_params.push((name.clone(), *vt));
+        }
+        let mut inner_locals = LocalAlloc::new(inner_params);
+
+        // Set up capture state
+        let outer_snapshot = outer_locals.all_entries();
+        self.closure_captures = Some(ClosureCaptureState {
+            outer_locals: outer_snapshot,
+            captures: Vec::new(),
+            outer_closure_info: outer_locals.closure_info.clone(),
+            outer_closure_env_captures: outer_locals.closure_env_captures.clone(),
+        });
+
+        let saved_named_returns = std::mem::replace(&mut self.named_returns, vec![]);
+        let saved_result_types = std::mem::replace(&mut self.current_result_types, result_types.clone());
+        let saved_result_go_types = std::mem::replace(&mut self.current_result_go_types, vec![]);
+        let saved_stack_frame = self.current_stack_frame.take();
+        let saved_stack_alloc_target = self.stack_alloc_target.take();
+        let saved_loop_depth = std::mem::take(&mut self.loop_depth);
+
+        // Push a sentinel so break/continue inside the body emit return 0/1
+        // Using is_loop=true with a special label we can detect
+        self.loop_depth.push((Some("__range_over_func".to_string()), 0, false, true));
+
+        let mut body: Vec<Instruction<'static>> = Vec::new();
+        self.deferred_calls.push(Vec::new());
+
+        self.compile_block(&range.body, &mut body, &mut inner_locals, &result_types)?;
+
+        self.emit_deferred_calls(&mut body);
+        self.deferred_calls.pop();
+
+        // Default: return true (continue iterating)
+        body.push(Instruction::I32Const(1));
+        body.push(Instruction::Return);
+        body.push(Instruction::End);
+
+        self.loop_depth = saved_loop_depth;
+        self.named_returns = saved_named_returns;
+        self.current_result_types = saved_result_types;
+        self.current_result_go_types = saved_result_go_types;
+        self.current_stack_frame = saved_stack_frame;
+        self.stack_alloc_target = saved_stack_alloc_target;
+
+        // Extract captures
+        let captures = if let Some(cc) = self.closure_captures.take() {
+            cc.captures
+        } else {
+            Vec::new()
+        };
+
+        let mut func = Function::new(inner_locals.local_types());
+        for instr in &body {
+            func.instruction(instr);
+        }
+        self.pending_closures.push((func_idx, func));
+
+        // Allocate env and store captures in the outer function
+        let env_local = if let Some(last) = captures.last() {
+            let env_size = (last.env_offset + val_type_byte_size(last.val_type)) as i32;
+            out.push(Instruction::I32Const(env_size));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            let env_local = outer_locals.add_local("__yield_env_ptr", ValType::I32);
+            out.push(Instruction::LocalSet(env_local));
+
+            for cap in &captures {
+                out.push(Instruction::LocalGet(env_local));
+                out.push(Instruction::LocalGet(cap.outer_local_idx));
+                let (_, align) = Self::elem_size_and_align(cap.val_type);
+                Self::emit_typed_store(cap.val_type, cap.env_offset as u64, align, out);
+            }
+
+            env_local
+        } else {
+            let env_local = outer_locals.add_local("__yield_env_ptr", ValType::I32);
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(env_local));
+            env_local
+        };
+
+        // Call the iterator function: iter(func_table_idx, env_ptr)
+        out.push(Instruction::I32Const(func_idx as i32));
+        out.push(Instruction::LocalGet(env_local));
+        out.push(Instruction::Call(iter_func_idx));
+
+        // Writeback captures after iterator returns
+        for cap in &captures {
+            if let Some(outer_local) = outer_locals.find(&cap.name) {
+                out.push(Instruction::LocalGet(env_local));
+                let (_, align) = Self::elem_size_and_align(cap.val_type);
+                Self::emit_typed_load(cap.val_type, cap.env_offset as u64, align, out);
+                out.push(Instruction::LocalSet(outer_local));
+            }
+        }
+
+        Ok(())
     }
 }

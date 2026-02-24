@@ -19265,32 +19265,211 @@ func Run() int {
 }
 
 #[test]
-fn test_range_over_function_error() {
+fn test_range_over_func_basic() {
     let source = r#"
 package main
 
-func myIter() {}
+func upTo(yield func(int) bool) {
+    for i := 0; i < 5; i++ {
+        if !yield(i) {
+            return
+        }
+    }
+}
 
 func Run() int {
     sum := 0
-    for v := range myIter {
+    for v := range upTo {
         sum += v
     }
     return sum
 }
 "#;
     let mut compiler = WasmCompiler::new();
-    let result = compiler.compile_source(source);
-    match result {
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("range over function") || err_msg.contains("not supported") || err_msg.contains("not implemented"),
-                "error should mention range over function, got: {}", err_msg
-            );
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 10); // 0+1+2+3+4 = 10
+}
+
+#[test]
+fn test_range_over_func_key_value() {
+    let source = r#"
+package main
+
+func pairs(yield func(int, int) bool) {
+    for i := 0; i < 4; i++ {
+        if !yield(i, i*i) {
+            return
         }
-        Ok(_) => panic!("range over function should produce an error"),
     }
+}
+
+func Run() int {
+    sum := 0
+    for k, v := range pairs {
+        sum += k + v
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    // k=0,v=0 -> 0; k=1,v=1 -> 2; k=2,v=4 -> 6; k=3,v=9 -> 12; total=0+2+6+12=20
+    assert_eq!(val, 20);
+}
+
+#[test]
+fn test_range_over_func_break() {
+    let source = r#"
+package main
+
+func upTo(yield func(int) bool) {
+    for i := 0; i < 10; i++ {
+        if !yield(i) {
+            return
+        }
+    }
+}
+
+func Run() int {
+    sum := 0
+    for v := range upTo {
+        if v >= 3 {
+            break
+        }
+        sum += v
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 3); // 0+1+2 = 3
+}
+
+#[test]
+fn test_range_over_func_continue() {
+    let source = r#"
+package main
+
+func upTo(yield func(int) bool) {
+    for i := 0; i < 6; i++ {
+        if !yield(i) {
+            return
+        }
+    }
+}
+
+func Run() int {
+    sum := 0
+    for v := range upTo {
+        if v%2 == 0 {
+            continue
+        }
+        sum += v
+    }
+    return sum
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 9); // 1+3+5 = 9
+}
+
+#[test]
+fn test_range_over_func_with_captures() {
+    let source = r#"
+package main
+
+func upTo(yield func(int) bool) {
+    for i := 0; i < 5; i++ {
+        if !yield(i) {
+            return
+        }
+    }
+}
+
+func Run() int {
+    total := 0
+    count := 0
+    for v := range upTo {
+        total += v
+        count += 1
+    }
+    return total*10 + count
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    // total=10, count=5 -> 10*10+5=105
+    assert_eq!(val, 105);
+}
+
+#[test]
+fn test_range_over_func_no_vars() {
+    let source = r#"
+package main
+
+func thrice(yield func() bool) {
+    for i := 0; i < 3; i++ {
+        if !yield() {
+            return
+        }
+    }
+}
+
+func Run() int {
+    count := 0
+    for range thrice {
+        count += 1
+    }
+    return count
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 3);
 }
 
 #[test]

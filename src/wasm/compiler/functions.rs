@@ -103,6 +103,18 @@ impl WasmCompiler {
                 continue;
             }
 
+            let is_func_param = matches!(&field.typ, ast::Expression::TypeFunction(_));
+
+            if is_func_param {
+                for ident in field.name.iter() {
+                    param_types.push(ValType::I32); // table index
+                    param_names.push(ident.name.clone());
+                    param_types.push(ValType::I32); // env_ptr
+                    param_names.push(format!("{}__env_ptr", ident.name));
+                }
+                continue;
+            }
+
             let is_iface_param = match &field.typ {
                 ast::Expression::Ident(id) => {
                     self.iface_defs.contains_key(&id.name) || id.name == "error" || id.name == "any"
@@ -375,6 +387,42 @@ impl WasmCompiler {
                             locals.set_var_struct_type(&name_ident.name, "__context");
                         }
                     }
+                }
+            }
+            if let ast::Expression::TypeFunction(ft) = &field.typ {
+                for name_ident in &field.name {
+                    let func_idx_local = locals.find(&name_ident.name).unwrap_or(0);
+                    let env_ptr_name = format!("{}__env_ptr", name_ident.name);
+                    let env_ptr_local = locals.find(&env_ptr_name).unwrap_or(0);
+
+                    let mut call_param_types: Vec<ValType> = vec![ValType::I32]; // env_ptr hidden
+                    for p in &ft.params.list {
+                        let wts = self.field_to_wasm_types(p);
+                        for wt in &wts {
+                            call_param_types.push(wt.to_val_type());
+                        }
+                    }
+                    let mut call_result_types: Vec<ValType> = Vec::new();
+                    for r in &ft.result.list {
+                        let wts = self.field_to_wasm_types(r);
+                        for wt in &wts {
+                            call_result_types.push(wt.to_val_type());
+                        }
+                    }
+                    let call_type_idx = self.next_type_idx;
+                    self.type_section.ty().function(
+                        call_param_types,
+                        call_result_types.clone(),
+                    );
+                    self.next_type_idx += 1;
+                    self.needs_func_table = true;
+
+                    locals.func_typed_params.insert(name_ident.name.clone(), FuncTypedParamInfo {
+                        func_idx_local,
+                        env_ptr_local,
+                        call_type_idx,
+                        result_count: call_result_types.len(),
+                    });
                 }
             }
         }

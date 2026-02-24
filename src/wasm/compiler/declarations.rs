@@ -314,6 +314,18 @@ impl WasmCompiler {
                     continue;
                 }
 
+                let is_func_param = matches!(&field.typ, ast::Expression::TypeFunction(_));
+
+                if is_func_param {
+                    for ident in field.name.iter() {
+                        param_types.push(ValType::I32); // table index
+                        param_names.push(ident.name.clone());
+                        param_types.push(ValType::I32); // env_ptr
+                        param_names.push(format!("{}__env_ptr", ident.name));
+                    }
+                    continue;
+                }
+
                 let is_iface_param = match &field.typ {
                     ast::Expression::Ident(id) => {
                         self.iface_defs.contains_key(&id.name) || id.name == "error" || id.name == "any"
@@ -453,6 +465,38 @@ impl WasmCompiler {
                 variadic_elem_vt,
                 iface_param_indices,
             });
+
+            // Detect iterator function pattern: single func-typed param, no results
+            if !is_method && result_types.is_empty() && !is_variadic {
+                let func_typed_fields: Vec<&ast::Field> = func_decl.typ.params.list.iter()
+                    .filter(|f| matches!(&f.typ, ast::Expression::TypeFunction(_)))
+                    .collect();
+                let non_func_fields: Vec<&ast::Field> = func_decl.typ.params.list.iter()
+                    .filter(|f| !matches!(&f.typ, ast::Expression::TypeFunction(_)))
+                    .collect();
+                if func_typed_fields.len() == 1 && non_func_fields.is_empty() {
+                    if let ast::Expression::TypeFunction(ft) = &func_typed_fields[0].typ {
+                        let has_bool_result = ft.result.list.len() == 1
+                            && matches!(&ft.result.list[0].typ, ast::Expression::Ident(id) if id.name == "bool");
+                        let yield_param_count: usize = ft.params.list.iter()
+                            .map(|p| if p.name.is_empty() { 1 } else { p.name.len() })
+                            .sum();
+                        if has_bool_result && yield_param_count <= 2 {
+                            let mut yield_param_types = Vec::new();
+                            for p in &ft.params.list {
+                                let wts = self.field_to_wasm_types(p);
+                                for wt in wts {
+                                    yield_param_types.push(wt.to_val_type());
+                                }
+                            }
+                            self.iter_func_info.insert(internal_name.clone(), IterFuncInfo {
+                                yield_param_types,
+                                func_idx,
+                            });
+                        }
+                    }
+                }
+            }
 
             self.forward_declared.insert(internal_name);
         }

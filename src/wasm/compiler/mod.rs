@@ -8,9 +8,9 @@ use crate::wasm::udf::{
 };
 use std::collections::HashMap;
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, ElementSection, ExportKind, ExportSection, Function,
-    FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg, MemorySection,
-    MemoryType, Module, TableSection, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, ElementSection, Elements, ExportKind, ExportSection,
+    Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
+    MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
 
 pub struct CompileResult {
@@ -163,6 +163,20 @@ pub(crate) struct ClosureCaptureState {
     outer_closure_env_captures: HashMap<String, Vec<(String, u32, ValType)>>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct FuncTypedParamInfo {
+    pub(crate) func_idx_local: u32,
+    pub(crate) env_ptr_local: u32,
+    pub(crate) call_type_idx: u32,
+    pub(crate) result_count: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IterFuncInfo {
+    pub(crate) yield_param_types: Vec<ValType>,
+    pub(crate) func_idx: u32,
+}
+
 #[derive(Clone)]
 pub(crate) struct MapTypeInfo {
     pub(crate) key_vt: ValType,
@@ -309,6 +323,7 @@ pub(crate) struct LocalAlloc {
     var_go_types: HashMap<String, GoType>,
     memory_backed_vars: HashMap<String, (u32, ValType)>,
     pointer_to_struct_vars: std::collections::HashSet<String>,
+    pub(crate) func_typed_params: HashMap<String, FuncTypedParamInfo>,
 }
 
 impl LocalAlloc {
@@ -335,6 +350,7 @@ impl LocalAlloc {
             var_go_types: HashMap::new(),
             memory_backed_vars: HashMap::new(),
             pointer_to_struct_vars: std::collections::HashSet::new(),
+            func_typed_params: HashMap::new(),
         }
     }
 
@@ -536,6 +552,10 @@ pub struct WasmCompiler {
     goto_label_segments: HashMap<String, u32>,
     goto_segment_depth: u32,
 
+    // call_indirect / range-over-func support
+    needs_func_table: bool,
+    iter_func_info: HashMap<String, IterFuncInfo>,
+
     // Current function's stack frame info for escape-analysis-driven stack allocation
     current_stack_frame: Option<StackFrameInfo>,
     // When set, the next allocation should use the stack frame slot for this variable
@@ -640,6 +660,8 @@ impl WasmCompiler {
             goto_target_local: None,
             goto_label_segments: HashMap::new(),
             goto_segment_depth: 0,
+            needs_func_table: false,
+            iter_func_info: HashMap::new(),
             current_stack_frame: None,
             stack_alloc_target: None,
 
@@ -1173,6 +1195,22 @@ impl WasmCompiler {
         self.code_buffer.sort_by_key(|(idx, _)| *idx);
         for (_, func) in &self.code_buffer {
             self.code_section.function(func);
+        }
+
+        if self.needs_func_table && self.next_func_idx > 0 {
+            self.table_section.table(TableType {
+                element_type: RefType::FUNCREF,
+                minimum: self.next_func_idx as u64,
+                maximum: Some(self.next_func_idx as u64),
+                table64: false,
+                shared: false,
+            });
+            let func_indices: Vec<u32> = (0..self.next_func_idx).collect();
+            self.element_section.active(
+                Some(0),
+                &ConstExpr::i32_const(0),
+                Elements::Functions(func_indices.into()),
+            );
         }
 
         let mut module = Module::new();
