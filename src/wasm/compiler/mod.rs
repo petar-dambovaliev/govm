@@ -222,13 +222,14 @@ pub(crate) enum GoType {
 
     Void,
     UntypedInt,
+    UntypedFloat,
 }
 
 impl GoType {
     pub(crate) fn wasm_type(&self) -> ValType {
         match self {
             GoType::Int64 | GoType::Uint64 | GoType::UntypedInt | GoType::Func => ValType::I64,
-            GoType::Float64 => ValType::F64,
+            GoType::Float64 | GoType::UntypedFloat => ValType::F64,
             GoType::Float32 => ValType::F32,
             _ => ValType::I32,
         }
@@ -270,7 +271,7 @@ impl GoType {
     }
 
     pub(crate) fn is_float(&self) -> bool {
-        matches!(self, GoType::Float32 | GoType::Float64)
+        matches!(self, GoType::Float32 | GoType::Float64 | GoType::UntypedFloat)
     }
 
     pub(crate) fn from_type_name(name: &str) -> GoType {

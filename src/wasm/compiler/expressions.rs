@@ -105,7 +105,7 @@ impl WasmCompiler {
                     Error::SyntaxError(format!("invalid float literal: {}", lit.value))
                 })?;
                 out.push(Instruction::F64Const(val.into()));
-                return Ok(GoType::Float64);
+                return Ok(GoType::UntypedFloat);
             }
             LitKind::String => {
                 let bytes = Self::extract_string_bytes(&lit.value);
@@ -492,7 +492,7 @@ impl WasmCompiler {
         if let Some(cv) = self.constants.get(&ident.name) {
             let cv_vt = match cv {
                 ConstValue::I64(_) => GoType::UntypedInt,
-                ConstValue::F64(_) => GoType::Float64,
+                ConstValue::F64(_) => GoType::UntypedFloat,
                 ConstValue::Bool(_) => GoType::Bool,
                 ConstValue::Str(_) => GoType::String,
                 ConstValue::Complex128(_, _) => GoType::Complex128,
@@ -2242,7 +2242,14 @@ impl WasmCompiler {
                             out.push(Instruction::F64Const((*im).into()));
                         }
                     }
-                    return Ok(GoType::Int32);
+                    let go_type = match &cv {
+                        ConstValue::I64(_) => GoType::UntypedInt,
+                        ConstValue::F64(_) => GoType::UntypedFloat,
+                        ConstValue::Bool(_) => GoType::Bool,
+                        ConstValue::Str(_) => GoType::String,
+                        ConstValue::Complex128(_, _) => GoType::Complex128,
+                    };
+                    return Ok(go_type);
                 }
             }
         }
