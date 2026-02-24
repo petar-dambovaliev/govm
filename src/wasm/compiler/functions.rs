@@ -524,6 +524,7 @@ impl WasmCompiler {
         let saved_stack_alloc_target = self.stack_alloc_target.take();
 
         if let Some(body) = &decl.body {
+            let saved_constants = self.constants.clone();
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();
             self.current_result_go_types = result_go_types.clone();
@@ -538,6 +539,7 @@ impl WasmCompiler {
             self.named_returns = Vec::new();
             self.current_result_types = Vec::new();
             self.current_result_go_types = Vec::new();
+            self.constants = saved_constants;
         }
 
         self.current_stack_frame = saved_stack_frame;
@@ -749,6 +751,7 @@ impl WasmCompiler {
         let saved_stack_frame = self.current_stack_frame.take();
         let saved_stack_alloc_target = self.stack_alloc_target.take();
 
+        let saved_constants = self.constants.clone();
         let mut body: Vec<Instruction<'static>> = Vec::new();
         self.deferred_calls.push(Vec::new());
         let goto_targets = Self::scan_goto_targets(&func_lit.body);
@@ -762,6 +765,7 @@ impl WasmCompiler {
         self.emit_deferred_calls(&mut body);
         self.deferred_calls.pop();
 
+        self.constants = saved_constants;
         self.named_returns = saved_named_returns;
         self.current_result_types = saved_result_types;
         self.current_result_go_types = saved_result_go_types;

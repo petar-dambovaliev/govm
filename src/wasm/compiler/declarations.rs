@@ -1103,6 +1103,16 @@ impl WasmCompiler {
                         || fn_id.name == "error"
                         || fn_id.name == "any";
                 }
+                if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                    if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
+                        let qualified = format!("{}.{}", pkg_id.name, sel.sel.name);
+                        if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                            if fi.result_go_types.iter().any(|t| t == "error") {
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
             false
         }) || spec.typ.as_ref().map_or(false, |t| {

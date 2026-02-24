@@ -1691,27 +1691,49 @@ impl WasmCompiler {
             }
 
             if lhs_type == ValType::F64 || rhs_type == ValType::F64 {
-                let mut lhs_buf = Vec::new();
-                self.compile_expression(&op.x, &mut lhs_buf, locals)?;
-                let mut rhs_buf = Vec::new();
-                self.compile_expression(y, &mut rhs_buf, locals)?;
+                let lhs_const = if lhs_type != ValType::F64 { self.try_eval_const_expr(&op.x) } else { None };
+                let rhs_const = if rhs_type != ValType::F64 { self.try_eval_const_expr(y) } else { None };
 
-                out.extend(lhs_buf);
-                if lhs_type != ValType::F64 {
-                    if lhs_type == ValType::I32 {
-                        out.push(Instruction::F64ConvertI32S);
-                    } else {
-                        out.push(Instruction::F64ConvertI64S);
+                if let Some(ref cv) = lhs_const {
+                    let fv = match cv {
+                        ConstValue::I64(v) => *v as f64,
+                        ConstValue::F64(v) => *v,
+                        _ => 0.0,
+                    };
+                    out.push(Instruction::F64Const(fv.into()));
+                } else {
+                    let mut lhs_buf = Vec::new();
+                    self.compile_expression(&op.x, &mut lhs_buf, locals)?;
+                    out.extend(lhs_buf);
+                    if lhs_type != ValType::F64 {
+                        if lhs_type == ValType::I32 {
+                            out.push(Instruction::F64ConvertI32S);
+                        } else {
+                            out.push(Instruction::F64ConvertI64S);
+                        }
                     }
                 }
-                out.extend(rhs_buf);
-                if rhs_type != ValType::F64 {
-                    if rhs_type == ValType::I32 {
-                        out.push(Instruction::F64ConvertI32S);
-                    } else {
-                        out.push(Instruction::F64ConvertI64S);
+
+                if let Some(ref cv) = rhs_const {
+                    let fv = match cv {
+                        ConstValue::I64(v) => *v as f64,
+                        ConstValue::F64(v) => *v,
+                        _ => 0.0,
+                    };
+                    out.push(Instruction::F64Const(fv.into()));
+                } else {
+                    let mut rhs_buf = Vec::new();
+                    self.compile_expression(y, &mut rhs_buf, locals)?;
+                    out.extend(rhs_buf);
+                    if rhs_type != ValType::F64 {
+                        if rhs_type == ValType::I32 {
+                            out.push(Instruction::F64ConvertI32S);
+                        } else {
+                            out.push(Instruction::F64ConvertI64S);
+                        }
                     }
                 }
+
                 self.emit_f64_op(op.op, out)?;
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Float64 });
             }
@@ -4584,12 +4606,12 @@ impl WasmCompiler {
         }
     }
 
-    pub(crate) fn count_go_level_returns(go_types: &[String]) -> usize {
+    pub(crate) fn count_go_level_returns(go_types: &[String], gc_strings: bool) -> usize {
         let mut count = 0;
         let mut i = 0;
         while i < go_types.len() {
             count += 1;
-            if go_types[i] == "string" {
+            if !gc_strings && go_types[i] == "string" {
                 i += 2;
             } else {
                 i += 1;

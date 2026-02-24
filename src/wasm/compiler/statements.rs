@@ -497,7 +497,8 @@ impl WasmCompiler {
                             call_desc
                         )));
                     }
-                    let go_count = Self::count_go_level_returns(&go_types);
+                    let gc_strings = self.gc_builtin_types.go_string.is_some();
+                    let go_count = Self::count_go_level_returns(&go_types, gc_strings);
                     if go_count != assign.left.len() {
                         return Err(Error::InternalError(format!(
                             "assignment mismatch: {} variables but function returns {} values",
@@ -1078,10 +1079,11 @@ impl WasmCompiler {
         } else {
             // Multi-return with =: a, b = func()
             if assign.right.len() == 1 && assign.left.len() > 1 {
-                if let ast::Expression::Call(_) = &assign.right[0] {
+                if let ast::Expression::Call(c) = &assign.right[0] {
                     let ret_types = self.call_return_val_types(&assign.right[0], locals);
                     let go_types = self.call_return_go_types(&assign.right[0], locals);
-                    let go_count = Self::count_go_level_returns(&go_types);
+                    let gc_strings = self.gc_builtin_types.go_string.is_some();
+                    let go_count = Self::count_go_level_returns(&go_types, gc_strings);
                     if go_count == assign.left.len() {
                         return self.compile_multi_return_define(assign, &ret_types, &go_types, out, locals);
                     }

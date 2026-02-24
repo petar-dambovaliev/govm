@@ -1530,7 +1530,7 @@ impl WasmCompiler {
                                 if let Some(expected_wt) = func_info.params.get(wasm_param_idx_local) {
                                     let expected_vt = expected_wt.1.to_val_type();
                                     let actual_vt = self.infer_val_type(arg, locals);
-                                    if actual_vt != expected_vt {
+                                    if actual_vt != expected_vt && !matches!(expected_vt, ValType::Ref(_)) && !matches!(actual_vt, ValType::Ref(_)) {
                                         Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
                                     }
                                 }
@@ -2236,29 +2236,7 @@ impl WasmCompiler {
                             out.push(Instruction::I32ReinterpretF32);
                             return Ok(GoType::Int32);
                         }
-                        ("math", "Log") => {
-                            if call.args.is_empty() {
-                                return Err(Error::InternalError(
-                                    "math.Log requires 1 argument".to_string(),
-                                ));
-                            }
-                            self.compile_expression(&call.args[0], out, locals)?;
-                            // WASM doesn't have a native log instruction,
-                            // approximate using: log(x) = log2(x) / log2(e)
-                            // But there's no WASM log2 either.
-                            // Use the change-of-base with WASM's available ops:
-                            // ln(x) can't be done natively. Use a host import or
-                            // return 0 for now as a stub.
-                            out.push(Instruction::Drop);
-                            out.push(Instruction::F64Const(0.0_f64.into()));
-                            return Ok(GoType::Float64);
-                        }
-                        ("math", func_name) => {
-                            return Err(Error::InternalError(format!(
-                                "unsupported math function: math.{}",
-                                func_name
-                            )));
-                        }
+                        
                         (pkg, func_name)
                             if matches!(
                                 pkg,

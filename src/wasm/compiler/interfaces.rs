@@ -238,7 +238,18 @@ impl WasmCompiler {
 
     pub(crate) fn is_interface_var_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         if let ast::Expression::Ident(id) = expr {
-            self.is_interface_var(&id.name, locals)
+            if self.is_interface_var(&id.name, locals) {
+                return true;
+            }
+            if self.global_vars.contains_key(&format!("{}_tid", id.name)) {
+                return true;
+            }
+            if let Some(ref pkg) = self.current_package {
+                if self.global_vars.contains_key(&format!("{}.{}_tid", pkg, id.name)) {
+                    return true;
+                }
+            }
+            false
         } else {
             false
         }
