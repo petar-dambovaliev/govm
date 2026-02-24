@@ -714,7 +714,19 @@ impl WasmCompiler {
                         "Float32frombits" => ValType::F32,
                         "Float32bits" => ValType::I32,
                         _ => {
-                            if let Some(fi) = self.find_func_in_pkg(&ident.name) {
+                            if self.type_aliases.contains_key(&ident.name)
+                                || self.current_package.as_ref().map_or(false, |pkg| {
+                                    self.type_aliases.contains_key(&format!("{}.{}", pkg, ident.name))
+                                })
+                            {
+                                let alias_key = if self.type_aliases.contains_key(&ident.name) {
+                                    ident.name.clone()
+                                } else {
+                                    format!("{}.{}", self.current_package.as_ref().unwrap(), ident.name)
+                                };
+                                let resolved = self.resolve_type_name(&alias_key);
+                                Self::val_type_for_type_name(resolved)
+                            } else if let Some(fi) = self.find_func_in_pkg(&ident.name) {
                                 fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())
                             } else {
                                 ValType::I64

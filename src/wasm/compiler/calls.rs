@@ -1627,6 +1627,7 @@ impl WasmCompiler {
                         if src_vt != target_vt {
                             Self::emit_typed_coerce(src_vt, target_vt, out)?;
                         }
+                        return Ok(GoType::from_val_type(target_vt));
                     }
                 } else if self.generic_funcs.contains_key(&ident.name) {
                     // Type inference for generic function calls: F(args) instead of F[T](args)
@@ -2045,7 +2046,7 @@ impl WasmCompiler {
                                 if src_vt != target_vt {
                                     Self::emit_typed_coerce(src_vt, target_vt, out)?;
                                 }
-                                return Ok(GoType::Int32);
+                                return Ok(GoType::from_val_type(target_vt));
                             }
                         }
 

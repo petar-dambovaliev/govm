@@ -19184,29 +19184,29 @@ func Run() int {
     assert_eq!(val, 520, "slice element deletion: len=4, sum=120, result=520");
 }
 
-// #[test]
-// fn test_named_type_conversion() {
-//     let source = r#"
-// package main
+#[test]
+fn test_named_type_conversion() {
+    let source = r#"
+package main
 
-// type MyInt int
+type MyInt int
 
-// func Run() int {
-//     var x MyInt = MyInt(42)
-//     return int(x)
-// }
-// "#;
-//     let mut compiler = WasmCompiler::new();
-//     let result = compiler.compile_source(source).expect("compilation failed");
-//     let runtime = UdfRuntime::new().expect("runtime init failed");
-//     let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
-//     let state = HostState::new();
-//     let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
-//     let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
-//     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
-//     let val = func.call(&mut store, ()).expect("call failed");
-//     assert_eq!(val, 42, "named type conversion should work: MyInt(42) -> int(x) = 42");
-// }
+func Run() int {
+    var x MyInt = MyInt(42)
+    return int(x)
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "named type conversion should work: MyInt(42) -> int(x) = 42");
+}
 
 #[test]
 fn test_global_init_order_dependency() {
@@ -24528,30 +24528,30 @@ func Run() int {
 
 // ==================== Edge case: named type round-trip conversion ====================
 
-// #[test]
-// fn test_named_type_round_trip_conversion() {
-//     let source = r#"
-// package main
+#[test]
+fn test_named_type_round_trip_conversion() {
+    let source = r#"
+package main
 
-// type MyInt int
+type MyInt int
 
-// func Run() int {
-//     var x MyInt = MyInt(42)
-//     var y int = int(x)
-//     return y
-// }
-// "#;
-//     let mut compiler = WasmCompiler::new();
-//     let result = compiler.compile_source(source).expect("compilation failed");
-//     let runtime = UdfRuntime::new().expect("runtime init failed");
-//     let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
-//     let state = HostState::new();
-//     let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
-//     let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
-//     let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
-//     let val = func.call(&mut store, ()).expect("call failed");
-//     assert_eq!(val, 42, "named type round-trip conversion should work");
-// }
+func Run() int {
+    var x MyInt = MyInt(42)
+    var y int = int(x)
+    return y
+}
+"#;
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+    let func = instance.get_typed_func::<(), i64>(&mut store, "Run").expect("not found");
+    let val = func.call(&mut store, ()).expect("call failed");
+    assert_eq!(val, 42, "named type round-trip conversion should work");
+}
 
 // ==================== Edge case: deep variable shadowing ====================
 
