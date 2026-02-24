@@ -133,7 +133,7 @@ impl WasmCompiler {
                 }
             } else {
                 for ident in field.name.iter() {
-                    if is_string_param {
+                    if is_string_param && self.gc_builtin_types.go_string.is_none() {
                         param_types.push(ValType::I32);
                         param_names.push(ident.name.clone());
                         param_types.push(ValType::I32);
@@ -206,28 +206,13 @@ impl WasmCompiler {
             .iter()
             .zip(param_types.iter())
             .map(|(n, vt)| {
-                (
-                    n.clone(),
-                    match vt {
-                        ValType::I32 => WasmType::I32,
-                        ValType::I64 => WasmType::I64,
-                        ValType::F32 => WasmType::F32,
-                        ValType::F64 => WasmType::F64,
-                        _ => WasmType::I32,
-                    },
-                )
+                (n.clone(), Self::val_type_to_wasm_type(*vt))
             })
             .collect();
 
         let wasm_results: Vec<WasmType> = result_types
             .iter()
-            .map(|vt| match vt {
-                ValType::I32 => WasmType::I32,
-                ValType::I64 => WasmType::I64,
-                ValType::F32 => WasmType::F32,
-                ValType::F64 => WasmType::F64,
-                _ => WasmType::I32,
-            })
+            .map(|vt| Self::val_type_to_wasm_type(*vt))
             .collect();
 
         let recv_count = if decl.recv.is_some() { 1 } else { 0 };
@@ -331,13 +316,19 @@ impl WasmCompiler {
                 }
                 if type_ident.name == "string" {
                     for name_ident in &field.name {
-                        locals.set_var_struct_type(&name_ident.name, "__string");
-                        let ptr_idx = locals.find(&name_ident.name).unwrap_or(0);
-                        let len_name = format!("{}__str_len", name_ident.name);
-                        let len_idx = locals.find(&len_name).unwrap_or_else(|| {
-                            locals.add_local(&len_name, ValType::I32)
-                        });
-                        locals.string_locals.insert(name_ident.name.clone(), (ptr_idx, len_idx));
+                        if self.gc_builtin_types.go_string.is_some() {
+                            locals.set_var_struct_type(&name_ident.name, "__string");
+                            let ref_idx = locals.find(&name_ident.name).unwrap_or(0);
+                            locals.gc_string_locals.insert(name_ident.name.clone(), ref_idx);
+                        } else {
+                            locals.set_var_struct_type(&name_ident.name, "__string");
+                            let ptr_idx = locals.find(&name_ident.name).unwrap_or(0);
+                            let len_name = format!("{}__str_len", name_ident.name);
+                            let len_idx = locals.find(&len_name).unwrap_or_else(|| {
+                                locals.add_local(&len_name, ValType::I32)
+                            });
+                            locals.string_locals.insert(name_ident.name.clone(), (ptr_idx, len_idx));
+                        }
                     }
                 }
                 if Self::is_unsigned_type_name(&type_ident.name) {

@@ -310,7 +310,11 @@ impl WasmCompiler {
                     self.compile_expression(expr, out, locals)?;
                     let is_str = self.is_string_expr(expr, locals);
                     if is_str {
-                        ws += 2;
+                        if self.gc_builtin_types.go_string.is_some() {
+                            ws += 1;
+                        } else {
+                            ws += 2;
+                        }
                     } else {
                         if let Some(&expected_vt) = result_types.get(ws) {
                             let actual_vt = self.infer_val_type(expr, locals);
@@ -377,7 +381,11 @@ impl WasmCompiler {
                     self.compile_expression(expr, out, locals)?;
                     let is_string = self.is_string_expr(expr, locals);
                     if is_string {
-                        wasm_slot += 2;
+                        if self.gc_builtin_types.go_string.is_some() {
+                            wasm_slot += 1;
+                        } else {
+                            wasm_slot += 2;
+                        }
                     } else {
                         if let Some(&expected_vt) = result_types.get(wasm_slot) {
                             let actual_vt = self.infer_val_type(expr, locals);
@@ -517,7 +525,11 @@ impl WasmCompiler {
                         false
                     };
 
-                    let vt = if is_string_rhs {
+                    let gc_string_mode = is_string_rhs && self.gc_builtin_types.go_string.is_some();
+
+                    let vt = if is_string_rhs && gc_string_mode {
+                        Self::gc_ref_val_type(self.gc_builtin_types.go_string.unwrap())
+                    } else if is_string_rhs {
                         ValType::I32
                     } else if i < assign.right.len() {
                         self.infer_val_type(&assign.right[i], locals)
@@ -594,14 +606,21 @@ impl WasmCompiler {
                                 &ident.name,
                                 "__string",
                             );
-                            let len_local = locals.add_local(
-                                &format!("{}__str_len", ident.name),
-                                ValType::I32,
-                            );
-                            locals.string_locals.insert(
-                                ident.name.clone(),
-                                (local_idx, len_local),
-                            );
+                            if gc_string_mode {
+                                locals.gc_string_locals.insert(
+                                    ident.name.clone(),
+                                    local_idx,
+                                );
+                            } else {
+                                let len_local = locals.add_local(
+                                    &format!("{}__str_len", ident.name),
+                                    ValType::I32,
+                                );
+                                locals.string_locals.insert(
+                                    ident.name.clone(),
+                                    (local_idx, len_local),
+                                );
+                            }
                         }
 
                         // Track type alias from arithmetic expressions with typed constants
@@ -984,9 +1003,13 @@ impl WasmCompiler {
                             out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
                             out.push(Instruction::LocalSet(local_idx));
                         } else if is_string_rhs {
-                            let (ptr_local, len_local) = locals.string_locals[&ident.name];
-                            out.push(Instruction::LocalSet(len_local));
-                            out.push(Instruction::LocalSet(ptr_local));
+                            if let Some(&gc_ref_idx) = locals.gc_string_locals.get(&ident.name) {
+                                out.push(Instruction::LocalSet(gc_ref_idx));
+                            } else {
+                                let (ptr_local, len_local) = locals.string_locals[&ident.name];
+                                out.push(Instruction::LocalSet(len_local));
+                                out.push(Instruction::LocalSet(ptr_local));
+                            }
                         } else if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
                             if let Some(sf) = &self.current_stack_frame {
                                 if let Some(fb) = sf.frame_base_local {
@@ -1241,13 +1264,79 @@ impl WasmCompiler {
                                 continue;
                             }
                         }
+                        if let Some(&gc_ref_idx) = locals.gc_string_locals.get(&ident.name) {
+                            if assign.op == Operator::Assign {
+                                out.push(Instruction::LocalSet(gc_ref_idx));
+                            } else if assign.op == Operator::AddAssign {
+                                let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+                                let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
+                                let gc_vt = Self::gc_ref_val_type(go_string_idx);
+                                let ba_vt = Self::gc_ref_val_type(byte_array_idx);
+
+                                let rhs_ref = locals.add_local(&format!("__sadd_rhs_{}", locals.locals.len()), gc_vt);
+                                out.push(Instruction::LocalSet(rhs_ref));
+
+                                let lhs_arr = locals.add_local(&format!("__sadd_la_{}", locals.locals.len()), ba_vt);
+                                let lhs_len = locals.add_local(&format!("__sadd_ll_{}", locals.locals.len()), ValType::I32);
+                                out.push(Instruction::LocalGet(gc_ref_idx));
+                                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 0 });
+                                out.push(Instruction::LocalSet(lhs_arr));
+                                out.push(Instruction::LocalGet(gc_ref_idx));
+                                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+                                out.push(Instruction::LocalSet(lhs_len));
+
+                                let rhs_arr = locals.add_local(&format!("__sadd_ra_{}", locals.locals.len()), ba_vt);
+                                let rhs_len = locals.add_local(&format!("__sadd_rl_{}", locals.locals.len()), ValType::I32);
+                                out.push(Instruction::LocalGet(rhs_ref));
+                                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 0 });
+                                out.push(Instruction::LocalSet(rhs_arr));
+                                out.push(Instruction::LocalGet(rhs_ref));
+                                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+                                out.push(Instruction::LocalSet(rhs_len));
+
+                                let total = locals.add_local(&format!("__sadd_tot_{}", locals.locals.len()), ValType::I32);
+                                out.push(Instruction::LocalGet(lhs_len));
+                                out.push(Instruction::LocalGet(rhs_len));
+                                out.push(Instruction::I32Add);
+                                out.push(Instruction::LocalSet(total));
+
+                                let new_arr = locals.add_local(&format!("__sadd_na_{}", locals.locals.len()), ba_vt);
+                                out.push(Instruction::I32Const(0));
+                                out.push(Instruction::LocalGet(total));
+                                out.push(Instruction::ArrayNew(byte_array_idx));
+                                out.push(Instruction::LocalSet(new_arr));
+
+                                out.push(Instruction::LocalGet(new_arr));
+                                out.push(Instruction::I32Const(0));
+                                out.push(Instruction::LocalGet(lhs_arr));
+                                out.push(Instruction::I32Const(0));
+                                out.push(Instruction::LocalGet(lhs_len));
+                                out.push(Instruction::ArrayCopy { array_type_index_dst: byte_array_idx, array_type_index_src: byte_array_idx });
+
+                                out.push(Instruction::LocalGet(new_arr));
+                                out.push(Instruction::LocalGet(lhs_len));
+                                out.push(Instruction::LocalGet(rhs_arr));
+                                out.push(Instruction::I32Const(0));
+                                out.push(Instruction::LocalGet(rhs_len));
+                                out.push(Instruction::ArrayCopy { array_type_index_dst: byte_array_idx, array_type_index_src: byte_array_idx });
+
+                                out.push(Instruction::LocalGet(new_arr));
+                                out.push(Instruction::LocalGet(total));
+                                out.push(Instruction::StructNew(go_string_idx));
+                                out.push(Instruction::LocalSet(gc_ref_idx));
+                            } else {
+                                return Err(Error::TypeError(format!(
+                                    "operator {:?} not defined for string (only += is valid for string concatenation)",
+                                    assign.op
+                                )));
+                            }
+                            continue;
+                        }
                         if let Some(&(ptr_local, len_local)) = locals.string_locals.get(&ident.name) {
                             if assign.op == Operator::Assign {
                                 out.push(Instruction::LocalSet(len_local));
                                 out.push(Instruction::LocalSet(ptr_local));
                             } else if assign.op == Operator::AddAssign {
-                                // s += expr: RHS is already compiled on stack as (ptr, len)
-                                // We need to concatenate current s with the RHS
                                 let rhs_len = locals.add_local(&format!("__sadd_rlen_{}", locals.locals.len()), ValType::I32);
                                 let rhs_ptr = locals.add_local(&format!("__sadd_rptr_{}", locals.locals.len()), ValType::I32);
                                 out.push(Instruction::LocalSet(rhs_len));
@@ -1264,13 +1353,11 @@ impl WasmCompiler {
                                 let new_ptr = locals.add_local(&format!("__sadd_np_{}", locals.locals.len()), ValType::I32);
                                 out.push(Instruction::LocalSet(new_ptr));
 
-                                // Copy old string
                                 out.push(Instruction::LocalGet(new_ptr));
                                 out.push(Instruction::LocalGet(ptr_local));
                                 out.push(Instruction::LocalGet(len_local));
                                 out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
 
-                                // Copy rhs string
                                 out.push(Instruction::LocalGet(new_ptr));
                                 out.push(Instruction::LocalGet(len_local));
                                 out.push(Instruction::I32Add);
@@ -1278,7 +1365,6 @@ impl WasmCompiler {
                                 out.push(Instruction::LocalGet(rhs_len));
                                 out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
 
-                                // Update string locals
                                 out.push(Instruction::LocalGet(new_ptr));
                                 out.push(Instruction::LocalSet(ptr_local));
                                 out.push(Instruction::LocalGet(total));
@@ -1572,10 +1658,12 @@ impl WasmCompiler {
                                 }
                             }
                         } else if let Some(&(global_idx, vt)) = self.resolve_global_var(&ident.name) {
+                            if matches!(vt, ValType::Ref(_)) {
+                                out.push(Instruction::GlobalSet(global_idx));
+                            } else {
                             let resolved_name = self.resolve_global_var_name(&ident.name);
                             let len_key = format!("{}_1", resolved_name);
                             if let Some(&(len_global_idx, _)) = self.global_vars.get(&len_key) {
-                                // String global: stack has (ptr, len)
                                 let len_tmp = locals.add_local(
                                     &format!("__gsa_len_{}", locals.locals.len()),
                                     ValType::I32,
@@ -1609,6 +1697,7 @@ impl WasmCompiler {
                                     }
                                 }
                             }
+                            }
                         }
                     }
                     ast::Expression::Index(idx_expr) => {
@@ -1618,11 +1707,17 @@ impl WasmCompiler {
                                 if locals.get_var_struct_type(&map_ident.name) == Some("__map") {
                                     let mti_is_string_val = locals.map_types.get(&map_ident.name)
                                         .map_or(false, |mti| mti.is_string_val);
-                                    let rhs_vt = if i < assign.right.len() {
+                                    let mut rhs_vt = if i < assign.right.len() {
                                         self.infer_val_type(&assign.right[i], locals)
                                     } else {
                                         ValType::I64
                                     };
+                                    if mti_is_string_val {
+                                        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                            self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                                            rhs_vt = ValType::I32;
+                                        }
+                                    }
                                     let val_len_tmp = if mti_is_string_val {
                                         let vl = locals.add_local(
                                             &format!("__midx_rlen_{}", locals.locals.len()),
@@ -1635,7 +1730,7 @@ impl WasmCompiler {
                                     };
                                     let rhs_tmp = locals.add_local(
                                         &format!("__midx_rhs_{}", locals.locals.len()),
-                                        rhs_vt,
+                                        if mti_is_string_val { ValType::I32 } else { rhs_vt },
                                     );
                                     out.push(Instruction::LocalSet(rhs_tmp));
                                     let map_name = map_ident.name.clone();
@@ -2069,6 +2164,14 @@ impl WasmCompiler {
         };
 
         let is_string_range_early = self.is_string_expr(&range.expr, locals);
+        let is_gc_string_range = is_string_range_early && self.gc_builtin_types.go_string.is_some();
+
+        let gc_range_byte_arr: Option<u32> = if is_gc_string_range {
+            let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
+            Some(locals.add_local("__range_gc_ba", Self::gc_ref_val_type(byte_array_idx)))
+        } else {
+            None
+        };
 
         self.compile_expression(&range.expr, out, locals)?;
 
@@ -2098,8 +2201,18 @@ impl WasmCompiler {
                 memory_index: 0,
             }));
             out.push(Instruction::LocalSet(base_ptr_local));
+        } else if is_gc_string_range {
+            let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+            let gc_vt = Self::gc_ref_val_type(go_string_idx);
+            let gc_str_tmp = locals.add_local("__range_gc_str", gc_vt);
+            out.push(Instruction::LocalSet(gc_str_tmp));
+            out.push(Instruction::LocalGet(gc_str_tmp));
+            out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 0 });
+            out.push(Instruction::LocalSet(gc_range_byte_arr.unwrap()));
+            out.push(Instruction::LocalGet(gc_str_tmp));
+            out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+            out.push(Instruction::LocalSet(len_local));
         } else if is_string_range_early {
-            // String variable pushes (ptr, len) – always 2 values
             out.push(Instruction::LocalSet(len_local));
             out.push(Instruction::LocalSet(base_ptr_local));
         } else {
@@ -2164,16 +2277,27 @@ impl WasmCompiler {
             rune_val_local = Some(rv);
 
             let mem0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+            let gc_ba = gc_range_byte_arr;
+            let ba_type_idx = self.gc_builtin_types.byte_array;
 
-            // addr = base_ptr + idx
-            out.push(Instruction::LocalGet(base_ptr_local));
-            out.push(Instruction::LocalGet(idx_local));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalSet(addr));
+            if gc_ba.is_some() {
+                out.push(Instruction::LocalGet(idx_local));
+                out.push(Instruction::LocalSet(addr));
+            } else {
+                out.push(Instruction::LocalGet(base_ptr_local));
+                out.push(Instruction::LocalGet(idx_local));
+                out.push(Instruction::I32Add);
+                out.push(Instruction::LocalSet(addr));
+            }
 
-            // byte0 = mem[addr]
-            out.push(Instruction::LocalGet(addr));
-            out.push(Instruction::I32Load8U(mem0));
+            if let (Some(ba), Some(ba_idx)) = (gc_ba, ba_type_idx) {
+                out.push(Instruction::LocalGet(ba));
+                out.push(Instruction::LocalGet(addr));
+                out.push(Instruction::ArrayGetU(ba_idx));
+            } else {
+                out.push(Instruction::LocalGet(addr));
+                out.push(Instruction::I32Load8U(mem0));
+            }
             out.push(Instruction::LocalSet(byte0));
 
             // Default: width=1, rune=byte0
@@ -2181,6 +2305,24 @@ impl WasmCompiler {
             out.push(Instruction::LocalSet(rw));
             out.push(Instruction::LocalGet(byte0));
             out.push(Instruction::LocalSet(rv));
+
+            // Helper macro-style: emit byte read at addr+offset
+            macro_rules! emit_byte_read {
+                ($out:expr, $gc_ba:expr, $ba_type_idx:expr, $addr:expr, $offset:expr) => {
+                    if let (Some(ba), Some(ba_idx)) = ($gc_ba, $ba_type_idx) {
+                        $out.push(Instruction::LocalGet(ba));
+                        $out.push(Instruction::LocalGet($addr));
+                        if $offset > 0u32 {
+                            $out.push(Instruction::I32Const($offset as i32));
+                            $out.push(Instruction::I32Add);
+                        }
+                        $out.push(Instruction::ArrayGetU(ba_idx));
+                    } else {
+                        $out.push(Instruction::LocalGet($addr));
+                        $out.push(Instruction::I32Load8U(MemArg { offset: $offset as u64, align: 0, memory_index: 0 }));
+                    }
+                };
+            }
 
             // if byte0 >= 0x80 (multi-byte)
             out.push(Instruction::LocalGet(byte0));
@@ -2211,8 +2353,7 @@ impl WasmCompiler {
                         out.push(Instruction::I32And);
                         out.push(Instruction::I32Const(6));
                         out.push(Instruction::I32Shl);
-                        out.push(Instruction::LocalGet(addr));
-                        out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                        emit_byte_read!(out, gc_ba, ba_type_idx, addr, 1u32);
                         out.push(Instruction::I32Const(0x3F));
                         out.push(Instruction::I32And);
                         out.push(Instruction::I32Or);
@@ -2250,15 +2391,13 @@ impl WasmCompiler {
                             out.push(Instruction::I32And);
                             out.push(Instruction::I32Const(12));
                             out.push(Instruction::I32Shl);
-                            out.push(Instruction::LocalGet(addr));
-                            out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                            emit_byte_read!(out, gc_ba, ba_type_idx, addr, 1u32);
                             out.push(Instruction::I32Const(0x3F));
                             out.push(Instruction::I32And);
                             out.push(Instruction::I32Const(6));
                             out.push(Instruction::I32Shl);
                             out.push(Instruction::I32Or);
-                            out.push(Instruction::LocalGet(addr));
-                            out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                            emit_byte_read!(out, gc_ba, ba_type_idx, addr, 2u32);
                             out.push(Instruction::I32Const(0x3F));
                             out.push(Instruction::I32And);
                             out.push(Instruction::I32Or);
@@ -2296,22 +2435,19 @@ impl WasmCompiler {
                                 out.push(Instruction::I32And);
                                 out.push(Instruction::I32Const(18));
                                 out.push(Instruction::I32Shl);
-                                out.push(Instruction::LocalGet(addr));
-                                out.push(Instruction::I32Load8U(MemArg { offset: 1, align: 0, memory_index: 0 }));
+                                emit_byte_read!(out, gc_ba, ba_type_idx, addr, 1u32);
                                 out.push(Instruction::I32Const(0x3F));
                                 out.push(Instruction::I32And);
                                 out.push(Instruction::I32Const(12));
                                 out.push(Instruction::I32Shl);
                                 out.push(Instruction::I32Or);
-                                out.push(Instruction::LocalGet(addr));
-                                out.push(Instruction::I32Load8U(MemArg { offset: 2, align: 0, memory_index: 0 }));
+                                emit_byte_read!(out, gc_ba, ba_type_idx, addr, 2u32);
                                 out.push(Instruction::I32Const(0x3F));
                                 out.push(Instruction::I32And);
                                 out.push(Instruction::I32Const(6));
                                 out.push(Instruction::I32Shl);
                                 out.push(Instruction::I32Or);
-                                out.push(Instruction::LocalGet(addr));
-                                out.push(Instruction::I32Load8U(MemArg { offset: 3, align: 0, memory_index: 0 }));
+                                emit_byte_read!(out, gc_ba, ba_type_idx, addr, 3u32);
                                 out.push(Instruction::I32Const(0x3F));
                                 out.push(Instruction::I32And);
                                 out.push(Instruction::I32Or);
@@ -2525,14 +2661,23 @@ impl WasmCompiler {
 
         let (tag_local, tag_vt) = if let Some(tag) = &switch.tag {
             if is_string_tag {
-                let ptr_l = locals.add_local("__switch_tag_ptr", ValType::I32);
-                let len_l = locals.add_local("__switch_tag_len", ValType::I32);
-                self.compile_expression(tag, out, locals)?;
-                out.push(Instruction::LocalSet(len_l));
-                out.push(Instruction::LocalSet(ptr_l));
-                tag_str_ptr = Some(ptr_l);
-                tag_str_len = Some(len_l);
-                (None, ValType::I32)
+                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                    let ref_l = locals.add_local("__switch_tag_ref", Self::gc_ref_val_type(go_string_idx));
+                    self.compile_expression(tag, out, locals)?;
+                    out.push(Instruction::LocalSet(ref_l));
+                    tag_str_ptr = Some(ref_l);
+                    tag_str_len = Some(ref_l);
+                    (None, ValType::I32)
+                } else {
+                    let ptr_l = locals.add_local("__switch_tag_ptr", ValType::I32);
+                    let len_l = locals.add_local("__switch_tag_len", ValType::I32);
+                    self.compile_expression(tag, out, locals)?;
+                    out.push(Instruction::LocalSet(len_l));
+                    out.push(Instruction::LocalSet(ptr_l));
+                    tag_str_ptr = Some(ptr_l);
+                    tag_str_len = Some(len_l);
+                    (None, ValType::I32)
+                }
             } else {
                 tag_str_ptr = None;
                 tag_str_len = None;
@@ -2610,27 +2755,43 @@ impl WasmCompiler {
                 let mut first = true;
                 for expr in &case.list {
                     if is_string_tag {
-                        let cp = locals.add_local(
-                            &format!("__sw_cp_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        let cl = locals.add_local(
-                            &format!("__sw_cl_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        self.compile_expression(expr, out, locals)?;
-                        out.push(Instruction::LocalSet(cl));
-                        out.push(Instruction::LocalSet(cp));
-                        let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
-                            "switch string tag pointer local missing".to_string(),
-                        ))?;
-                        let slen = tag_str_len.ok_or_else(|| Error::InternalError(
-                            "switch string tag length local missing".to_string(),
-                        ))?;
-                        Self::emit_string_eq_from_locals(
-                            sptr, slen,
-                            cp, cl, out, locals,
-                        );
+                        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                            let cr = locals.add_local(
+                                &format!("__sw_cr_{}", locals.locals.len()),
+                                Self::gc_ref_val_type(go_string_idx),
+                            );
+                            self.compile_expression(expr, out, locals)?;
+                            out.push(Instruction::LocalSet(cr));
+                            let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                                "switch string tag pointer local missing".to_string(),
+                            ))?;
+                            self.emit_string_eq_from_locals(
+                                sptr, sptr,
+                                cr, cr, out, locals,
+                            );
+                        } else {
+                            let cp = locals.add_local(
+                                &format!("__sw_cp_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            let cl = locals.add_local(
+                                &format!("__sw_cl_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            self.compile_expression(expr, out, locals)?;
+                            out.push(Instruction::LocalSet(cl));
+                            out.push(Instruction::LocalSet(cp));
+                            let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                                "switch string tag pointer local missing".to_string(),
+                            ))?;
+                            let slen = tag_str_len.ok_or_else(|| Error::InternalError(
+                                "switch string tag length local missing".to_string(),
+                            ))?;
+                            self.emit_string_eq_from_locals(
+                                sptr, slen,
+                                cp, cl, out, locals,
+                            );
+                        }
                     } else if let Some(tag_l) = tag_local {
                         out.push(Instruction::LocalGet(tag_l));
                         self.compile_expression(expr, out, locals)?;
@@ -2697,27 +2858,43 @@ impl WasmCompiler {
                 let mut first = true;
                 for expr in &case.list {
                     if is_string_tag {
-                        let cp = locals.add_local(
-                            &format!("__sw_cp_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        let cl = locals.add_local(
-                            &format!("__sw_cl_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        self.compile_expression(expr, out, locals)?;
-                        out.push(Instruction::LocalSet(cl));
-                        out.push(Instruction::LocalSet(cp));
-                        let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
-                            "switch string tag pointer local missing".to_string(),
-                        ))?;
-                        let slen = tag_str_len.ok_or_else(|| Error::InternalError(
-                            "switch string tag length local missing".to_string(),
-                        ))?;
-                        Self::emit_string_eq_from_locals(
-                            sptr, slen,
-                            cp, cl, out, locals,
-                        );
+                        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                            let cr = locals.add_local(
+                                &format!("__sw_cr_{}", locals.locals.len()),
+                                Self::gc_ref_val_type(go_string_idx),
+                            );
+                            self.compile_expression(expr, out, locals)?;
+                            out.push(Instruction::LocalSet(cr));
+                            let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                                "switch string tag pointer local missing".to_string(),
+                            ))?;
+                            self.emit_string_eq_from_locals(
+                                sptr, sptr,
+                                cr, cr, out, locals,
+                            );
+                        } else {
+                            let cp = locals.add_local(
+                                &format!("__sw_cp_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            let cl = locals.add_local(
+                                &format!("__sw_cl_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            self.compile_expression(expr, out, locals)?;
+                            out.push(Instruction::LocalSet(cl));
+                            out.push(Instruction::LocalSet(cp));
+                            let sptr = tag_str_ptr.ok_or_else(|| Error::InternalError(
+                                "switch string tag pointer local missing".to_string(),
+                            ))?;
+                            let slen = tag_str_len.ok_or_else(|| Error::InternalError(
+                                "switch string tag length local missing".to_string(),
+                            ))?;
+                            self.emit_string_eq_from_locals(
+                                sptr, slen,
+                                cp, cl, out, locals,
+                            );
+                        }
                     } else if let Some(tag_l) = tag_local {
                         out.push(Instruction::LocalGet(tag_l));
                         self.compile_expression(expr, out, locals)?;
@@ -3287,14 +3464,30 @@ impl WasmCompiler {
                         }
 
                         if is_string {
-                            let len_local = locals.add_local(
-                                &format!("{}__str_len", ident.name),
-                                ValType::I32,
-                            );
-                            locals.string_locals.insert(
-                                ident.name.clone(),
-                                (local_idx, len_local),
-                            );
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                locals.gc_string_locals.insert(
+                                    ident.name.clone(),
+                                    local_idx,
+                                );
+                                if i >= spec.values.len() {
+                                    let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
+                                    out.push(Instruction::I32Const(0));
+                                    out.push(Instruction::I32Const(0));
+                                    out.push(Instruction::ArrayNew(byte_array_idx));
+                                    out.push(Instruction::I32Const(0));
+                                    out.push(Instruction::StructNew(go_string_idx));
+                                    out.push(Instruction::LocalSet(local_idx));
+                                }
+                            } else {
+                                let len_local = locals.add_local(
+                                    &format!("{}__str_len", ident.name),
+                                    ValType::I32,
+                                );
+                                locals.string_locals.insert(
+                                    ident.name.clone(),
+                                    (local_idx, len_local),
+                                );
+                            }
                         }
 
                         if i < spec.values.len() {
@@ -3347,9 +3540,13 @@ impl WasmCompiler {
                                 let (elem_size, _) = Self::elem_size_and_align(rhs_vt);
                                 self.emit_box_value(rhs_vt, elem_size, type_id, tid_local, local_idx, out, locals)?;
                             } else if is_string {
-                                let (ptr_local, len_local) = locals.string_locals[&ident.name];
-                                out.push(Instruction::LocalSet(len_local));
-                                out.push(Instruction::LocalSet(ptr_local));
+                                if let Some(&gc_ref_idx) = locals.gc_string_locals.get(&ident.name) {
+                                    out.push(Instruction::LocalSet(gc_ref_idx));
+                                } else {
+                                    let (ptr_local, len_local) = locals.string_locals[&ident.name];
+                                    out.push(Instruction::LocalSet(len_local));
+                                    out.push(Instruction::LocalSet(ptr_local));
+                                }
                             } else if let Some(&(mb_offset, mb_vt)) = locals.memory_backed_vars.get(&ident.name) {
                                 if let Some(sf) = &self.current_stack_frame {
                                     if let Some(fb) = sf.frame_base_local {

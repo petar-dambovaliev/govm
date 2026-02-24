@@ -309,6 +309,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
+            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+            }
             let kl = locals.add_local(&format!("__mg_klen_{}", locals.locals.len()), ValType::I32);
             key_len_local = Some(kl);
             out.push(Instruction::LocalSet(kl));
@@ -437,6 +440,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
+            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+            }
             let kl = locals.add_local(&format!("__mgok_klen_{}", locals.locals.len()), ValType::I32);
             key_len_local = Some(kl);
             out.push(Instruction::LocalSet(kl));
@@ -593,6 +599,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
+            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+            }
             let kl = locals.add_local(&format!("__ms_klen_{}", locals.locals.len()), ValType::I32);
             key_len_local = Some(kl);
             out.push(Instruction::LocalSet(kl));
@@ -795,6 +804,9 @@ impl WasmCompiler {
         let key_local;
         let key_len_local;
         if mti.is_string_key {
+            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+            }
             let kl = locals.add_local(&format!("__md_klen_{}", locals.locals.len()), ValType::I32);
             key_len_local = Some(kl);
             out.push(Instruction::LocalSet(kl));

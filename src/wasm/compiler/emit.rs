@@ -530,6 +530,94 @@ impl WasmCompiler {
         });
     }
 
+    pub(crate) fn emit_gc_string_bridge_function(&mut self) {
+        let go_string_idx = match self.gc_builtin_types.go_string {
+            Some(idx) => idx,
+            None => return,
+        };
+        let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
+
+        let gc_string_vt = Self::gc_ref_val_type(go_string_idx);
+        let gc_arr_vt = Self::gc_ref_val_type(byte_array_idx);
+
+        let type_idx = self.next_type_idx;
+        self.type_section
+            .ty()
+            .function(vec![ValType::I32, ValType::I32], vec![gc_string_vt]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.function_section.function(type_idx);
+        self.next_func_idx += 1;
+
+        // params: 0=ptr, 1=len; locals: 2=gc_arr, 3=i
+        let mut func = Function::new(vec![(1, gc_arr_vt), (1, ValType::I32)]);
+
+        // gc_arr = ArrayNew(byte_array_idx, 0, len)
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::LocalGet(1)); // len
+        func.instruction(&Instruction::ArrayNew(byte_array_idx));
+        func.instruction(&Instruction::LocalSet(2)); // gc_arr
+
+        // i = 0
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::LocalSet(3));
+
+        // loop: copy bytes from linear memory to GC array
+        func.instruction(&Instruction::Block(BlockType::Empty));
+        func.instruction(&Instruction::Loop(BlockType::Empty));
+
+        func.instruction(&Instruction::LocalGet(3)); // i
+        func.instruction(&Instruction::LocalGet(1)); // len
+        func.instruction(&Instruction::I32GeU);
+        func.instruction(&Instruction::BrIf(1)); // break if i >= len
+
+        func.instruction(&Instruction::LocalGet(2)); // gc_arr
+        func.instruction(&Instruction::LocalGet(3)); // i
+        func.instruction(&Instruction::LocalGet(0)); // ptr
+        func.instruction(&Instruction::LocalGet(3)); // i
+        func.instruction(&Instruction::I32Add);       // ptr + i
+        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        func.instruction(&Instruction::ArraySet(byte_array_idx));
+
+        func.instruction(&Instruction::LocalGet(3)); // i
+        func.instruction(&Instruction::I32Const(1));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::LocalSet(3)); // i++
+
+        func.instruction(&Instruction::Br(0)); // continue loop
+        func.instruction(&Instruction::End); // loop
+        func.instruction(&Instruction::End); // block
+
+        // StructNew(go_string_idx, gc_arr, len)
+        func.instruction(&Instruction::LocalGet(2)); // gc_arr
+        func.instruction(&Instruction::LocalGet(1)); // len
+        func.instruction(&Instruction::StructNew(go_string_idx));
+
+        func.instruction(&Instruction::End);
+
+        self.code_buffer.push((func_idx, func));
+        self.export_section
+            .export("__make_gc_string", ExportKind::Func, func_idx);
+
+        self.functions.push(FuncInfo {
+            wasm_func_idx: func_idx,
+            type_idx,
+            name: "__make_gc_string".to_string(),
+            params: vec![
+                ("ptr".to_string(), WasmType::I32),
+                ("len".to_string(), WasmType::I32),
+            ],
+            results: vec![WasmType::Ref(go_string_idx)],
+            result_go_types: vec!["string".to_string()],
+            is_exported: true,
+            recv_type: None,
+            is_variadic: false,
+            variadic_elem_vt: None,
+            iface_param_indices: vec![],
+        });
+    }
+
     pub(crate) fn emit_global_var_init_function(&mut self) -> Result<(), Error> {
         let inits = std::mem::take(&mut self.global_var_inits);
         if inits.is_empty() {
@@ -552,10 +640,15 @@ impl WasmCompiler {
             let prev_pkg = self.current_package.clone();
             self.current_package = pkg_ctx.clone();
 
-            let is_string_global = self.global_vars.contains_key(&format!("{}_1", var_name));
+            let is_gc_string_global = self.global_vars.get(var_name).map_or(false, |&(_, vt)| matches!(vt, ValType::Ref(_)));
+            let is_string_global = !is_gc_string_global && self.global_vars.contains_key(&format!("{}_1", var_name));
             let is_iface_global = self.global_vars.contains_key(&format!("{}_tid", var_name));
 
-            if is_string_global || is_iface_global {
+            if is_gc_string_global {
+                self.compile_expression(init_expr, &mut body, &mut locals)?;
+                let (global_idx, _) = self.global_vars[var_name];
+                body.push(Instruction::GlobalSet(global_idx));
+            } else if is_string_global || is_iface_global {
                 self.compile_expression(init_expr, &mut body, &mut locals)?;
                 let second_tmp = locals.add_local(
                     &format!("__ginit_v2_{}", locals.locals.len()),

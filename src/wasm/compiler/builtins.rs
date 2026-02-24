@@ -18,9 +18,17 @@ impl WasmCompiler {
 
         let mut done = false;
         if let ast::Expression::Ident(ident) = arg {
-            if let Some(&(_, len_local)) = locals.string_locals.get(&ident.name) {
-                out.push(Instruction::LocalGet(len_local));
+            if let Some(&gc_ref_idx) = locals.gc_string_locals.get(&ident.name) {
+                let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+                out.push(Instruction::LocalGet(gc_ref_idx));
+                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
                 done = true;
+            }
+            if !done {
+                if let Some(&(_, len_local)) = locals.string_locals.get(&ident.name) {
+                    out.push(Instruction::LocalGet(len_local));
+                    done = true;
+                }
             }
             if !done && locals.get_var_struct_type(&ident.name) == Some("__slice") {
                 self.compile_expression(arg, out, locals)?;
@@ -71,13 +79,17 @@ impl WasmCompiler {
         }
 
         if !done {
+            let is_gc_string = self.gc_builtin_types.go_string.is_some() && self.is_string_expr(arg, locals);
             // Non-string Slice expressions produce a header pointer; load len from header[4]
             let is_non_string_slice = matches!(arg, ast::Expression::Slice(_))
                 && !self.is_string_expr(arg, locals);
 
             self.compile_expression(arg, out, locals)?;
 
-            if is_non_string_slice {
+            if is_gc_string {
+                let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+                out.push(Instruction::StructGet { struct_type_index: go_string_idx, field_index: 1 });
+            } else if is_non_string_slice {
                 out.push(Instruction::I32Load(MemArg {
                     offset: 4,
                     align: 2,

@@ -318,6 +318,7 @@ pub(crate) struct LocalAlloc {
     slice_elem_struct_types: HashMap<String, String>,
     nested_slice_inner_elem_types: HashMap<String, ValType>,
     string_locals: HashMap<String, (u32, u32)>,
+    pub(crate) gc_string_locals: HashMap<String, u32>,
     unsigned_vars: std::collections::HashSet<String>,
     map_types: HashMap<String, MapTypeInfo>,
     array_info: HashMap<String, (ValType, u32)>, // (elem_type, array_length)
@@ -345,6 +346,7 @@ impl LocalAlloc {
             slice_elem_struct_types: HashMap::new(),
             nested_slice_inner_elem_types: HashMap::new(),
             string_locals: HashMap::new(),
+            gc_string_locals: HashMap::new(),
             unsigned_vars: std::collections::HashSet::new(),
             map_types: HashMap::new(),
             array_info: HashMap::new(),
@@ -763,6 +765,20 @@ impl WasmCompiler {
         })
     }
 
+    pub(crate) fn val_type_to_wasm_type(vt: ValType) -> WasmType {
+        match vt {
+            ValType::I32 => WasmType::I32,
+            ValType::I64 => WasmType::I64,
+            ValType::F32 => WasmType::F32,
+            ValType::F64 => WasmType::F64,
+            ValType::Ref(rt) => match rt.heap_type {
+                HeapType::Concrete(idx) => WasmType::Ref(idx),
+                _ => WasmType::I32,
+            },
+            _ => WasmType::I32,
+        }
+    }
+
     pub(crate) fn gc_val_type_for_struct(&self, name: &str) -> Option<ValType> {
         self.gc_struct_types.get(name).map(|&idx| Self::gc_ref_val_type(idx))
     }
@@ -1169,6 +1185,7 @@ impl WasmCompiler {
         self.emit_native_imports(file)?;
         self.emit_alloc_function();
         self.emit_reset_function();
+        self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 
         // Phase 1: Prescan all types (stdlib + user) and forward-declare all functions.

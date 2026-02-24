@@ -76,31 +76,9 @@ impl WasmCompiler {
                                 &format!("__panic_len_{}", locals.locals.len()),
                                 ValType::I32,
                             );
-                            if self.is_string_expr(arg, locals) {
-                                self.compile_expression(arg, out, locals)?;
-                            } else {
-                                let vt = self.infer_val_type(arg, locals);
-                                self.compile_expression(arg, out, locals)?;
-                                match vt {
-                                    ValType::I64 | ValType::I32 => {
-                                        if vt == ValType::I32 {
-                                            out.push(Instruction::I64ExtendI32S);
-                                        }
-                                        self.emit_i64_to_string(out, locals)?;
-                                    }
-                                    ValType::F64 => {
-                                        self.emit_f64_to_string(out, locals)?;
-                                    }
-                                    ValType::F32 => {
-                                        out.push(Instruction::F64PromoteF32);
-                                        self.emit_f64_to_string(out, locals)?;
-                                    }
-                                    _ => {
-                                        out.push(Instruction::Drop);
-                                        out.push(Instruction::I32Const(0));
-                                        out.push(Instruction::I32Const(0));
-                                    }
-                                }
+                            self.emit_expr_to_string_on_stack(arg, out, locals)?;
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
                             }
                             out.push(Instruction::LocalSet(str_len_local));
                             out.push(Instruction::LocalSet(str_ptr_local));
@@ -169,6 +147,9 @@ impl WasmCompiler {
                         out.push(Instruction::End);
                         out.push(Instruction::LocalGet(rec_ptr));
                         out.push(Instruction::LocalGet(rec_len));
+                        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                            self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                        }
                         return Ok(GoType::String);
                     }
                     "int" | "int64" => {
@@ -387,7 +368,9 @@ impl WasmCompiler {
                     "string" => {
                         if let Some(arg) = call.args.first() {
                             let vt = self.infer_val_type(arg, locals);
-                            if vt == ValType::I32
+                            let is_gc_string = self.gc_builtin_types.go_string
+                                .map_or(false, |idx| vt == Self::gc_ref_val_type(idx));
+                            if (vt == ValType::I32 || is_gc_string)
                                 && self.is_string_expr(arg, locals)
                             {
                                 self.compile_expression(arg, out, locals)?;
@@ -598,6 +581,9 @@ impl WasmCompiler {
 
                                     out.push(Instruction::LocalGet(dst_ptr));
                                     out.push(Instruction::LocalGet(write_pos));
+                                    if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                        self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                                    }
                                     return Ok(GoType::String);
                                 }
                             }
@@ -660,6 +646,9 @@ impl WasmCompiler {
 
                                     out.push(Instruction::LocalGet(dst_ptr));
                                     out.push(Instruction::LocalGet(s_len));
+                                    if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                        self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                                    }
                                     return Ok(GoType::String);
                                 }
                             }
@@ -836,6 +825,9 @@ impl WasmCompiler {
 
                             out.push(Instruction::LocalGet(buf_local));
                             out.push(Instruction::LocalGet(len_local));
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                            }
                             return Ok(GoType::String);
                         }
                         return Ok(GoType::String);
@@ -1066,6 +1058,9 @@ impl WasmCompiler {
                             if is_println {
                                 self.emit_append_newline(out, locals)?;
                             }
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                            }
                         } else {
                             // Multiple args: convert each to string, store (ptr,len) pairs
                             let n = call.args.len();
@@ -1073,6 +1068,9 @@ impl WasmCompiler {
                             let mut arg_lens = Vec::with_capacity(n);
                             for (i, arg) in call.args.iter().enumerate() {
                                 self.emit_expr_to_string_on_stack(arg, out, locals)?;
+                                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                    self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                                }
                                 let l = locals.add_local(&format!("__pln_len_{i}"), ValType::I32);
                                 let p = locals.add_local(&format!("__pln_ptr_{i}"), ValType::I32);
                                 out.push(Instruction::LocalSet(l));
@@ -1537,7 +1535,7 @@ impl WasmCompiler {
                                     }
                                 }
                             }
-                            wasm_param_idx_local += if is_str_arg { 2 } else { 1 };
+                            wasm_param_idx_local += if is_str_arg && self.gc_builtin_types.go_string.is_none() { 2 } else { 1 };
                             if func_info.iface_param_indices.contains(&arg_i) {
                                 if let ast::Expression::Ident(arg_ident) = arg {
                                     if arg_ident.name == "nil" {
@@ -1652,10 +1650,11 @@ impl WasmCompiler {
                         };
                         let resolved = self.resolve_type_name(&alias_key);
                         let target_vt = Self::val_type_for_type_name(resolved);
-                        if src_vt != target_vt {
+                        if src_vt != target_vt && !(matches!(src_vt, ValType::Ref(_)) && resolved == "string" && self.gc_builtin_types.go_string.is_some()) {
                             Self::emit_typed_coerce(src_vt, target_vt, out)?;
                         }
-                        return Ok(GoType::from_val_type(target_vt));
+                        let ret_vt = if resolved == "string" { if let Some(idx) = self.gc_builtin_types.go_string { Self::gc_ref_val_type(idx) } else { target_vt } } else { target_vt };
+                        return Ok(GoType::from_val_type(ret_vt));
                     }
                 } else if self.generic_funcs.contains_key(&ident.name) {
                     // Type inference for generic function calls: F(args) instead of F[T](args)
@@ -1774,6 +1773,9 @@ impl WasmCompiler {
                         };
                         let type_id = self.get_or_create_type_id(&concrete_type);
                         if is_str {
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                            }
                             let str_len = locals.add_local(
                                 &format!("__ibox_slen_{}", locals.locals.len()),
                                 ValType::I32,
@@ -1858,12 +1860,22 @@ impl WasmCompiler {
                             if sel.sel.name == "Log" {
                                 if let Some(arg) = call.args.first() {
                                     self.compile_expression(arg, out, locals)?;
+                                    if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                        if self.is_string_expr(arg, locals) {
+                                            self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                                        }
+                                    }
                                 }
                                 out.push(Instruction::Call(host_idx));
                                 return Ok(GoType::Int32);
                             } else if sel.sel.name == "Config" {
                                 if let Some(arg) = call.args.first() {
                                     self.compile_expression(arg, out, locals)?;
+                                    if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                        if self.is_string_expr(arg, locals) {
+                                            self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                                        }
+                                    }
                                 }
                                 let key_len = locals.add_local(
                                     &format!("__cfg_key_len_{}", locals.locals.len()),
@@ -1897,6 +1909,9 @@ impl WasmCompiler {
 
                                 out.push(Instruction::LocalGet(buf_local));
                                 out.push(Instruction::LocalGet(len_local));
+                                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                    self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                                }
                                 return Ok(GoType::String);
                             } else {
                                 let buf_size = 256i32;
@@ -1918,6 +1933,9 @@ impl WasmCompiler {
 
                                 out.push(Instruction::LocalGet(buf_local));
                                 out.push(Instruction::LocalGet(len_local));
+                                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                    self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                                }
                                 return Ok(GoType::String);
                             }
                         }
@@ -1985,7 +2003,7 @@ impl WasmCompiler {
                                             }
                                         }
                                     }
-                                    wasm_param_idx += if is_str_arg { 2 } else { 1 };
+                                    wasm_param_idx += if is_str_arg && self.gc_builtin_types.go_string.is_none() { 2 } else { 1 };
                                     if fi.iface_param_indices.contains(&i) {
                                         if let ast::Expression::Ident(arg_ident) = arg {
                                             if arg_ident.name == "nil" {
@@ -2071,10 +2089,11 @@ impl WasmCompiler {
                                 let src_vt = self.infer_val_type(arg, locals);
                                 let resolved = self.resolve_type_name(&qualified_alias);
                                 let target_vt = Self::val_type_for_type_name(resolved);
-                                if src_vt != target_vt {
+                                if src_vt != target_vt && !(matches!(src_vt, ValType::Ref(_)) && resolved == "string" && self.gc_builtin_types.go_string.is_some()) {
                                     Self::emit_typed_coerce(src_vt, target_vt, out)?;
                                 }
-                                return Ok(GoType::from_val_type(target_vt));
+                                let ret_vt = if resolved == "string" { if let Some(idx) = self.gc_builtin_types.go_string { Self::gc_ref_val_type(idx) } else { target_vt } } else { target_vt };
+                                return Ok(GoType::from_val_type(ret_vt));
                             }
                         }
 
@@ -2455,6 +2474,9 @@ impl WasmCompiler {
                         if self.is_string_expr(arg, locals) && (elem_ident.name == "byte" || elem_ident.name == "uint8") {
                             // []byte(str): unpack string bytes into 4-byte I32 slots
                             self.compile_expression(arg, out, locals)?;
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                            }
                             let str_len = locals.add_local(&format!("__sb_len_{}", locals.locals.len()), ValType::I32);
                             let str_ptr = locals.add_local(&format!("__sb_ptr_{}", locals.locals.len()), ValType::I32);
                             out.push(Instruction::LocalSet(str_len));
@@ -2523,6 +2545,9 @@ impl WasmCompiler {
                         if self.is_string_expr(arg, locals) && (elem_ident.name == "rune" || elem_ident.name == "int32") {
                             // []rune(str): decode UTF-8 into a []int32 slice
                             self.compile_expression(arg, out, locals)?;
+                            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                            }
                             let str_len = locals.add_local(&format!("__sr_len_{}", locals.locals.len()), ValType::I32);
                             let str_ptr = locals.add_local(&format!("__sr_ptr_{}", locals.locals.len()), ValType::I32);
                             out.push(Instruction::LocalSet(str_len));

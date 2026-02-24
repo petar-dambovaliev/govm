@@ -209,23 +209,11 @@ impl WasmCompiler {
                     let wasm_params: Vec<(String, WasmType)> = param_names
                         .iter()
                         .zip(param_types.iter())
-                        .map(|(n, vt)| (n.clone(), match vt {
-                            ValType::I32 => WasmType::I32,
-                            ValType::I64 => WasmType::I64,
-                            ValType::F32 => WasmType::F32,
-                            ValType::F64 => WasmType::F64,
-                            _ => WasmType::I32,
-                        }))
+                        .map(|(n, vt)| (n.clone(), Self::val_type_to_wasm_type(*vt)))
                         .collect();
                     let wasm_results: Vec<WasmType> = result_types
                         .iter()
-                        .map(|vt| match vt {
-                            ValType::I32 => WasmType::I32,
-                            ValType::I64 => WasmType::I64,
-                            ValType::F32 => WasmType::F32,
-                            ValType::F64 => WasmType::F64,
-                            _ => WasmType::I32,
-                        })
+                        .map(|vt| Self::val_type_to_wasm_type(*vt))
                         .collect();
 
                     self.functions.push(FuncInfo {
@@ -344,7 +332,7 @@ impl WasmCompiler {
                     }
                 } else {
                     for ident in field.name.iter() {
-                        if is_string_param {
+                        if is_string_param && self.gc_builtin_types.go_string.is_none() {
                             param_types.push(ValType::I32);
                             param_names.push(ident.name.clone());
                             param_types.push(ValType::I32);
@@ -380,18 +368,7 @@ impl WasmCompiler {
             let wasm_params: Vec<(String, WasmType)> = param_names
                 .iter()
                 .zip(param_types.iter())
-                .map(|(n, vt)| {
-                    (
-                        n.clone(),
-                        match vt {
-                            ValType::I32 => WasmType::I32,
-                            ValType::I64 => WasmType::I64,
-                            ValType::F32 => WasmType::F32,
-                            ValType::F64 => WasmType::F64,
-                            _ => WasmType::I32,
-                        },
-                    )
-                })
+                .map(|(n, vt)| (n.clone(), Self::val_type_to_wasm_type(*vt)))
                 .collect();
 
             let mut result_types: Vec<ValType> = Vec::new();
@@ -422,13 +399,7 @@ impl WasmCompiler {
 
             let wasm_results: Vec<WasmType> = result_types
                 .iter()
-                .map(|vt| match vt {
-                    ValType::I32 => WasmType::I32,
-                    ValType::I64 => WasmType::I64,
-                    ValType::F32 => WasmType::F32,
-                    ValType::F64 => WasmType::F64,
-                    _ => WasmType::I32,
-                })
+                .map(|vt| Self::val_type_to_wasm_type(*vt))
                 .collect();
 
             let mut iface_param_indices: Vec<usize> = Vec::new();
@@ -1081,28 +1052,45 @@ impl WasmCompiler {
         });
 
         if is_string_type {
-            // Strings are (ptr, len) pairs; use two i32 globals and defer initialization
-            for name in &spec.name {
-                let var_name = self.qualify_pkg_name(&name.name);
-                let ptr_idx = self.next_global_idx;
-                self.global_section.global(
-                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-                    &ConstExpr::i32_const(0),
-                );
-                self.next_global_idx += 1;
+            if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                let gc_vt = Self::gc_ref_val_type(go_string_idx);
+                for name in &spec.name {
+                    let var_name = self.qualify_pkg_name(&name.name);
+                    let global_idx = self.next_global_idx;
+                    self.global_section.global(
+                        GlobalType { val_type: gc_vt, mutable: true, shared: false },
+                        &ConstExpr::ref_null(HeapType::Concrete(go_string_idx)),
+                    );
+                    self.next_global_idx += 1;
+                    self.global_vars.insert(var_name.clone(), (global_idx, gc_vt));
 
-                let len_idx = self.next_global_idx;
-                self.global_section.global(
-                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-                    &ConstExpr::i32_const(0),
-                );
-                self.next_global_idx += 1;
+                    if let Some(val) = spec.values.first() {
+                        self.global_var_inits.push((var_name, val.clone(), gc_vt, self.current_package.clone()));
+                    }
+                }
+            } else {
+                for name in &spec.name {
+                    let var_name = self.qualify_pkg_name(&name.name);
+                    let ptr_idx = self.next_global_idx;
+                    self.global_section.global(
+                        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                        &ConstExpr::i32_const(0),
+                    );
+                    self.next_global_idx += 1;
 
-                self.global_vars.insert(var_name.clone(), (ptr_idx, ValType::I32));
-                self.global_vars.insert(format!("{}_1", var_name), (len_idx, ValType::I32));
+                    let len_idx = self.next_global_idx;
+                    self.global_section.global(
+                        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                        &ConstExpr::i32_const(0),
+                    );
+                    self.next_global_idx += 1;
 
-                if let Some(val) = spec.values.first() {
-                    self.global_var_inits.push((var_name, val.clone(), ValType::I32, self.current_package.clone()));
+                    self.global_vars.insert(var_name.clone(), (ptr_idx, ValType::I32));
+                    self.global_vars.insert(format!("{}_1", var_name), (len_idx, ValType::I32));
+
+                    if let Some(val) = spec.values.first() {
+                        self.global_var_inits.push((var_name, val.clone(), ValType::I32, self.current_package.clone()));
+                    }
                 }
             }
             return Ok(());
