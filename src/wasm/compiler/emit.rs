@@ -477,7 +477,7 @@ impl WasmCompiler {
         self.functions.push(FuncInfo {
             wasm_func_idx: func_idx,
             type_idx,
-            name: "alloc".to_string(),
+            name: "__wasm_alloc".to_string(),
             params: vec![("size".to_string(), WasmType::I32)],
             results: vec![WasmType::I32],
             result_go_types: vec![],
@@ -518,7 +518,7 @@ impl WasmCompiler {
         self.functions.push(FuncInfo {
             wasm_func_idx: func_idx,
             type_idx,
-            name: "reset".to_string(),
+            name: "__wasm_reset".to_string(),
             params: vec![],
             results: vec![],
             result_go_types: vec![],
@@ -717,7 +717,7 @@ impl WasmCompiler {
     pub(crate) fn alloc_func_idx(&self) -> Result<u32, Error> {
         self.functions
             .iter()
-            .find(|f| f.name == "alloc")
+            .find(|f| f.name == "__wasm_alloc")
             .map(|f| f.wasm_func_idx)
             .ok_or_else(|| {
                 Error::InternalError(

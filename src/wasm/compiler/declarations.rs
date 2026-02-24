@@ -801,10 +801,7 @@ impl WasmCompiler {
                         continue;
                     }
                     if let ast::Expression::TypeStruct(struct_type) = &spec.typ {
-                        let mut struct_def = self.compute_struct_def(&struct_type.fields);
-                        if let Some(existing) = self.struct_defs.get(&qualified_name) {
-                            struct_def.gc_type_idx = existing.gc_type_idx;
-                        }
+                        let struct_def = self.compute_struct_def(&struct_type.fields);
                         self.struct_defs
                             .insert(qualified_name.clone(), struct_def);
                         self.register_struct_field_map_types(&qualified_name, &struct_type.fields);

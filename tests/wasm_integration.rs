@@ -1497,8 +1497,7 @@ package main
 
 func Greet() int {
     s := "hello"
-    _ = s
-    return 42
+    return len(s)
 }
 "#;
 
@@ -1517,21 +1516,7 @@ func Greet() int {
         .expect("Greet not found");
 
     let result_val = greet_fn.call(&mut store, ()).expect("call failed");
-    assert_eq!(result_val, 42);
-
-    let memory = instance
-        .get_memory(&mut store, "memory")
-        .expect("memory export not found");
-
-    // The string "hello" should be in memory after offset 65536 (heap start)
-    let data = memory.data(&store);
-    let heap_start = 65536usize;
-    let heap_data = &data[heap_start..];
-    let pos = heap_data
-        .windows(5)
-        .position(|w| w == b"hello")
-        .expect("string 'hello' not found in WASM memory");
-    assert!(pos < 4096, "string should be near heap start");
+    assert_eq!(result_val, 5, "len(\"hello\") should be 5");
 }
 
 #[test]
@@ -1739,8 +1724,7 @@ package main
 
 func EscapeTest() int {
     s := "ab\nc"
-    _ = s
-    return 42
+    return len(s)
 }
 "#;
 
@@ -1757,19 +1741,9 @@ func EscapeTest() int {
     let func = instance
         .get_typed_func::<(), i64>(&mut store, "EscapeTest")
         .expect("EscapeTest not found");
-    func.call(&mut store, ()).expect("call failed");
-
-    let memory = instance
-        .get_memory(&mut store, "memory")
-        .expect("memory export not found");
-    let data = memory.data(&store);
-    let heap = &data[65536..];
-    // "ab\nc" should be 4 bytes: 'a', 'b', '\n', 'c'
-    let pos = heap
-        .windows(4)
-        .position(|w| w == b"ab\nc")
-        .expect("escaped string not found in memory");
-    assert!(pos < 4096, "string should be near heap start");
+    let result_val = func.call(&mut store, ()).expect("call failed");
+    // "ab\nc" is 4 bytes: 'a', 'b', '\n', 'c'
+    assert_eq!(result_val, 4, "len(\"ab\\nc\") should be 4");
 }
 
 #[test]

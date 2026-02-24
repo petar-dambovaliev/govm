@@ -2326,6 +2326,10 @@ impl WasmCompiler {
                             align: 2,
                             memory_index: 0,
                         }));
+                        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                            self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                            return Ok(GoType::String);
+                        }
                         return Ok(GoType::Int32);
                     }
 
@@ -3050,6 +3054,9 @@ impl WasmCompiler {
             // String fields need special handling: store both ptr and len
             if field_go_type_tag.as_deref() == Some("__string") {
                 self.compile_expression(elem_expr, out, locals)?;
+                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                    self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                }
                 let str_len_tmp = locals.add_local(
                     &format!("__comp_str_len_{}", locals.locals.len()),
                     ValType::I32,
@@ -4417,7 +4424,9 @@ impl WasmCompiler {
                 if let ast::Expression::Ident(ident) = call.func.as_ref() {
                     match ident.name.as_str() {
                         "panic" | "println" | "print" | "delete" | "clear" => 0,
-                        "recover" => 2,
+                        "recover" => {
+                            if self.gc_builtin_types.go_string.is_some() { 1 } else { 2 }
+                        }
                         "len" | "cap" | "copy" | "make" | "append"
                         | "int" | "int64" | "uint" | "uint64"
                         | "float64" | "float32"
@@ -4426,7 +4435,9 @@ impl WasmCompiler {
                         | "bool"
                         | "new" | "min" | "max"
                         | "complex" | "real" | "imag" => 1,
-                        "string" => 2,
+                        "string" => {
+                            if self.gc_builtin_types.go_string.is_some() { 1 } else { 2 }
+                        }
                         _ => {
                             if let Some(loc) = locals {
                                 if let Some(&(func_idx, _)) = loc.closure_info.get(&ident.name) {
@@ -4475,7 +4486,9 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::BasicLit(lit) => match lit.kind {
-                LitKind::String => 2,
+                LitKind::String => {
+                    if self.gc_builtin_types.go_string.is_some() { 1 } else { 2 }
+                }
                 _ => 1,
             },
             ast::Expression::FuncLit(_) => 1,

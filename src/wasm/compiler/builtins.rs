@@ -314,8 +314,11 @@ impl WasmCompiler {
         let dst_hdr = locals.add_local("__cpys_dhdr", ValType::I32);
         out.push(Instruction::LocalSet(dst_hdr));
 
-        // Compile src string (pushes ptr, len)
+        // Compile src string (pushes ptr, len — or GC ref)
         self.compile_expression(&call.args[1], out, locals)?;
+        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+            self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+        }
         let src_len = locals.add_local("__cpys_slen", ValType::I32);
         let src_ptr = locals.add_local("__cpys_sptr", ValType::I32);
         out.push(Instruction::LocalSet(src_len));
@@ -1060,8 +1063,11 @@ impl WasmCompiler {
     ) -> Result<(), Error> {
         let elem_size: i32 = 4; // []byte stores each byte in a 4-byte I32 slot
 
-        // Compile source string (pushes ptr, len)
+        // Compile source string (pushes ptr, len — or GC ref)
         self.compile_expression(&call.args[1], out, locals)?;
+        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+            self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+        }
         let src_len = locals.add_local("__appstr_slen", ValType::I32);
         let src_ptr = locals.add_local("__appstr_sptr", ValType::I32);
         out.push(Instruction::LocalSet(src_len));

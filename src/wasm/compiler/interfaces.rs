@@ -34,6 +34,41 @@ impl WasmCompiler {
         let rhs_vt = self.infer_val_type(expr, locals);
         let rhs_type_name = self.infer_concrete_type_name(expr, locals);
         let type_id = self.get_or_create_type_id(&rhs_type_name);
+
+        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+            if rhs_vt == Self::gc_ref_val_type(go_string_idx) {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                let str_len = locals.add_local(&format!("__ret_ibox_sl_{}", locals.locals.len()), ValType::I32);
+                let str_ptr = locals.add_local(&format!("__ret_ibox_sp_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalSet(str_len));
+                out.push(Instruction::LocalSet(str_ptr));
+
+                out.push(Instruction::I32Const(8));
+                out.push(Instruction::Call(self.alloc_func_idx()?));
+                let data_ptr = locals.add_local(&format!("__ret_ibox_d_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalSet(data_ptr));
+                out.push(Instruction::LocalGet(data_ptr));
+                out.push(Instruction::LocalGet(str_ptr));
+                out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalGet(data_ptr));
+                out.push(Instruction::LocalGet(str_len));
+                out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+
+                out.push(Instruction::I32Const(8));
+                out.push(Instruction::Call(self.alloc_func_idx()?));
+                let wrapper = locals.add_local(&format!("__ret_ibox_w_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalSet(wrapper));
+                out.push(Instruction::LocalGet(wrapper));
+                out.push(Instruction::I32Const(type_id as i32));
+                out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalGet(wrapper));
+                out.push(Instruction::LocalGet(data_ptr));
+                out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalGet(wrapper));
+                return Ok(());
+            }
+        }
+
         let (elem_size, _) = Self::elem_size_and_align(rhs_vt);
 
         let val_tmp = locals.add_local(&format!("__ret_ibox_v_{}", locals.locals.len()), rhs_vt);
@@ -117,6 +152,31 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
+        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+            if val_vt == Self::gc_ref_val_type(go_string_idx) {
+                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                let str_len = locals.add_local(&format!("__box_sl_{}", locals.locals.len()), ValType::I32);
+                let str_ptr = locals.add_local(&format!("__box_sp_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalSet(str_len));
+                out.push(Instruction::LocalSet(str_ptr));
+
+                out.push(Instruction::I32Const(8));
+                out.push(Instruction::Call(self.alloc_func_idx()?));
+                out.push(Instruction::LocalSet(data_local));
+
+                out.push(Instruction::LocalGet(data_local));
+                out.push(Instruction::LocalGet(str_ptr));
+                out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalGet(data_local));
+                out.push(Instruction::LocalGet(str_len));
+                out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+
+                out.push(Instruction::I32Const(type_id as i32));
+                out.push(Instruction::LocalSet(tid_local));
+                return Ok(());
+            }
+        }
+
         // Value is on top of the stack; save it to a temp
         let tmp = locals.add_local(&format!("__box_tmp_{}", locals.locals.len()), val_vt);
         out.push(Instruction::LocalSet(tmp));
