@@ -98,6 +98,8 @@ impl UdfRuntime {
     pub fn new() -> Result<Self, wasmtime::Error> {
         let mut config = Config::new();
         config.consume_fuel(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
 
         let engine = Engine::new(&config)?;
         let mut linker = Linker::new(&engine);

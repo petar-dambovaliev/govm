@@ -133,8 +133,8 @@ impl WasmCompiler {
                             match rt {
                                 ValType::I32 => out.push(Instruction::I32Const(0)),
                                 ValType::I64 => out.push(Instruction::I64Const(0)),
-                                ValType::F32 => out.push(Instruction::F32Const(0.0)),
-                                ValType::F64 => out.push(Instruction::F64Const(0.0)),
+                                ValType::F32 => out.push(Instruction::F32Const(0.0_f32.into())),
+                                ValType::F64 => out.push(Instruction::F64Const(0.0_f64.into())),
                                 _ => out.push(Instruction::I32Const(0)),
                             }
                         }
@@ -2203,7 +2203,7 @@ impl WasmCompiler {
                             // ln(x) can't be done natively. Use a host import or
                             // return 0 for now as a stub.
                             out.push(Instruction::Drop);
-                            out.push(Instruction::F64Const(0.0));
+                            out.push(Instruction::F64Const(0.0_f64.into()));
                             return Ok(GoType::Float64);
                         }
                         ("math", func_name) => {

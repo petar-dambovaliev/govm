@@ -890,6 +890,7 @@ impl WasmCompiler {
                             wasm_type: WasmType::I32,
                             offset: embed_offset,
                             go_type_tag: None,
+                            field_index: 0,
                         });
                         for inner_field in &inner_def.fields {
                             let abs_offset = embed_offset + inner_field.offset;
@@ -898,6 +899,7 @@ impl WasmCompiler {
                                 wasm_type: inner_field.wasm_type,
                                 offset: abs_offset,
                                 go_type_tag: inner_field.go_type_tag.clone(),
+                                field_index: 0,
                             });
                         }
                         offset += inner_def.total_size;
@@ -961,6 +963,7 @@ impl WasmCompiler {
                         wasm_type: wt,
                         offset,
                         go_type_tag: go_type_tag.clone(),
+                        field_index: 0,
                     });
                     offset += size;
                 } else {
@@ -977,6 +980,7 @@ impl WasmCompiler {
                             wasm_type: wt,
                             offset,
                             go_type_tag: if i == 0 { go_type_tag.clone() } else { None },
+                            field_index: 0,
                         });
                         offset += size;
                     }
@@ -994,10 +998,15 @@ impl WasmCompiler {
             (offset + align - 1) & !(align - 1)
         };
 
+        for (i, f) in result_fields.iter_mut().enumerate() {
+            f.field_index = i as u32;
+        }
+
         StructDef {
             fields: result_fields,
             total_size,
             embedded_types,
+            gc_type_idx: None,
         }
     }
 
@@ -1172,13 +1181,13 @@ impl WasmCompiler {
                 &match (&const_init, vt) {
                     (Some(ConstValue::I64(v)), ValType::I64) => ConstExpr::i64_const(*v as i64),
                     (Some(ConstValue::I64(v)), ValType::I32) => ConstExpr::i32_const(*v as i32),
-                    (Some(ConstValue::F64(v)), ValType::F64) => ConstExpr::f64_const(*v),
-                    (Some(ConstValue::F64(v)), ValType::F32) => ConstExpr::f32_const(*v as f32),
+                    (Some(ConstValue::F64(v)), ValType::F64) => ConstExpr::f64_const((*v).into()),
+                    (Some(ConstValue::F64(v)), ValType::F32) => ConstExpr::f32_const((*v as f32).into()),
                     (Some(ConstValue::Bool(v)), _) => ConstExpr::i32_const(*v as i32),
                     (_, ValType::I64) => ConstExpr::i64_const(0),
                     (_, ValType::I32) => ConstExpr::i32_const(0),
-                    (_, ValType::F64) => ConstExpr::f64_const(0.0),
-                    (_, ValType::F32) => ConstExpr::f32_const(0.0),
+                    (_, ValType::F64) => ConstExpr::f64_const(0.0_f64.into()),
+                    (_, ValType::F32) => ConstExpr::f32_const(0.0_f32.into()),
                     _ => ConstExpr::i64_const(0),
                 },
             );

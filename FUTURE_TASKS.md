@@ -6,7 +6,7 @@ This document tracks Go language specification features that are missing or inco
 
 ## Language Features
 
-### `goto` Statement
+### `goto` Statement done
 
 - **Status:** Not supported
 - **Impact:** Low
@@ -20,9 +20,9 @@ This document tracks Go language specification features that are missing or inco
 
 ### Named Type Conversions (Edge Cases)
 
-- **Status:** Partially broken
+- **Status:** Done
 - **Impact:** Medium
-- **Details:** Works with methods (`MyInt(10)`, `int(a.Add(b))`) but standalone conversion edge cases may fail. Two tests are commented out in `tests/wasm_integration.rs`: `test_named_type_conversion` (line 19064) and `test_named_type_round_trip_conversion` (line 24230). Both test patterns like `type MyInt int; var x MyInt = MyInt(42); int(x)`.
+- **Details:** Fixed. The `compile_call` type_aliases branch was returning the wrong GoType (defaulting to `Int32`), causing incorrect WASM coercion instructions for named types mapping to non-I32 types. Both `test_named_type_conversion` and `test_named_type_round_trip_conversion` now pass.
 
 ---
 

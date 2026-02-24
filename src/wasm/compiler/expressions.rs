@@ -104,7 +104,7 @@ impl WasmCompiler {
                 let val: f64 = Self::parse_go_float(&lit.value).map_err(|_| {
                     Error::SyntaxError(format!("invalid float literal: {}", lit.value))
                 })?;
-                out.push(Instruction::F64Const(val));
+                out.push(Instruction::F64Const(val.into()));
                 return Ok(GoType::Float64);
             }
             LitKind::String => {
@@ -156,9 +156,9 @@ impl WasmCompiler {
                     &format!("__imag_i_{}", locals.locals.len()),
                     ValType::F64,
                 );
-                out.push(Instruction::F64Const(0.0));
+                out.push(Instruction::F64Const(0.0_f64.into()));
                 out.push(Instruction::LocalSet(real_local));
-                out.push(Instruction::F64Const(imag_val));
+                out.push(Instruction::F64Const(imag_val.into()));
                 out.push(Instruction::LocalSet(imag_local));
 
                 out.push(Instruction::I32Const(total_size));
@@ -482,7 +482,7 @@ impl WasmCompiler {
                     }
                     out.push(Instruction::I64Const(v as i64));
                 }
-                ConstValue::F64(v) => out.push(Instruction::F64Const(*v)),
+                ConstValue::F64(v) => out.push(Instruction::F64Const((*v).into())),
                 ConstValue::Bool(v) => out.push(Instruction::I32Const(*v as i32)),
                 ConstValue::Str(s) => {
                     let bytes = s.as_bytes();
@@ -520,11 +520,11 @@ impl WasmCompiler {
                     out.push(Instruction::LocalSet(ptr_local));
 
                     out.push(Instruction::LocalGet(ptr_local));
-                    out.push(Instruction::F64Const(*real));
+                    out.push(Instruction::F64Const((*real).into()));
                     out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
 
                     out.push(Instruction::LocalGet(ptr_local));
-                    out.push(Instruction::F64Const(*imag));
+                    out.push(Instruction::F64Const((*imag).into()));
                     out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
 
                     out.push(Instruction::LocalGet(ptr_local));
@@ -1117,7 +1117,7 @@ impl WasmCompiler {
                         Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }),
                         Instruction::F32Ne,
                     ),
-                    WasmType::I32 => (
+                    WasmType::I32 | WasmType::Ref(_) => (
                         Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
                         Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }),
                         Instruction::I32Ne,
@@ -1978,7 +1978,7 @@ impl WasmCompiler {
                             }
                             out.push(Instruction::I64Const(v as i64));
                         }
-                        ConstValue::F64(v) => out.push(Instruction::F64Const(*v)),
+                        ConstValue::F64(v) => out.push(Instruction::F64Const((*v).into())),
                         ConstValue::Bool(v) => out.push(Instruction::I32Const(*v as i32)),
                         ConstValue::Str(s) => {
                             let bytes = s.as_bytes();
@@ -2003,8 +2003,8 @@ impl WasmCompiler {
                             out.push(Instruction::I32Const(slen));
                         }
                         ConstValue::Complex128(re, im) => {
-                            out.push(Instruction::F64Const(*re));
-                            out.push(Instruction::F64Const(*im));
+                            out.push(Instruction::F64Const((*re).into()));
+                            out.push(Instruction::F64Const((*im).into()));
                         }
                     }
                     return Ok(GoType::Int32);
@@ -2017,8 +2017,54 @@ impl WasmCompiler {
         let struct_type_name = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
 
         if let Some(type_name) = struct_type_name {
-            if let Some(struct_def) = self.struct_defs.get(&type_name) {
-                if let Some(field) = struct_def.find_field(&sel.sel.name) {
+            if let Some(struct_def) = self.struct_defs.get(&type_name).cloned() {
+                if let Some(gc_type_idx) = struct_def.gc_type_idx {
+                    if let Some(field) = struct_def.find_field(&sel.sel.name) {
+                        if field.go_type_tag.as_deref() == Some("__string") {
+                            let ref_local = locals.add_local(
+                                &format!("__sel_str_ref_{}", locals.locals.len()),
+                                Self::gc_ref_val_type(gc_type_idx),
+                            );
+                            out.push(Instruction::LocalSet(ref_local));
+                            out.push(Instruction::LocalGet(ref_local));
+                            out.push(Instruction::StructGet {
+                                struct_type_index: gc_type_idx,
+                                field_index: field.field_index,
+                            });
+                            out.push(Instruction::LocalGet(ref_local));
+                            out.push(Instruction::StructGet {
+                                struct_type_index: gc_type_idx,
+                                field_index: field.field_index + 1,
+                            });
+                            return Ok(GoType::Int32);
+                        }
+
+                        if field.go_type_tag.as_deref() == Some("__interface") {
+                            let ref_local = locals.add_local(
+                                &format!("__sel_iface_ref_{}", locals.locals.len()),
+                                Self::gc_ref_val_type(gc_type_idx),
+                            );
+                            out.push(Instruction::LocalSet(ref_local));
+                            out.push(Instruction::LocalGet(ref_local));
+                            out.push(Instruction::StructGet {
+                                struct_type_index: gc_type_idx,
+                                field_index: field.field_index,
+                            });
+                            out.push(Instruction::LocalGet(ref_local));
+                            out.push(Instruction::StructGet {
+                                struct_type_index: gc_type_idx,
+                                field_index: field.field_index + 1,
+                            });
+                            return Ok(GoType::Int32);
+                        }
+
+                        out.push(Instruction::StructGet {
+                            struct_type_index: gc_type_idx,
+                            field_index: field.field_index,
+                        });
+                        return Ok(GoType::Int32);
+                    }
+                } else if let Some(field) = struct_def.find_field(&sel.sel.name) {
                     if field.go_type_tag.as_deref() == Some("__string") {
                         let base_offset = field.offset as u64;
                         let base_local = locals.add_local(
@@ -2048,14 +2094,12 @@ impl WasmCompiler {
                             ValType::I32,
                         );
                         out.push(Instruction::LocalSet(base_local));
-                        // Load data_ptr
                         out.push(Instruction::LocalGet(base_local));
                         out.push(Instruction::I32Load(MemArg {
                             offset: base_offset,
                             align: 2,
                             memory_index: 0,
                         }));
-                        // Load type_id
                         out.push(Instruction::LocalGet(base_local));
                         out.push(Instruction::I32Load(MemArg {
                             offset: base_offset + 4,
@@ -2082,7 +2126,7 @@ impl WasmCompiler {
                             align: 2,
                             memory_index: 0,
                         })),
-                        WasmType::I32 => out.push(Instruction::I32Load(MemArg {
+                        WasmType::I32 | WasmType::Ref(_) => out.push(Instruction::I32Load(MemArg {
                             offset,
                             align: 2,
                             memory_index: 0,
@@ -2517,6 +2561,13 @@ impl WasmCompiler {
             .and_then(|n| self.struct_defs.get(n))
             .cloned();
 
+        if let Some(ref sd) = struct_def {
+            if let Some(gc_type_idx) = sd.gc_type_idx {
+                self.stack_alloc_target = None;
+                return self.compile_gc_struct_lit(comp, gc_type_idx, sd, out, locals);
+            }
+        }
+
         let total_size = if let Some(ref sd) = struct_def {
             sd.total_size as i32
         } else {
@@ -2898,6 +2949,175 @@ impl WasmCompiler {
 
         out.push(Instruction::LocalGet(ptr_local));
 
+        Ok(GoType::Struct("".to_string()))
+    }
+
+    fn compile_gc_struct_lit(
+        &mut self,
+        comp: &ast::CompositeLit,
+        gc_type_idx: u32,
+        struct_def: &StructDef,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<GoType, Error> {
+        let ref_vt = Self::gc_ref_val_type(gc_type_idx);
+        let ref_local = locals.add_local("__gc_struct", ref_vt);
+        out.push(Instruction::StructNewDefault(gc_type_idx));
+        out.push(Instruction::LocalSet(ref_local));
+
+        for (i, kv) in comp.val.values.iter().enumerate() {
+            let elem_expr = match &kv.val {
+                ast::Element::Expr(e) => e,
+                ast::Element::LitValue(lit) => {
+                    let field_info = if let Some(ref key) = kv.key {
+                        if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
+                            struct_def.find_field(&key_ident.name)
+                        } else { None }
+                    } else if i < struct_def.fields.len() {
+                        Some(&struct_def.fields[i])
+                    } else { None };
+
+                    if let Some(field) = field_info {
+                        if let Some(ref tag) = field.go_type_tag {
+                            if self.struct_defs.contains_key(tag) {
+                                if let Some(inner_sd) = self.struct_defs.get(tag).cloned() {
+                                    if let Some(inner_gc_idx) = inner_sd.gc_type_idx {
+                                        let inner_comp = ast::CompositeLit {
+                                            typ: Box::new(ast::Expression::Ident(ast::Ident {
+                                                pos: 0,
+                                                name: tag.clone(),
+                                            })),
+                                            val: lit.clone(),
+                                        };
+                                        out.push(Instruction::LocalGet(ref_local));
+                                        self.compile_gc_struct_lit(&inner_comp, inner_gc_idx, &inner_sd, out, locals)?;
+                                        out.push(Instruction::StructSet {
+                                            struct_type_index: gc_type_idx,
+                                            field_index: field.field_index,
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
+
+            let field = if let Some(ref key) = kv.key {
+                if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
+                    struct_def.find_field(&key_ident.name).ok_or_else(|| {
+                        Error::InternalError(format!(
+                            "unknown field '{}' in GC struct literal", key_ident.name
+                        ))
+                    })?
+                } else {
+                    return Err(Error::InternalError(
+                        "unsupported key expression in GC struct literal".to_string(),
+                    ));
+                }
+            } else if i < struct_def.fields.len() {
+                &struct_def.fields[i]
+            } else {
+                return Err(Error::InternalError(format!(
+                    "too many fields in GC struct literal: got {}, struct has {}",
+                    i + 1, struct_def.fields.len()
+                )));
+            };
+
+            let field_index = field.field_index;
+            let field_wt = field.wasm_type;
+            let go_type_tag = field.go_type_tag.clone();
+
+            if go_type_tag.as_deref() == Some("__string") {
+                self.compile_expression(elem_expr, out, locals)?;
+                let str_len_tmp = locals.add_local(
+                    &format!("__gc_str_len_{}", locals.locals.len()), ValType::I32,
+                );
+                let str_ptr_tmp = locals.add_local(
+                    &format!("__gc_str_ptr_{}", locals.locals.len()), ValType::I32,
+                );
+                out.push(Instruction::LocalSet(str_len_tmp));
+                out.push(Instruction::LocalSet(str_ptr_tmp));
+                out.push(Instruction::LocalGet(ref_local));
+                out.push(Instruction::LocalGet(str_ptr_tmp));
+                out.push(Instruction::StructSet {
+                    struct_type_index: gc_type_idx,
+                    field_index,
+                });
+                if let Some(len_field) = struct_def.fields.iter().find(|f| {
+                    f.name == format!("{}_1", field.name) || f.field_index == field_index + 1
+                }) {
+                    out.push(Instruction::LocalGet(ref_local));
+                    out.push(Instruction::LocalGet(str_len_tmp));
+                    out.push(Instruction::StructSet {
+                        struct_type_index: gc_type_idx,
+                        field_index: len_field.field_index,
+                    });
+                }
+                continue;
+            }
+
+            if go_type_tag.as_deref() == Some("__interface") {
+                if let ast::Expression::Ident(iface_ident) = elem_expr {
+                    if iface_ident.name == "nil" {
+                        out.push(Instruction::LocalGet(ref_local));
+                        out.push(Instruction::I32Const(0));
+                        out.push(Instruction::StructSet {
+                            struct_type_index: gc_type_idx,
+                            field_index,
+                        });
+                        if field_index + 1 < struct_def.fields.len() as u32 {
+                            out.push(Instruction::LocalGet(ref_local));
+                            out.push(Instruction::I32Const(0));
+                            out.push(Instruction::StructSet {
+                                struct_type_index: gc_type_idx,
+                                field_index: field_index + 1,
+                            });
+                        }
+                        continue;
+                    }
+                }
+                self.compile_expression(elem_expr, out, locals)?;
+                let data_tmp = locals.add_local(
+                    &format!("__gc_iface_d_{}", locals.locals.len()), ValType::I32,
+                );
+                out.push(Instruction::LocalSet(data_tmp));
+                out.push(Instruction::LocalGet(ref_local));
+                out.push(Instruction::LocalGet(data_tmp));
+                out.push(Instruction::StructSet {
+                    struct_type_index: gc_type_idx,
+                    field_index,
+                });
+                if field_index + 1 < struct_def.fields.len() as u32 {
+                    out.push(Instruction::LocalGet(ref_local));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::StructSet {
+                        struct_type_index: gc_type_idx,
+                        field_index: field_index + 1,
+                    });
+                }
+                continue;
+            }
+
+            out.push(Instruction::LocalGet(ref_local));
+            self.compile_expression(elem_expr, out, locals)?;
+
+            let target_vt = field_wt.to_val_type();
+            let expr_vt = self.infer_val_type(elem_expr, locals);
+
+            if expr_vt != target_vt && !matches!(target_vt, ValType::Ref(_)) {
+                Self::emit_typed_coerce(expr_vt, target_vt, out)?;
+            }
+
+            out.push(Instruction::StructSet {
+                struct_type_index: gc_type_idx,
+                field_index,
+            });
+        }
+
+        out.push(Instruction::LocalGet(ref_local));
         Ok(GoType::Struct("".to_string()))
     }
 

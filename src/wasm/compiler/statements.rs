@@ -2896,19 +2896,19 @@ impl WasmCompiler {
                 out.push(Instruction::I32Sub);
             }
             (Operator::Inc, ValType::F64) => {
-                out.push(Instruction::F64Const(1.0));
+                out.push(Instruction::F64Const(1.0_f64.into()));
                 out.push(Instruction::F64Add);
             }
             (Operator::Dec, ValType::F64) => {
-                out.push(Instruction::F64Const(1.0));
+                out.push(Instruction::F64Const(1.0_f64.into()));
                 out.push(Instruction::F64Sub);
             }
             (Operator::Inc, ValType::F32) => {
-                out.push(Instruction::F32Const(1.0));
+                out.push(Instruction::F32Const(1.0_f32.into()));
                 out.push(Instruction::F32Add);
             }
             (Operator::Dec, ValType::F32) => {
-                out.push(Instruction::F32Const(1.0));
+                out.push(Instruction::F32Const(1.0_f32.into()));
                 out.push(Instruction::F32Sub);
             }
             (Operator::Inc, _) => {

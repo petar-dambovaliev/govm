@@ -521,6 +521,7 @@ impl WasmCompiler {
         if let ast::Expression::TypeStruct(struct_type) = &specialized_type {
             let struct_def = self.compute_struct_def(&struct_type.fields);
             self.struct_defs.insert(mono_name.clone(), struct_def);
+            self.register_gc_struct_type_late(&mono_name);
             self.register_struct_field_map_types(&mono_name, &struct_type.fields);
         }
 
@@ -809,7 +810,25 @@ impl WasmCompiler {
                 }
                 ValType::I32
             }
-            ast::Expression::CompositeLit(_) => ValType::I32,
+            ast::Expression::CompositeLit(cl) => {
+                if let ast::Expression::Ident(id) = cl.typ.as_ref() {
+                    let resolved = self.resolve_struct_in_pkg(&id.name);
+                    if let Some(sd) = self.struct_defs.get(&resolved) {
+                        if let Some(gc_idx) = sd.gc_type_idx {
+                            return Self::gc_ref_val_type(gc_idx);
+                        }
+                    }
+                } else if let ast::Expression::Index(idx) = cl.typ.as_ref() {
+                    if let Some(ast::Expression::Ident(type_ident)) = idx.left.as_ref().map(|l| l.as_ref()) {
+                        if let Some(sd) = self.struct_defs.get(&type_ident.name) {
+                            if let Some(gc_idx) = sd.gc_type_idx {
+                                return Self::gc_ref_val_type(gc_idx);
+                            }
+                        }
+                    }
+                }
+                ValType::I32
+            }
             ast::Expression::Index(idx) => {
                 if let Some(left) = idx.left.as_deref() {
                     if self.is_string_expr(left, locals) {

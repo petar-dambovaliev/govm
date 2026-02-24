@@ -765,7 +765,7 @@ impl WasmCompiler {
 
         // Check sign
         out.push(Instruction::LocalGet(fval));
-        out.push(Instruction::F64Const(0.0));
+        out.push(Instruction::F64Const(0.0_f64.into()));
         out.push(Instruction::F64Lt);
         out.push(Instruction::LocalSet(is_neg));
 
@@ -795,7 +795,7 @@ impl WasmCompiler {
 
         // Check if frac is zero (frac_val < 1e-9)
         out.push(Instruction::LocalGet(frac_val));
-        out.push(Instruction::F64Const(1e-9));
+        out.push(Instruction::F64Const(1e-9_f64.into()));
         out.push(Instruction::F64Lt);
         out.push(Instruction::If(BlockType::Empty));
         {
@@ -829,9 +829,9 @@ impl WasmCompiler {
             // Has fractional part: always generate 6 fractional digits then strip trailing '0's
             // frac_int = i64(round(frac_val * 1e6))
             out.push(Instruction::LocalGet(frac_val));
-            out.push(Instruction::F64Const(1e6));
+            out.push(Instruction::F64Const(1e6_f64.into()));
             out.push(Instruction::F64Mul);
-            out.push(Instruction::F64Const(0.5));
+            out.push(Instruction::F64Const(0.5_f64.into()));
             out.push(Instruction::F64Add);
             out.push(Instruction::F64Floor);
             out.push(Instruction::I64TruncF64S);

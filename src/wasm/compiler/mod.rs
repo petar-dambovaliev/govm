@@ -8,9 +8,10 @@ use crate::wasm::udf::{
 };
 use std::collections::HashMap;
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, ElementSection, Elements, ExportKind, ExportSection,
-    Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemArg,
-    MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
+    BlockType, CodeSection, CompositeInnerType, CompositeType, ConstExpr, ElementSection, Elements,
+    ExportKind, ExportSection, FieldType, Function, FunctionSection, GlobalSection, GlobalType,
+    HeapType, ImportSection, Instruction, MemArg, MemorySection, MemoryType, Module, RefType,
+    StorageType, StructType, SubType, TableSection, TableType, TypeSection, ValType,
 };
 
 pub struct CompileResult {
@@ -52,6 +53,7 @@ pub(crate) struct StructDef {
     pub(crate) fields: Vec<StructFieldDef>,
     total_size: u32,
     embedded_types: Vec<(String, u32)>, // (type_name, offset_in_parent)
+    pub(crate) gc_type_idx: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ pub(crate) struct StructFieldDef {
     wasm_type: WasmType,
     offset: u32,
     go_type_tag: Option<String>,
+    pub(crate) field_index: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -466,6 +469,15 @@ impl LocalAlloc {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GcBuiltinTypes {
+    pub(crate) byte_array: Option<u32>,
+    pub(crate) go_string: Option<u32>,
+    pub(crate) complex64: Option<u32>,
+    pub(crate) complex128: Option<u32>,
+    pub(crate) go_iface: Option<u32>,
+}
+
 pub struct WasmCompiler {
     pub symbols: SymbolTable,
     type_section: TypeSection,
@@ -571,6 +583,17 @@ pub struct WasmCompiler {
     // Buffered code section entries: (func_idx, Function body)
     // Sorted by func_idx before writing to code_section in build_module
     code_buffer: Vec<(u32, Function)>,
+
+    // WasmGC support: maps Go struct names to their WasmGC type indices
+    gc_struct_types: HashMap<String, u32>,
+    // WasmGC support: maps element ValType to array type index
+    gc_array_types: HashMap<ValType, u32>,
+    // WasmGC support: per-element-type slice struct type indices
+    gc_slice_types: HashMap<ValType, u32>,
+    // WasmGC support: builtin GC type indices
+    gc_builtin_types: GcBuiltinTypes,
+    // WasmGC support: closure env GC type indices
+    gc_closure_env_types: Vec<u32>,
 }
 
 
@@ -669,6 +692,12 @@ impl WasmCompiler {
             compiled_packages: HashSet::new(),
             forward_declared: HashSet::new(),
             code_buffer: Vec::new(),
+
+            gc_struct_types: HashMap::new(),
+            gc_array_types: HashMap::new(),
+            gc_slice_types: HashMap::new(),
+            gc_builtin_types: GcBuiltinTypes::default(),
+            gc_closure_env_types: Vec::new(),
         }
     }
 
@@ -723,7 +752,244 @@ impl WasmCompiler {
             | "byte" | "rune" | "bool" | "uintptr" => ValType::I32,
             "float32" => ValType::F32,
             "float64" => ValType::F64,
-            _ => ValType::I32, // structs are pointers
+            _ => ValType::I32, // structs are pointers (overridden to GC ref when gc_struct_types is populated)
+        }
+    }
+
+    pub(crate) fn gc_ref_val_type(gc_type_idx: u32) -> ValType {
+        ValType::Ref(RefType {
+            nullable: true,
+            heap_type: HeapType::Concrete(gc_type_idx),
+        })
+    }
+
+    pub(crate) fn gc_val_type_for_struct(&self, name: &str) -> Option<ValType> {
+        self.gc_struct_types.get(name).map(|&idx| Self::gc_ref_val_type(idx))
+    }
+
+    pub(crate) fn gc_val_type_for_type_name(&self, name: &str) -> ValType {
+        if let Some(vt) = self.gc_val_type_for_struct(name) {
+            return vt;
+        }
+        if let Some(&idx) = match name {
+            "string" => self.gc_builtin_types.go_string.as_ref(),
+            "complex64" => self.gc_builtin_types.complex64.as_ref(),
+            "complex128" => self.gc_builtin_types.complex128.as_ref(),
+            _ => None,
+        } {
+            return Self::gc_ref_val_type(idx);
+        }
+        Self::val_type_for_type_name(name)
+    }
+
+    pub(crate) fn get_or_create_gc_array_type(&mut self, elem_vt: ValType) -> u32 {
+        if let Some(&idx) = self.gc_array_types.get(&elem_vt) {
+            return idx;
+        }
+        let idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let storage = match elem_vt {
+            ValType::I32 => StorageType::Val(ValType::I32),
+            ValType::I64 => StorageType::Val(ValType::I64),
+            ValType::F32 => StorageType::Val(ValType::F32),
+            ValType::F64 => StorageType::Val(ValType::F64),
+            ValType::Ref(rt) => StorageType::Val(ValType::Ref(rt)),
+            _ => StorageType::Val(ValType::I32),
+        };
+        self.type_section.ty().array(&storage, true);
+        self.gc_array_types.insert(elem_vt, idx);
+        idx
+    }
+
+    pub(crate) fn get_or_create_gc_slice_type(&mut self, elem_vt: ValType) -> (u32, u32) {
+        let array_type_idx = self.get_or_create_gc_array_type(elem_vt);
+        if let Some(&slice_idx) = self.gc_slice_types.get(&elem_vt) {
+            return (slice_idx, array_type_idx);
+        }
+        let slice_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let fields = vec![
+            FieldType { element_type: StorageType::Val(ValType::Ref(RefType { nullable: true, heap_type: HeapType::Concrete(array_type_idx) })), mutable: true },
+            FieldType { element_type: StorageType::Val(ValType::I32), mutable: true }, // offset (for sub-slicing)
+            FieldType { element_type: StorageType::Val(ValType::I32), mutable: true }, // len
+            FieldType { element_type: StorageType::Val(ValType::I32), mutable: true }, // cap
+        ];
+        self.type_section.ty().struct_(fields);
+        self.gc_slice_types.insert(elem_vt, slice_idx);
+        (slice_idx, array_type_idx)
+    }
+
+    pub(crate) fn register_gc_builtin_types(&mut self) {
+        // $ByteArray = (array (mut i8))
+        let byte_array_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        self.type_section.ty().array(&StorageType::I8, true);
+        self.gc_builtin_types.byte_array = Some(byte_array_idx);
+
+        // $GoString = (struct (field (ref null $ByteArray)) (field i32))
+        let go_string_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let string_fields = vec![
+            FieldType { element_type: StorageType::Val(ValType::Ref(RefType { nullable: true, heap_type: HeapType::Concrete(byte_array_idx) })), mutable: true },
+            FieldType { element_type: StorageType::Val(ValType::I32), mutable: true },
+        ];
+        self.type_section.ty().struct_(string_fields);
+        self.gc_builtin_types.go_string = Some(go_string_idx);
+
+        // $Complex64 = (struct (field f32) (field f32))
+        let complex64_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let c64_fields = vec![
+            FieldType { element_type: StorageType::Val(ValType::F32), mutable: true },
+            FieldType { element_type: StorageType::Val(ValType::F32), mutable: true },
+        ];
+        self.type_section.ty().struct_(c64_fields);
+        self.gc_builtin_types.complex64 = Some(complex64_idx);
+
+        // $Complex128 = (struct (field f64) (field f64))
+        let complex128_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let c128_fields = vec![
+            FieldType { element_type: StorageType::Val(ValType::F64), mutable: true },
+            FieldType { element_type: StorageType::Val(ValType::F64), mutable: true },
+        ];
+        self.type_section.ty().struct_(c128_fields);
+        self.gc_builtin_types.complex128 = Some(complex128_idx);
+
+        // $GoIface = (struct (field i32) (field (ref null any)))
+        let go_iface_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+        let iface_fields = vec![
+            FieldType { element_type: StorageType::Val(ValType::I32), mutable: true },
+            FieldType { element_type: StorageType::Val(ValType::Ref(RefType {
+                nullable: true,
+                heap_type: HeapType::Abstract { shared: false, ty: wasm_encoder::AbstractHeapType::Any },
+            })), mutable: true },
+        ];
+        self.type_section.ty().struct_(iface_fields);
+        self.gc_builtin_types.go_iface = Some(go_iface_idx);
+    }
+
+    pub(crate) fn emit_gc_struct_rec_group(&mut self) {
+        let struct_names: Vec<String> = self.struct_defs.keys().cloned().collect();
+        if struct_names.is_empty() {
+            return;
+        }
+
+        let base_idx = self.next_type_idx;
+        let mut name_to_gc_idx: HashMap<String, u32> = HashMap::new();
+        for (i, name) in struct_names.iter().enumerate() {
+            name_to_gc_idx.insert(name.clone(), base_idx + i as u32);
+        }
+
+        fn wasm_type_to_storage(wt: WasmType) -> StorageType {
+            match wt {
+                WasmType::I32 => StorageType::Val(ValType::I32),
+                WasmType::I64 => StorageType::Val(ValType::I64),
+                WasmType::F32 => StorageType::Val(ValType::F32),
+                WasmType::F64 => StorageType::Val(ValType::F64),
+                WasmType::Ref(idx) => StorageType::Val(WasmCompiler::gc_ref_val_type(idx)),
+            }
+        }
+
+        let subtypes: Vec<SubType> = struct_names.iter().map(|name| {
+            let sd = self.struct_defs.get(name).unwrap();
+            let fields: Vec<FieldType> = sd.fields.iter().map(|f| {
+                let storage = if let Some(ref tag) = f.go_type_tag {
+                    if let Some(&gc_idx) = name_to_gc_idx.get(tag.as_str()) {
+                        StorageType::Val(Self::gc_ref_val_type(gc_idx))
+                    } else {
+                        wasm_type_to_storage(f.wasm_type)
+                    }
+                } else {
+                    wasm_type_to_storage(f.wasm_type)
+                };
+                FieldType { element_type: storage, mutable: true }
+            }).collect();
+
+            SubType {
+                is_final: true,
+                supertype_idx: None,
+                composite_type: CompositeType {
+                    inner: CompositeInnerType::Struct(StructType {
+                        fields: fields.into(),
+                    }),
+                    shared: false,
+                    descriptor: None,
+                    describes: None,
+                },
+            }
+        }).collect();
+
+        let count = subtypes.len() as u32;
+        self.type_section.ty().rec(subtypes);
+        self.next_type_idx += count;
+
+        for name in &struct_names {
+            let gc_idx = name_to_gc_idx[name];
+            self.gc_struct_types.insert(name.clone(), gc_idx);
+            if let Some(sd) = self.struct_defs.get_mut(name) {
+                sd.gc_type_idx = Some(gc_idx);
+                for f in &mut sd.fields {
+                    if let Some(ref tag) = f.go_type_tag {
+                        if let Some(&ref_gc_idx) = name_to_gc_idx.get(tag.as_str()) {
+                            f.wasm_type = WasmType::Ref(ref_gc_idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn register_gc_struct_type_late(&mut self, name: &str) {
+        if self.gc_struct_types.contains_key(name) {
+            return;
+        }
+        let sd = match self.struct_defs.get(name).cloned() {
+            Some(sd) => sd,
+            None => return,
+        };
+
+        let gc_idx = self.next_type_idx;
+        self.next_type_idx += 1;
+
+        let gc_fields: Vec<FieldType> = sd.fields.iter().map(|f| {
+            let storage = if let Some(ref tag) = f.go_type_tag {
+                if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag.as_str()) {
+                    StorageType::Val(Self::gc_ref_val_type(ref_gc_idx))
+                } else {
+                    match f.wasm_type {
+                        WasmType::I32 => StorageType::Val(ValType::I32),
+                        WasmType::I64 => StorageType::Val(ValType::I64),
+                        WasmType::F32 => StorageType::Val(ValType::F32),
+                        WasmType::F64 => StorageType::Val(ValType::F64),
+                        WasmType::Ref(idx) => StorageType::Val(Self::gc_ref_val_type(idx)),
+                    }
+                }
+            } else {
+                match f.wasm_type {
+                    WasmType::I32 => StorageType::Val(ValType::I32),
+                    WasmType::I64 => StorageType::Val(ValType::I64),
+                    WasmType::F32 => StorageType::Val(ValType::F32),
+                    WasmType::F64 => StorageType::Val(ValType::F64),
+                    WasmType::Ref(idx) => StorageType::Val(Self::gc_ref_val_type(idx)),
+                }
+            };
+            FieldType { element_type: storage, mutable: true }
+        }).collect();
+
+        self.type_section.ty().struct_(gc_fields);
+        self.gc_struct_types.insert(name.to_string(), gc_idx);
+
+        if let Some(sd) = self.struct_defs.get_mut(name) {
+            sd.gc_type_idx = Some(gc_idx);
+            for f in &mut sd.fields {
+                if let Some(ref tag) = f.go_type_tag {
+                    if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag.as_str()) {
+                        f.wasm_type = WasmType::Ref(ref_gc_idx);
+                    }
+                }
+            }
         }
     }
 
@@ -896,6 +1162,7 @@ impl WasmCompiler {
     }
 
     pub fn compile_file(&mut self, file: &ast::File) -> Result<CompileResult, Error> {
+        self.register_gc_builtin_types();
         self.emit_memory();
         self.emit_heap_globals();
         self.emit_host_imports();
@@ -916,6 +1183,7 @@ impl WasmCompiler {
             }
         }
         self.prescan_type_declarations(file);
+        self.emit_gc_struct_rec_group();
         let sorted_decls = Self::sort_declarations_by_deps(&file.decl);
         self.forward_declare_functions(&sorted_decls);
 

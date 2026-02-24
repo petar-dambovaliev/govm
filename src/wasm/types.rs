@@ -6,6 +6,7 @@ pub enum WasmType {
     I64,
     F32,
     F64,
+    Ref(u32),
 }
 
 impl WasmType {
@@ -15,6 +16,12 @@ impl WasmType {
             WasmType::I64 => wasm_encoder::ValType::I64,
             WasmType::F32 => wasm_encoder::ValType::F32,
             WasmType::F64 => wasm_encoder::ValType::F64,
+            WasmType::Ref(type_idx) => wasm_encoder::ValType::Ref(
+                wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(type_idx),
+                }
+            ),
         }
     }
 
@@ -22,6 +29,18 @@ impl WasmType {
         match self {
             WasmType::I32 | WasmType::F32 => 4,
             WasmType::I64 | WasmType::F64 => 8,
+            WasmType::Ref(_) => 4,
+        }
+    }
+
+    pub fn is_gc_ref(self) -> bool {
+        matches!(self, WasmType::Ref(_))
+    }
+
+    pub fn gc_type_idx(self) -> Option<u32> {
+        match self {
+            WasmType::Ref(idx) => Some(idx),
+            _ => None,
         }
     }
 }
