@@ -587,7 +587,13 @@ impl WasmCompiler {
                 LitKind::Float => ValType::F64,
                 LitKind::String => ValType::I32,
                 LitKind::Char => ValType::I32,
-                LitKind::Imag => ValType::I32,
+                LitKind::Imag => {
+                    if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                        Self::gc_ref_val_type(gc_idx)
+                    } else {
+                        ValType::I32
+                    }
+                }
                 _ => ValType::I64,
             },
             ast::Expression::Ident(ident) => match ident.name.as_str() {
@@ -611,7 +617,13 @@ impl WasmCompiler {
                             ConstValue::F64(_) => ValType::F64,
                             ConstValue::Bool(_) => ValType::I32,
                             ConstValue::Str(_) => ValType::I32,
-                            ConstValue::Complex128(_, _) => ValType::I32,
+                            ConstValue::Complex128(_, _) => {
+                                if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                                    Self::gc_ref_val_type(gc_idx)
+                                } else {
+                                    ValType::I32
+                                }
+                            }
                         };
                     }
                     if let Some(&(_idx, vt)) = self.resolve_global_var(&ident.name) {
@@ -686,7 +698,16 @@ impl WasmCompiler {
                         "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32" | "bool" | "uintptr" => ValType::I32,
                         "len" | "cap" => ValType::I64,
-                        "make" | "append" | "new" | "complex" | "recover" => ValType::I32,
+                        "make" | "append" | "new" | "recover" => ValType::I32,
+                        "complex" => {
+                            let is_c64 = call.args.first().map_or(false, |a| self.infer_val_type(a, locals) == ValType::F32);
+                            let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
+                            if let Some(gc_idx) = gc_idx {
+                                Self::gc_ref_val_type(gc_idx)
+                            } else {
+                                ValType::I32
+                            }
+                        }
                         "copy" => ValType::I64,
                         "string" => ValType::I32,
                         "real" => {
@@ -799,7 +820,13 @@ impl WasmCompiler {
                                 ConstValue::F64(_) => ValType::F64,
                                 ConstValue::Bool(_) => ValType::I32,
                                 ConstValue::Str(_) => ValType::I32,
-                                ConstValue::Complex128(_, _) => ValType::I32,
+                                ConstValue::Complex128(_, _) => {
+                                    if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                                        Self::gc_ref_val_type(gc_idx)
+                                    } else {
+                                        ValType::I32
+                                    }
+                                }
                             };
                         }
                         let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
@@ -889,6 +916,20 @@ impl WasmCompiler {
                 "int" | "int64" | "uint" | "uint64" => ValType::I64,
                 "float32" => ValType::F32,
                 "float64" => ValType::F64,
+                "complex64" => {
+                    if let Some(gc_idx) = self.gc_builtin_types.complex64 {
+                        Self::gc_ref_val_type(gc_idx)
+                    } else {
+                        ValType::I32
+                    }
+                }
+                "complex128" => {
+                    if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                        Self::gc_ref_val_type(gc_idx)
+                    } else {
+                        ValType::I32
+                    }
+                }
                 "string" | "error" | "any" => ValType::I32,
                 name if self.iface_defs.contains_key(name) => ValType::I32,
                 _ => ValType::I32,

@@ -67,6 +67,20 @@ impl WasmCompiler {
         None
     }
 
+    pub(crate) fn get_gc_copy_info(&self, var_name: &str, locals: &LocalAlloc) -> Option<(u32, StructDef)> {
+        if locals.pointer_to_struct_vars.contains(var_name) {
+            return None;
+        }
+        if let Some(type_name) = locals.get_var_struct_type(var_name) {
+            if let Some(sd) = self.struct_defs.get(type_name) {
+                if let Some(gc_idx) = sd.gc_type_idx {
+                    return Some((gc_idx, sd.clone()));
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn get_struct_copy_size_from_type(&self, type_name: &str) -> Option<u32> {
         if let Some(sd) = self.struct_defs.get(type_name) {
             Some(sd.total_size)
@@ -110,6 +124,41 @@ impl WasmCompiler {
 
         out.push(Instruction::LocalGet(dst_tmp));
         Ok(())
+    }
+
+    pub(crate) fn emit_gc_value_deep_copy(
+        gc_type_idx: u32,
+        struct_def: &StructDef,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) {
+        let src_tmp = locals.add_local(
+            &format!("__gc_copy_src_{}", locals.locals.len()),
+            Self::gc_ref_val_type(gc_type_idx),
+        );
+        out.push(Instruction::LocalSet(src_tmp));
+
+        let dst_tmp = locals.add_local(
+            &format!("__gc_copy_dst_{}", locals.locals.len()),
+            Self::gc_ref_val_type(gc_type_idx),
+        );
+        out.push(Instruction::StructNewDefault(gc_type_idx));
+        out.push(Instruction::LocalSet(dst_tmp));
+
+        for field in &struct_def.fields {
+            out.push(Instruction::LocalGet(dst_tmp));
+            out.push(Instruction::LocalGet(src_tmp));
+            out.push(Instruction::StructGet {
+                struct_type_index: gc_type_idx,
+                field_index: field.field_index,
+            });
+            out.push(Instruction::StructSet {
+                struct_type_index: gc_type_idx,
+                field_index: field.field_index,
+            });
+        }
+
+        out.push(Instruction::LocalGet(dst_tmp));
     }
 
     pub(crate) fn reject_unsupported_type(typ: &ast::Expression) -> Result<(), Error> {

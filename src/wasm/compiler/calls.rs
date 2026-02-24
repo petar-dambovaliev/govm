@@ -842,49 +842,59 @@ impl WasmCompiler {
                     }
                     "new" => {
                         if let Some(type_arg) = call.args.first() {
-                            let alloc_size = if let ast::Expression::Ident(ti) = type_arg {
-                                if let Some(sdef) = self.struct_defs.get(&ti.name) {
-                                    sdef.total_size
-                                } else {
-                                    match ti.name.as_str() {
-                                        "int" | "int64" | "uint" | "uint64" | "float64" => 8,
-                                        "int32" | "uint32" | "float32" | "rune" => 4,
-                                        "int16" | "uint16" => 2,
-                                        "int8" | "uint8" | "byte" | "bool" => 1,
-                                        _ => 8,
-                                    }
-                                }
+                            let gc_type = if let ast::Expression::Ident(ti) = type_arg {
+                                self.struct_defs.get(&ti.name).and_then(|sd| sd.gc_type_idx)
                             } else {
-                                8u32
+                                None
                             };
-                            let alloc_aligned = alloc_size.max(8);
-                            let used_stack = if let Some(ref target) = self.stack_alloc_target.take() {
-                                if let Some(sf) = &self.current_stack_frame {
-                                    if let Some(sl) = sf.find(target) {
-                                        if let Some(fb) = sf.frame_base_local {
-                                            out.push(Instruction::LocalGet(fb));
-                                            if sl.offset > 0 {
-                                                out.push(Instruction::I32Const(sl.offset as i32));
-                                                out.push(Instruction::I32Add);
-                                            }
-                                            true
+
+                            if let Some(gc_idx) = gc_type {
+                                out.push(Instruction::StructNewDefault(gc_idx));
+                            } else {
+                                let alloc_size = if let ast::Expression::Ident(ti) = type_arg {
+                                    if let Some(sdef) = self.struct_defs.get(&ti.name) {
+                                        sdef.total_size
+                                    } else {
+                                        match ti.name.as_str() {
+                                            "int" | "int64" | "uint" | "uint64" | "float64" => 8,
+                                            "int32" | "uint32" | "float32" | "rune" => 4,
+                                            "int16" | "uint16" => 2,
+                                            "int8" | "uint8" | "byte" | "bool" => 1,
+                                            _ => 8,
+                                        }
+                                    }
+                                } else {
+                                    8u32
+                                };
+                                let alloc_aligned = alloc_size.max(8);
+                                let used_stack = if let Some(ref target) = self.stack_alloc_target.take() {
+                                    if let Some(sf) = &self.current_stack_frame {
+                                        if let Some(sl) = sf.find(target) {
+                                            if let Some(fb) = sf.frame_base_local {
+                                                out.push(Instruction::LocalGet(fb));
+                                                if sl.offset > 0 {
+                                                    out.push(Instruction::I32Const(sl.offset as i32));
+                                                    out.push(Instruction::I32Add);
+                                                }
+                                                true
+                                            } else { false }
                                         } else { false }
                                     } else { false }
-                                } else { false }
-                            } else { false };
-                            if !used_stack {
+                                } else { false };
+                                if !used_stack {
+                                    out.push(Instruction::I32Const(alloc_aligned as i32));
+                                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                                }
+                                let ptr_local = locals.add_local(
+                                    &format!("__new_ptr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalTee(ptr_local));
+                                out.push(Instruction::I32Const(0));
                                 out.push(Instruction::I32Const(alloc_aligned as i32));
-                                out.push(Instruction::Call(self.alloc_func_idx()?));
+                                out.push(Instruction::MemoryFill(0));
+                                out.push(Instruction::LocalGet(ptr_local));
                             }
-                            let ptr_local = locals.add_local(
-                                &format!("__new_ptr_{}", locals.locals.len()),
-                                ValType::I32,
-                            );
-                            out.push(Instruction::LocalTee(ptr_local));
-                            out.push(Instruction::I32Const(0));
-                            out.push(Instruction::I32Const(alloc_aligned as i32));
-                            out.push(Instruction::MemoryFill(0));
-                            out.push(Instruction::LocalGet(ptr_local));
                         }
                         return Ok(GoType::Pointer(Box::new(GoType::Int32)));
                     }
@@ -896,8 +906,7 @@ impl WasmCompiler {
                         }
                         let r_vt = self.infer_val_type(&call.args[0], locals);
                         let is_complex64 = r_vt == ValType::F32;
-                        let total_size: i32 = if is_complex64 { 8 } else { 16 };
-                        let float_align: u32 = if is_complex64 { 2 } else { 3 };
+                        let gc_idx = if is_complex64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
 
                         self.compile_expression(&call.args[0], out, locals)?;
                         let real_local = locals.add_local(
@@ -916,45 +925,57 @@ impl WasmCompiler {
                         );
                         out.push(Instruction::LocalSet(imag_local));
 
-                        out.push(Instruction::I32Const(total_size));
-                        out.push(Instruction::Call(self.alloc_func_idx()?));
-                        let ptr = locals.add_local(
-                            &format!("__cplx_ptr_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        out.push(Instruction::LocalSet(ptr));
-
-                        // Store real part
-                        out.push(Instruction::LocalGet(ptr));
-                        out.push(Instruction::LocalGet(real_local));
-                        if is_complex64 {
-                            out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        if let Some(gc_idx) = gc_idx {
+                            out.push(Instruction::LocalGet(real_local));
+                            out.push(Instruction::LocalGet(imag_local));
+                            out.push(Instruction::StructNew(gc_idx));
                         } else {
-                            out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-                        }
+                            let total_size: i32 = if is_complex64 { 8 } else { 16 };
+                            let float_align: u32 = if is_complex64 { 2 } else { 3 };
 
-                        // Store imag part
-                        out.push(Instruction::LocalGet(ptr));
-                        out.push(Instruction::LocalGet(imag_local));
-                        let imag_offset = if is_complex64 { 4u64 } else { 8u64 };
-                        if is_complex64 {
-                            out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                        } else {
-                            out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                        }
+                            out.push(Instruction::I32Const(total_size));
+                            out.push(Instruction::Call(self.alloc_func_idx()?));
+                            let ptr = locals.add_local(
+                                &format!("__cplx_ptr_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            out.push(Instruction::LocalSet(ptr));
 
-                        out.push(Instruction::LocalGet(ptr));
+                            out.push(Instruction::LocalGet(ptr));
+                            out.push(Instruction::LocalGet(real_local));
+                            if is_complex64 {
+                                out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                            } else {
+                                out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                            }
+
+                            let imag_offset = if is_complex64 { 4u64 } else { 8u64 };
+                            out.push(Instruction::LocalGet(ptr));
+                            out.push(Instruction::LocalGet(imag_local));
+                            if is_complex64 {
+                                out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                            } else {
+                                out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                            }
+
+                            out.push(Instruction::LocalGet(ptr));
+                        }
                         return Ok(GoType::Complex128);
                     }
                     "real" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             let is_64 = self.is_complex64_expr(arg, locals);
-                            let align = if is_64 { 2u32 } else { 3u32 };
-                            if is_64 {
-                                out.push(Instruction::F32Load(MemArg { offset: 0, align, memory_index: 0 }));
+                            let gc_idx = if is_64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
+                            if let Some(gc_idx) = gc_idx {
+                                out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 0 });
                             } else {
-                                out.push(Instruction::F64Load(MemArg { offset: 0, align, memory_index: 0 }));
+                                let align = if is_64 { 2u32 } else { 3u32 };
+                                if is_64 {
+                                    out.push(Instruction::F32Load(MemArg { offset: 0, align, memory_index: 0 }));
+                                } else {
+                                    out.push(Instruction::F64Load(MemArg { offset: 0, align, memory_index: 0 }));
+                                }
                             }
                         }
                         return Ok(GoType::Float64);
@@ -963,11 +984,16 @@ impl WasmCompiler {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             let is_64 = self.is_complex64_expr(arg, locals);
-                            let (imag_offset, align) = if is_64 { (4u64, 2u32) } else { (8u64, 3u32) };
-                            if is_64 {
-                                out.push(Instruction::F32Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                            let gc_idx = if is_64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
+                            if let Some(gc_idx) = gc_idx {
+                                out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 1 });
                             } else {
-                                out.push(Instruction::F64Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                                let (imag_offset, align) = if is_64 { (4u64, 2u32) } else { (8u64, 3u32) };
+                                if is_64 {
+                                    out.push(Instruction::F32Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                                } else {
+                                    out.push(Instruction::F64Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
+                                }
                             }
                         }
                         return Ok(GoType::Float64);
@@ -1497,7 +1523,9 @@ impl WasmCompiler {
                             let is_str_arg = self.is_string_expr(arg, locals);
                             if !is_str_arg {
                                 if let ast::Expression::Ident(arg_ident) = arg {
-                                    if let Some(copy_size) = self.get_value_copy_size(&arg_ident.name, locals) {
+                                    if let Some((gc_idx, gc_sd)) = self.get_gc_copy_info(&arg_ident.name, locals) {
+                                        Self::emit_gc_value_deep_copy(gc_idx, &gc_sd, out, locals);
+                                    } else if let Some(copy_size) = self.get_value_copy_size(&arg_ident.name, locals) {
                                         self.emit_value_deep_copy(copy_size, out, locals)?;
                                     }
                                 }

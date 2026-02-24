@@ -145,39 +145,46 @@ impl WasmCompiler {
                 let imag_val: f64 = num_str.parse().map_err(|_| {
                     Error::SyntaxError(format!("invalid imaginary literal: {}", lit.value))
                 })?;
-                let total_size: i32 = 16; // complex128: two f64s
-                let float_align: u32 = 3;
 
-                let real_local = locals.add_local(
-                    &format!("__imag_r_{}", locals.locals.len()),
-                    ValType::F64,
-                );
-                let imag_local = locals.add_local(
-                    &format!("__imag_i_{}", locals.locals.len()),
-                    ValType::F64,
-                );
-                out.push(Instruction::F64Const(0.0_f64.into()));
-                out.push(Instruction::LocalSet(real_local));
-                out.push(Instruction::F64Const(imag_val.into()));
-                out.push(Instruction::LocalSet(imag_local));
+                if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                    out.push(Instruction::F64Const(0.0_f64.into()));
+                    out.push(Instruction::F64Const(imag_val.into()));
+                    out.push(Instruction::StructNew(gc_idx));
+                } else {
+                    let total_size: i32 = 16;
+                    let float_align: u32 = 3;
 
-                out.push(Instruction::I32Const(total_size));
-                out.push(Instruction::Call(self.alloc_func_idx()?));
-                let ptr = locals.add_local(
-                    &format!("__imag_ptr_{}", locals.locals.len()),
-                    ValType::I32,
-                );
-                out.push(Instruction::LocalSet(ptr));
+                    let real_local = locals.add_local(
+                        &format!("__imag_r_{}", locals.locals.len()),
+                        ValType::F64,
+                    );
+                    let imag_local = locals.add_local(
+                        &format!("__imag_i_{}", locals.locals.len()),
+                        ValType::F64,
+                    );
+                    out.push(Instruction::F64Const(0.0_f64.into()));
+                    out.push(Instruction::LocalSet(real_local));
+                    out.push(Instruction::F64Const(imag_val.into()));
+                    out.push(Instruction::LocalSet(imag_local));
 
-                out.push(Instruction::LocalGet(ptr));
-                out.push(Instruction::LocalGet(real_local));
-                out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                    out.push(Instruction::I32Const(total_size));
+                    out.push(Instruction::Call(self.alloc_func_idx()?));
+                    let ptr = locals.add_local(
+                        &format!("__imag_ptr_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::LocalSet(ptr));
 
-                out.push(Instruction::LocalGet(ptr));
-                out.push(Instruction::LocalGet(imag_local));
-                out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+                    out.push(Instruction::LocalGet(ptr));
+                    out.push(Instruction::LocalGet(real_local));
+                    out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
 
-                out.push(Instruction::LocalGet(ptr));
+                    out.push(Instruction::LocalGet(ptr));
+                    out.push(Instruction::LocalGet(imag_local));
+                    out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+
+                    out.push(Instruction::LocalGet(ptr));
+                }
                 return Ok(GoType::Complex128);
             }
             _ => {
@@ -509,25 +516,31 @@ impl WasmCompiler {
                     out.push(Instruction::I32Const(len));
                 }
                 ConstValue::Complex128(real, imag) => {
-                    let total_size: i32 = 16;
-                    let float_align: u32 = 3;
-                    let ptr_local = locals.add_local(
-                        &format!("__const_cmplx_{}", locals.locals.len()),
-                        ValType::I32,
-                    );
-                    out.push(Instruction::I32Const(total_size));
-                    out.push(Instruction::Call(self.alloc_func_idx()?));
-                    out.push(Instruction::LocalSet(ptr_local));
+                    if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                        out.push(Instruction::F64Const((*real).into()));
+                        out.push(Instruction::F64Const((*imag).into()));
+                        out.push(Instruction::StructNew(gc_idx));
+                    } else {
+                        let total_size: i32 = 16;
+                        let float_align: u32 = 3;
+                        let ptr_local = locals.add_local(
+                            &format!("__const_cmplx_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::I32Const(total_size));
+                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                        out.push(Instruction::LocalSet(ptr_local));
 
-                    out.push(Instruction::LocalGet(ptr_local));
-                    out.push(Instruction::F64Const((*real).into()));
-                    out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::LocalGet(ptr_local));
+                        out.push(Instruction::F64Const((*real).into()));
+                        out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
 
-                    out.push(Instruction::LocalGet(ptr_local));
-                    out.push(Instruction::F64Const((*imag).into()));
-                    out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::LocalGet(ptr_local));
+                        out.push(Instruction::F64Const((*imag).into()));
+                        out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
 
-                    out.push(Instruction::LocalGet(ptr_local));
+                        out.push(Instruction::LocalGet(ptr_local));
+                    }
                 }
             }
             return Ok(cv_vt);
@@ -619,56 +632,76 @@ impl WasmCompiler {
     ) -> Result<(), Error> {
         let is_c64 = self.is_complex64_expr(lhs, locals);
         let float_vt = if is_c64 { ValType::F32 } else { ValType::F64 };
-        let imag_offset = if is_c64 { 4u64 } else { 8u64 };
-        let float_align = if is_c64 { 2u32 } else { 3u32 };
-        let total_size = if is_c64 { 8i32 } else { 16i32 };
+        let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
 
         let ar = locals.add_local(&format!("__cx_ar_{}", locals.locals.len()), float_vt);
         let ai = locals.add_local(&format!("__cx_ai_{}", locals.locals.len()), float_vt);
         let br = locals.add_local(&format!("__cx_br_{}", locals.locals.len()), float_vt);
         let bi = locals.add_local(&format!("__cx_bi_{}", locals.locals.len()), float_vt);
 
-        // Load lhs real and imag parts
-        self.compile_expression(lhs, out, locals)?;
-        let lptr = locals.add_local(&format!("__cx_lp_{}", locals.locals.len()), ValType::I32);
-        out.push(Instruction::LocalSet(lptr));
-        out.push(Instruction::LocalGet(lptr));
-        if is_c64 {
-            out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-        } else {
-            out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-        }
-        out.push(Instruction::LocalSet(ar));
-        out.push(Instruction::LocalGet(lptr));
-        if is_c64 {
-            out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        } else {
-            out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        }
-        out.push(Instruction::LocalSet(ai));
+        if let Some(gc_idx) = gc_idx {
+            self.compile_expression(lhs, out, locals)?;
+            let lref = locals.add_local(&format!("__cx_lr_{}", locals.locals.len()), Self::gc_ref_val_type(gc_idx));
+            out.push(Instruction::LocalSet(lref));
+            out.push(Instruction::LocalGet(lref));
+            out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 0 });
+            out.push(Instruction::LocalSet(ar));
+            out.push(Instruction::LocalGet(lref));
+            out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 1 });
+            out.push(Instruction::LocalSet(ai));
 
-        // Load rhs real and imag parts
-        self.compile_expression(rhs, out, locals)?;
-        let rptr = locals.add_local(&format!("__cx_rp_{}", locals.locals.len()), ValType::I32);
-        out.push(Instruction::LocalSet(rptr));
-        out.push(Instruction::LocalGet(rptr));
-        if is_c64 {
-            out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            self.compile_expression(rhs, out, locals)?;
+            let rref = locals.add_local(&format!("__cx_rr_ref_{}", locals.locals.len()), Self::gc_ref_val_type(gc_idx));
+            out.push(Instruction::LocalSet(rref));
+            out.push(Instruction::LocalGet(rref));
+            out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 0 });
+            out.push(Instruction::LocalSet(br));
+            out.push(Instruction::LocalGet(rref));
+            out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 1 });
+            out.push(Instruction::LocalSet(bi));
         } else {
-            out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            let imag_offset = if is_c64 { 4u64 } else { 8u64 };
+            let float_align = if is_c64 { 2u32 } else { 3u32 };
+
+            self.compile_expression(lhs, out, locals)?;
+            let lptr = locals.add_local(&format!("__cx_lp_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalSet(lptr));
+            out.push(Instruction::LocalGet(lptr));
+            if is_c64 {
+                out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            }
+            out.push(Instruction::LocalSet(ar));
+            out.push(Instruction::LocalGet(lptr));
+            if is_c64 {
+                out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            }
+            out.push(Instruction::LocalSet(ai));
+
+            self.compile_expression(rhs, out, locals)?;
+            let rptr = locals.add_local(&format!("__cx_rp_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalSet(rptr));
+            out.push(Instruction::LocalGet(rptr));
+            if is_c64 {
+                out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            }
+            out.push(Instruction::LocalSet(br));
+            out.push(Instruction::LocalGet(rptr));
+            if is_c64 {
+                out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            }
+            out.push(Instruction::LocalSet(bi));
         }
-        out.push(Instruction::LocalSet(br));
-        out.push(Instruction::LocalGet(rptr));
-        if is_c64 {
-            out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        } else {
-            out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        }
-        out.push(Instruction::LocalSet(bi));
 
         match op {
             Operator::Equal => {
-                // a.r == b.r && a.i == b.i
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Eq); } else { out.push(Instruction::F64Eq); }
@@ -679,7 +712,6 @@ impl WasmCompiler {
                 return Ok(());
             }
             Operator::NotEqual => {
-                // a.r != b.r || a.i != b.i
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Ne); } else { out.push(Instruction::F64Ne); }
@@ -692,13 +724,11 @@ impl WasmCompiler {
             _ => {}
         }
 
-        // Arithmetic: allocate result
         let res_r = locals.add_local(&format!("__cx_rr_{}", locals.locals.len()), float_vt);
         let res_i = locals.add_local(&format!("__cx_ri_{}", locals.locals.len()), float_vt);
 
         match op {
             Operator::Add => {
-                // (ar+br, ai+bi)
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
@@ -709,7 +739,6 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(res_i));
             }
             Operator::Sub => {
-                // (ar-br, ai-bi)
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Sub); } else { out.push(Instruction::F64Sub); }
@@ -720,7 +749,6 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(res_i));
             }
             Operator::Star => {
-                // (ar*br - ai*bi, ar*bi + ai*br)
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
@@ -740,9 +768,6 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(res_i));
             }
             Operator::Quo => {
-                // denom = br*br + bi*bi
-                // real = (ar*br + ai*bi) / denom
-                // imag = (ai*br - ar*bi) / denom
                 let denom = locals.add_local(&format!("__cx_d_{}", locals.locals.len()), float_vt);
                 out.push(Instruction::LocalGet(br));
                 out.push(Instruction::LocalGet(br));
@@ -753,7 +778,6 @@ impl WasmCompiler {
                 if is_c64 { out.push(Instruction::F32Add); } else { out.push(Instruction::F64Add); }
                 out.push(Instruction::LocalSet(denom));
 
-                // real
                 out.push(Instruction::LocalGet(ar));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
@@ -765,7 +789,6 @@ impl WasmCompiler {
                 if is_c64 { out.push(Instruction::F32Div); } else { out.push(Instruction::F64Div); }
                 out.push(Instruction::LocalSet(res_r));
 
-                // imag
                 out.push(Instruction::LocalGet(ai));
                 out.push(Instruction::LocalGet(br));
                 if is_c64 { out.push(Instruction::F32Mul); } else { out.push(Instruction::F64Mul); }
@@ -785,28 +808,37 @@ impl WasmCompiler {
             }
         }
 
-        // Allocate and store result complex
-        out.push(Instruction::I32Const(total_size));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
-        let res_ptr = locals.add_local(&format!("__cx_rptr_{}", locals.locals.len()), ValType::I32);
-        out.push(Instruction::LocalSet(res_ptr));
-
-        out.push(Instruction::LocalGet(res_ptr));
-        out.push(Instruction::LocalGet(res_r));
-        if is_c64 {
-            out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+        if let Some(gc_idx) = gc_idx {
+            out.push(Instruction::LocalGet(res_r));
+            out.push(Instruction::LocalGet(res_i));
+            out.push(Instruction::StructNew(gc_idx));
         } else {
-            out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-        }
-        out.push(Instruction::LocalGet(res_ptr));
-        out.push(Instruction::LocalGet(res_i));
-        if is_c64 {
-            out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        } else {
-            out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-        }
+            let imag_offset = if is_c64 { 4u64 } else { 8u64 };
+            let float_align = if is_c64 { 2u32 } else { 3u32 };
+            let total_size = if is_c64 { 8i32 } else { 16i32 };
 
-        out.push(Instruction::LocalGet(res_ptr));
+            out.push(Instruction::I32Const(total_size));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            let res_ptr = locals.add_local(&format!("__cx_rptr_{}", locals.locals.len()), ValType::I32);
+            out.push(Instruction::LocalSet(res_ptr));
+
+            out.push(Instruction::LocalGet(res_ptr));
+            out.push(Instruction::LocalGet(res_r));
+            if is_c64 {
+                out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+            }
+            out.push(Instruction::LocalGet(res_ptr));
+            out.push(Instruction::LocalGet(res_i));
+            if is_c64 {
+                out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            } else {
+                out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+            }
+
+            out.push(Instruction::LocalGet(res_ptr));
+        }
         Ok(())
     }
 
@@ -1587,51 +1619,68 @@ impl WasmCompiler {
             Operator::Sub => {
                 if self.is_complex_expr(&op.x, locals) {
                     let is_c64 = self.is_complex64_expr(&op.x, locals);
-                    let (total_size, float_align, imag_offset): (i32, u32, u64) =
-                        if is_c64 { (8, 2, 4) } else { (16, 3, 8) };
+                    let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
 
-                    self.compile_expression(&op.x, out, locals)?;
-                    let src_ptr = locals.add_local(
-                        &format!("__cneg_src_{}", locals.locals.len()),
-                        ValType::I32,
-                    );
-                    out.push(Instruction::LocalSet(src_ptr));
+                    if let Some(gc_idx) = gc_idx {
+                        self.compile_expression(&op.x, out, locals)?;
+                        let src_ref = locals.add_local(
+                            &format!("__cneg_src_{}", locals.locals.len()),
+                            Self::gc_ref_val_type(gc_idx),
+                        );
+                        out.push(Instruction::LocalSet(src_ref));
 
-                    out.push(Instruction::I32Const(total_size));
-                    out.push(Instruction::Call(self.alloc_func_idx()?));
-                    let res_ptr = locals.add_local(
-                        &format!("__cneg_res_{}", locals.locals.len()),
-                        ValType::I32,
-                    );
-                    out.push(Instruction::LocalSet(res_ptr));
-
-                    // Negate real part
-                    out.push(Instruction::LocalGet(res_ptr));
-                    out.push(Instruction::LocalGet(src_ptr));
-                    if is_c64 {
-                        out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-                        out.push(Instruction::F32Neg);
-                        out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        out.push(Instruction::LocalGet(src_ref));
+                        out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 0 });
+                        if is_c64 { out.push(Instruction::F32Neg); } else { out.push(Instruction::F64Neg); }
+                        out.push(Instruction::LocalGet(src_ref));
+                        out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 1 });
+                        if is_c64 { out.push(Instruction::F32Neg); } else { out.push(Instruction::F64Neg); }
+                        out.push(Instruction::StructNew(gc_idx));
                     } else {
-                        out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-                        out.push(Instruction::F64Neg);
-                        out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
-                    }
+                        let (total_size, float_align, imag_offset): (i32, u32, u64) =
+                            if is_c64 { (8, 2, 4) } else { (16, 3, 8) };
 
-                    // Negate imaginary part
-                    out.push(Instruction::LocalGet(res_ptr));
-                    out.push(Instruction::LocalGet(src_ptr));
-                    if is_c64 {
-                        out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                        out.push(Instruction::F32Neg);
-                        out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                    } else {
-                        out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                        out.push(Instruction::F64Neg);
-                        out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
-                    }
+                        self.compile_expression(&op.x, out, locals)?;
+                        let src_ptr = locals.add_local(
+                            &format!("__cneg_src_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(src_ptr));
 
-                    out.push(Instruction::LocalGet(res_ptr));
+                        out.push(Instruction::I32Const(total_size));
+                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                        let res_ptr = locals.add_local(
+                            &format!("__cneg_res_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(res_ptr));
+
+                        out.push(Instruction::LocalGet(res_ptr));
+                        out.push(Instruction::LocalGet(src_ptr));
+                        if is_c64 {
+                            out.push(Instruction::F32Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                            out.push(Instruction::F32Neg);
+                            out.push(Instruction::F32Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        } else {
+                            out.push(Instruction::F64Load(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                            out.push(Instruction::F64Neg);
+                            out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                        }
+
+                        out.push(Instruction::LocalGet(res_ptr));
+                        out.push(Instruction::LocalGet(src_ptr));
+                        if is_c64 {
+                            out.push(Instruction::F32Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                            out.push(Instruction::F32Neg);
+                            out.push(Instruction::F32Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        } else {
+                            out.push(Instruction::F64Load(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                            out.push(Instruction::F64Neg);
+                            out.push(Instruction::F64Store(MemArg { offset: imag_offset, align: float_align, memory_index: 0 }));
+                        }
+
+                        out.push(Instruction::LocalGet(res_ptr));
+                    }
                 } else {
                     let vt = self.infer_val_type(&op.x, locals);
                     match vt {

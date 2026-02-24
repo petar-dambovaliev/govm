@@ -1007,18 +1007,25 @@ impl WasmCompiler {
                                 }
                             }
                         } else {
-                            let needs_deep_copy = if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
-                                self.get_value_copy_size(&rhs_ident.name, locals).is_some()
-                            } else { false };
-                            if needs_deep_copy {
-                                if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
-                                    let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
-                                    self.emit_value_deep_copy(size, out, locals)?;
-                                }
+                            let gc_copy = if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                self.get_gc_copy_info(&rhs_ident.name, locals)
+                            } else { None };
+                            if let Some((gc_idx, gc_sd)) = gc_copy {
+                                Self::emit_gc_value_deep_copy(gc_idx, &gc_sd, out, locals);
                             } else {
-                                let var_vt = locals.find_type(&ident.name).unwrap_or(vt);
-                                if vt != var_vt {
-                                    Self::emit_typed_coerce(vt, var_vt, out)?;
+                                let needs_deep_copy = if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                    self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                                } else { false };
+                                if needs_deep_copy {
+                                    if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                        let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                        self.emit_value_deep_copy(size, out, locals)?;
+                                    }
+                                } else {
+                                    let var_vt = locals.find_type(&ident.name).unwrap_or(vt);
+                                    if vt != var_vt {
+                                        Self::emit_typed_coerce(vt, var_vt, out)?;
+                                    }
                                 }
                             }
                             out.push(Instruction::LocalSet(local_idx));
@@ -1448,21 +1455,30 @@ impl WasmCompiler {
                                 .unwrap_or(ValType::I64);
                             match assign.op {
                                 Operator::Assign => {
-                                    let needs_deep_copy = if i < assign.right.len() {
+                                    let gc_copy = if i < assign.right.len() {
                                         if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
-                                            self.get_value_copy_size(&rhs_ident.name, locals).is_some()
-                                        } else { false }
-                                    } else { false };
-                                    if needs_deep_copy {
-                                        if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
-                                            let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
-                                            self.emit_value_deep_copy(size, out, locals)?;
-                                        }
+                                            self.get_gc_copy_info(&rhs_ident.name, locals)
+                                        } else { None }
+                                    } else { None };
+                                    if let Some((gc_idx, gc_sd)) = gc_copy {
+                                        Self::emit_gc_value_deep_copy(gc_idx, &gc_sd, out, locals);
                                     } else {
-                                        if i < assign.right.len() {
-                                            let rhs_vt = self.infer_val_type(&assign.right[i], locals);
-                                            if rhs_vt != vt {
-                                                Self::emit_typed_coerce(rhs_vt, vt, out)?;
+                                        let needs_deep_copy = if i < assign.right.len() {
+                                            if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                                self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                                            } else { false }
+                                        } else { false };
+                                        if needs_deep_copy {
+                                            if let ast::Expression::Ident(rhs_ident) = &assign.right[i] {
+                                                let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                                self.emit_value_deep_copy(size, out, locals)?;
+                                            }
+                                        } else {
+                                            if i < assign.right.len() {
+                                                let rhs_vt = self.infer_val_type(&assign.right[i], locals);
+                                                if rhs_vt != vt {
+                                                    Self::emit_typed_coerce(rhs_vt, vt, out)?;
+                                                }
                                             }
                                         }
                                     }
@@ -1689,40 +1705,90 @@ impl WasmCompiler {
                         );
                         out.push(Instruction::LocalSet(rhs_tmp));
 
-                        let (offset, field_vt) =
-                            self.compile_selector_store_addr(sel, out, locals)?;
-                        let (_, align) = Self::elem_size_and_align(field_vt);
+                        let struct_type_name = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
+                        let gc_info = struct_type_name.as_ref().and_then(|name| {
+                            let sd = self.struct_defs.get(name)?;
+                            let gc_idx = sd.gc_type_idx?;
+                            let field = sd.find_field(&sel.sel.name)?;
+                            Some((gc_idx, field.field_index, field.wasm_type.to_val_type()))
+                        });
 
-                        let addr_tmp = locals.add_local(
-                            &format!("__sel_addr_{}", locals.locals.len()),
-                            ValType::I32,
-                        );
-                        out.push(Instruction::LocalSet(addr_tmp));
+                        if let Some((gc_type_idx, field_index, field_vt)) = gc_info {
+                            self.compile_expression(&sel.x, out, locals)?;
+                            let ref_tmp = locals.add_local(
+                                &format!("__sel_gc_ref_{}", locals.locals.len()),
+                                Self::gc_ref_val_type(gc_type_idx),
+                            );
+                            out.push(Instruction::LocalSet(ref_tmp));
 
-                        match assign.op {
-                            Operator::Assign => {
-                                out.push(Instruction::LocalGet(addr_tmp));
-                                out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
-                                Self::emit_typed_store(field_vt, offset, align, out);
+                            match assign.op {
+                                Operator::Assign => {
+                                    out.push(Instruction::LocalGet(ref_tmp));
+                                    out.push(Instruction::LocalGet(rhs_tmp));
+                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                                    out.push(Instruction::StructSet {
+                                        struct_type_index: gc_type_idx,
+                                        field_index,
+                                    });
+                                }
+                                _ => {
+                                    out.push(Instruction::LocalGet(ref_tmp));
+                                    out.push(Instruction::StructGet {
+                                        struct_type_index: gc_type_idx,
+                                        field_index,
+                                    });
+                                    out.push(Instruction::LocalGet(rhs_tmp));
+                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                                    self.emit_compound_op(&assign.op, field_vt, false, out)?;
+                                    let result_tmp = locals.add_local(
+                                        &format!("__sel_res_{}", locals.locals.len()),
+                                        field_vt,
+                                    );
+                                    out.push(Instruction::LocalSet(result_tmp));
+                                    out.push(Instruction::LocalGet(ref_tmp));
+                                    out.push(Instruction::LocalGet(result_tmp));
+                                    out.push(Instruction::StructSet {
+                                        struct_type_index: gc_type_idx,
+                                        field_index,
+                                    });
+                                }
                             }
-                            _ => {
-                                out.push(Instruction::LocalGet(addr_tmp));
-                                Self::emit_typed_load(field_vt, offset, align, out);
+                        } else {
+                            let (offset, field_vt) =
+                                self.compile_selector_store_addr(sel, out, locals)?;
+                            let (_, align) = Self::elem_size_and_align(field_vt);
 
-                                out.push(Instruction::LocalGet(rhs_tmp));
-                                Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                            let addr_tmp = locals.add_local(
+                                &format!("__sel_addr_{}", locals.locals.len()),
+                                ValType::I32,
+                            );
+                            out.push(Instruction::LocalSet(addr_tmp));
 
-                                self.emit_compound_op(&assign.op, field_vt, false, out)?;
+                            match assign.op {
+                                Operator::Assign => {
+                                    out.push(Instruction::LocalGet(addr_tmp));
+                                    out.push(Instruction::LocalGet(rhs_tmp));
+                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                                    Self::emit_typed_store(field_vt, offset, align, out);
+                                }
+                                _ => {
+                                    out.push(Instruction::LocalGet(addr_tmp));
+                                    Self::emit_typed_load(field_vt, offset, align, out);
 
-                                let result_tmp = locals.add_local(
-                                    &format!("__sel_res_{}", locals.locals.len()),
-                                    field_vt,
-                                );
-                                out.push(Instruction::LocalSet(result_tmp));
-                                out.push(Instruction::LocalGet(addr_tmp));
-                                out.push(Instruction::LocalGet(result_tmp));
-                                Self::emit_typed_store(field_vt, offset, align, out);
+                                    out.push(Instruction::LocalGet(rhs_tmp));
+                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+
+                                    self.emit_compound_op(&assign.op, field_vt, false, out)?;
+
+                                    let result_tmp = locals.add_local(
+                                        &format!("__sel_res_{}", locals.locals.len()),
+                                        field_vt,
+                                    );
+                                    out.push(Instruction::LocalSet(result_tmp));
+                                    out.push(Instruction::LocalGet(addr_tmp));
+                                    out.push(Instruction::LocalGet(result_tmp));
+                                    Self::emit_typed_store(field_vt, offset, align, out);
+                                }
                             }
                         }
                     }
@@ -3307,21 +3373,30 @@ impl WasmCompiler {
                                     }
                                 }
                             } else {
-                                let needs_deep_copy = if i < spec.values.len() {
+                                let gc_copy = if i < spec.values.len() {
                                     if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
-                                        self.get_value_copy_size(&rhs_ident.name, locals).is_some()
-                                    } else { false }
-                                } else { false };
-                                if needs_deep_copy {
-                                    if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
-                                        let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
-                                        self.emit_value_deep_copy(size, out, locals)?;
-                                    }
+                                        self.get_gc_copy_info(&rhs_ident.name, locals)
+                                    } else { None }
+                                } else { None };
+                                if let Some((gc_idx, gc_sd)) = gc_copy {
+                                    Self::emit_gc_value_deep_copy(gc_idx, &gc_sd, out, locals);
                                 } else {
-                                    if spec.typ.is_some() {
-                                        let expr_vt = expr_type.wasm_type();
-                                        if expr_vt != vt {
-                                            Self::emit_typed_coerce(expr_vt, vt, out)?;
+                                    let needs_deep_copy = if i < spec.values.len() {
+                                        if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
+                                            self.get_value_copy_size(&rhs_ident.name, locals).is_some()
+                                        } else { false }
+                                    } else { false };
+                                    if needs_deep_copy {
+                                        if let ast::Expression::Ident(rhs_ident) = &spec.values[i] {
+                                            let size = self.get_value_copy_size(&rhs_ident.name, locals).unwrap();
+                                            self.emit_value_deep_copy(size, out, locals)?;
+                                        }
+                                    } else {
+                                        if spec.typ.is_some() {
+                                            let expr_vt = expr_type.wasm_type();
+                                            if expr_vt != vt {
+                                                Self::emit_typed_coerce(expr_vt, vt, out)?;
+                                            }
                                         }
                                     }
                                 }
@@ -3330,27 +3405,32 @@ impl WasmCompiler {
                         } else if let Some(ref typ) = spec.typ {
                             if let ast::Expression::Ident(type_ident) = typ {
                                 if let Some(sd) = self.struct_defs.get(&type_ident.name) {
-                                    let size = sd.total_size as i32;
-                                    let used_stack = if let Some(sf) = &self.current_stack_frame {
-                                        if let Some(sl) = sf.find(&ident.name) {
-                                            if let Some(fb) = sf.frame_base_local {
-                                                out.push(Instruction::LocalGet(fb));
-                                                if sl.offset > 0 {
-                                                    out.push(Instruction::I32Const(sl.offset as i32));
-                                                    out.push(Instruction::I32Add);
-                                                }
-                                                true
+                                    if let Some(gc_idx) = sd.gc_type_idx {
+                                        out.push(Instruction::StructNewDefault(gc_idx));
+                                        out.push(Instruction::LocalSet(local_idx));
+                                    } else {
+                                        let size = sd.total_size as i32;
+                                        let used_stack = if let Some(sf) = &self.current_stack_frame {
+                                            if let Some(sl) = sf.find(&ident.name) {
+                                                if let Some(fb) = sf.frame_base_local {
+                                                    out.push(Instruction::LocalGet(fb));
+                                                    if sl.offset > 0 {
+                                                        out.push(Instruction::I32Const(sl.offset as i32));
+                                                        out.push(Instruction::I32Add);
+                                                    }
+                                                    true
+                                                } else { false }
                                             } else { false }
-                                        } else { false }
-                                    } else { false };
-                                    if !used_stack {
+                                        } else { false };
+                                        if !used_stack {
+                                            out.push(Instruction::I32Const(size));
+                                            out.push(Instruction::Call(self.alloc_func_idx()?));
+                                        }
+                                        out.push(Instruction::LocalTee(local_idx));
+                                        out.push(Instruction::I32Const(0));
                                         out.push(Instruction::I32Const(size));
-                                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                                        out.push(Instruction::MemoryFill(0));
                                     }
-                                    out.push(Instruction::LocalTee(local_idx));
-                                    out.push(Instruction::I32Const(0));
-                                    out.push(Instruction::I32Const(size));
-                                    out.push(Instruction::MemoryFill(0));
                                 }
                             } else if let ast::Expression::TypeStruct(_) = typ {
                                 let field_count = if let ast::Expression::TypeStruct(st) = typ {
