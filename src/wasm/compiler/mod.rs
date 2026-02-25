@@ -323,7 +323,7 @@ pub(crate) struct LocalAlloc {
     pub(crate) gc_string_locals: HashMap<String, u32>,
     unsigned_vars: std::collections::HashSet<String>,
     map_types: HashMap<String, MapTypeInfo>,
-    array_info: HashMap<String, (ValType, u32)>, // (elem_type, array_length)
+    array_info: HashMap<String, (ValType, u32, i32, u32)>, // (elem_vt, array_length, go_elem_size, go_elem_align)
     nested_array_inner_info: HashMap<String, (ValType, u32)>, // inner (elem_type, inner_length) for [M][N]T
     rune_slices: std::collections::HashSet<String>,
     var_go_types: HashMap<String, GoType>,

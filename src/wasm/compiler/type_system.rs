@@ -488,8 +488,9 @@ impl WasmCompiler {
                     lit.value.parse::<u32>().unwrap_or(0)
                 } else { 0 };
                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
                 locals.set_var_struct_type(var_name, "__array");
-                locals.array_info.insert(var_name.to_string(), (elem_vt, arr_len));
+                locals.array_info.insert(var_name.to_string(), (elem_vt, arr_len, go_es, go_ea));
             }
             _ => {}
         }

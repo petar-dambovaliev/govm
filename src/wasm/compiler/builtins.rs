@@ -49,7 +49,7 @@ impl WasmCompiler {
                 done = true;
             }
             if !done {
-                if let Some(&(_, arr_len)) = locals.array_info.get(&ident.name) {
+                if let Some(&(_, arr_len, ..)) = locals.array_info.get(&ident.name) {
                     out.push(Instruction::I32Const(arr_len as i32));
                     done = true;
                 }
@@ -140,7 +140,7 @@ impl WasmCompiler {
 
         let mut done = false;
         if let ast::Expression::Ident(ident) = arg {
-            if let Some(&(_, arr_len)) = locals.array_info.get(&ident.name) {
+            if let Some(&(_, arr_len, ..)) = locals.array_info.get(&ident.name) {
                 out.push(Instruction::I32Const(arr_len as i32));
                 done = true;
             }

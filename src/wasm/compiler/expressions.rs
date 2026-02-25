@@ -1348,7 +1348,7 @@ impl WasmCompiler {
         Ok(())
     }
 
-    pub(crate) fn get_array_type_of_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<(ValType, u32)> {
+    pub(crate) fn get_array_type_of_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<(ValType, u32, i32, u32)> {
         match expr {
             ast::Expression::Ident(ident) => locals.array_info.get(&ident.name).copied(),
             ast::Expression::Paren(p) => self.get_array_type_of_expr(&p.expr, locals),
@@ -1362,8 +1362,8 @@ impl WasmCompiler {
         rhs: &ast::Expression,
         locals: &LocalAlloc,
     ) -> Option<(ValType, u32)> {
-        let (lhs_vt, lhs_len) = self.get_array_type_of_expr(lhs, locals)?;
-        let (rhs_vt, rhs_len) = self.get_array_type_of_expr(rhs, locals)?;
+        let (lhs_vt, lhs_len, ..) = self.get_array_type_of_expr(lhs, locals)?;
+        let (rhs_vt, rhs_len, ..) = self.get_array_type_of_expr(rhs, locals)?;
         if lhs_vt != rhs_vt || lhs_len != rhs_len {
             return None;
         }
@@ -2586,7 +2586,7 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
         let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
-        let (elem_size, align) = Self::go_type_elem_size_and_align(&slice_type.typ);
+        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
         let n_elems = lit_val.values.len() as i32;
         let data_bytes = n_elems * elem_size;
         const HEADER_SIZE: i32 = 12;
@@ -2671,7 +2671,7 @@ impl WasmCompiler {
                 continue;
             }
             let offset = i as u64 * elem_size as u64;
-            Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
+            Self::emit_typed_store(elem_vt, offset, align, out);
         }
 
         out.push(Instruction::LocalGet(hdr_local));
@@ -3876,7 +3876,7 @@ impl WasmCompiler {
         if let ast::Expression::Index(outer_idx) = left {
             if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
                 if let Some(&(inner_elem_vt, inner_len)) = locals.nested_array_inner_info.get(&outer_ident.name) {
-                    if let Some(&(_, outer_len)) = locals.array_info.get(&outer_ident.name) {
+                    if let Some(&(_, outer_len, ..)) = locals.array_info.get(&outer_ident.name) {
                         let (inner_elem_size, inner_align) = Self::elem_size_and_align(inner_elem_vt);
                         let inner_array_bytes = inner_len as i32 * inner_elem_size;
 
@@ -3932,8 +3932,8 @@ impl WasmCompiler {
 
         // Array indexing: a[i] with bounds check
         if let ast::Expression::Ident(ident) = left {
-            if let Some(&(arr_elem_vt, arr_len)) = locals.array_info.get(&ident.name) {
-                let (arr_elem_size, arr_align) = Self::elem_size_and_align(arr_elem_vt);
+            if let Some(&(arr_elem_vt, arr_len, go_es, go_ea)) = locals.array_info.get(&ident.name) {
+                let (arr_elem_size, arr_align) = (go_es, go_ea);
                 self.compile_expression(left, out, locals)?;
                 let base = locals.add_local(&format!("__arri_b_{}", locals.locals.len()), ValType::I32);
                 out.push(Instruction::LocalSet(base));
@@ -4135,7 +4135,7 @@ impl WasmCompiler {
         if let ast::Expression::Index(outer_idx) = left {
             if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
                 if let Some(&(inner_elem_vt, inner_len)) = locals.nested_array_inner_info.get(&outer_ident.name) {
-                    if let Some(&(_, outer_len)) = locals.array_info.get(&outer_ident.name) {
+                    if let Some(&(_, outer_len, ..)) = locals.array_info.get(&outer_ident.name) {
                         let (inner_elem_size, inner_align) = Self::elem_size_and_align(inner_elem_vt);
                         let inner_array_bytes = inner_len as i32 * inner_elem_size;
 
@@ -4184,8 +4184,8 @@ impl WasmCompiler {
 
         // Array element store
         if let ast::Expression::Ident(ident) = left {
-            if let Some(&(arr_elem_vt, arr_len)) = locals.array_info.get(&ident.name) {
-                let (arr_elem_size, arr_align) = Self::elem_size_and_align(arr_elem_vt);
+            if let Some(&(arr_elem_vt, arr_len, go_es, go_ea)) = locals.array_info.get(&ident.name) {
+                let (arr_elem_size, arr_align) = (go_es, go_ea);
                 self.compile_expression(left, out, locals)?;
                 let base = locals.add_local(&format!("__arrs_b_{}", locals.locals.len()), ValType::I32);
                 out.push(Instruction::LocalSet(base));

@@ -771,8 +771,9 @@ impl WasmCompiler {
                                     0
                                 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                                let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
-                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len, go_es, go_ea));
                             }
                         }
 
@@ -834,8 +835,9 @@ impl WasmCompiler {
                                     comp.val.values.len() as u32
                                 } else { 0 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                                let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
-                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len, go_es, go_ea));
                             } else if let ast::Expression::TypeSlice(slice_type) = comp.typ.as_ref() {
                                 locals.set_var_struct_type(&ident.name, "__slice");
                                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
@@ -2208,7 +2210,7 @@ impl WasmCompiler {
 
         self.compile_expression(&range.expr, out, locals)?;
 
-        if let Some((_arr_elem_vt, arr_len)) = array_info {
+        if let Some((_arr_elem_vt, arr_len, ..)) = array_info {
             // Array variable: pushes data pointer (1 value), length is compile-time
             out.push(Instruction::LocalSet(base_ptr_local));
             out.push(Instruction::I32Const(arr_len as i32));
@@ -2547,7 +2549,7 @@ impl WasmCompiler {
                         }
                     } else {
                         let elem_vt = if let ast::Expression::Ident(range_ident) = &range.expr {
-                            if let Some(&(arr_evtype, _)) = locals.array_info.get(&range_ident.name) {
+                            if let Some(&(arr_evtype, _, ..)) = locals.array_info.get(&range_ident.name) {
                                 arr_evtype
                             } else {
                                 locals
@@ -3375,8 +3377,9 @@ impl WasmCompiler {
                                         .map_err(|e| Error::SyntaxError(e))? as u32
                                 } else { 0 };
                                 let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                                let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
                                 locals.set_var_struct_type(&ident.name, "__array");
-                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len));
+                                locals.array_info.insert(ident.name.clone(), (elem_vt, arr_len, go_es, go_ea));
                                 if let ast::Expression::TypeArray(inner_arr) = arr_type.typ.as_ref() {
                                     let inner_len = if let ast::Expression::BasicLit(lit) = inner_arr.len.as_ref() {
                                         Self::parse_go_int(&lit.value)

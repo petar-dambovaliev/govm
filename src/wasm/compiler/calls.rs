@@ -1362,8 +1362,8 @@ impl WasmCompiler {
                                         return Ok(GoType::Void);
                                     }
                                     if struct_type == Some("__array") {
-                                        if let Some(&(elem_vt, arr_len)) = locals.array_info.get(&ident_arg.name) {
-                                            let (elem_size, _) = Self::elem_size_and_align(elem_vt);
+                                        if let Some(&(_elem_vt, arr_len, go_es, _)) = locals.array_info.get(&ident_arg.name) {
+                                            let elem_size = go_es;
                                             let total_bytes = elem_size as i32 * arr_len as i32;
                                             out.push(Instruction::LocalGet(local_idx));
                                             out.push(Instruction::I32Const(0));

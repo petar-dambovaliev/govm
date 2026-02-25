@@ -68,8 +68,8 @@ impl WasmCompiler {
                 return Some(sd.total_size);
             }
         }
-        if let Some(&(elem_vt, arr_len)) = locals.array_info.get(var_name) {
-            let (elem_size, _) = Self::elem_size_and_align(elem_vt);
+        if let Some(&(_elem_vt, arr_len, go_es, _)) = locals.array_info.get(var_name) {
+            let elem_size = go_es;
             return Some(elem_size as u32 * arr_len);
         }
         None
