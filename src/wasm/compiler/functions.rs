@@ -296,8 +296,9 @@ impl WasmCompiler {
                         locals.nested_slice_inner_elem_types.insert(name_ident.name.clone(), inner_vt);
                     }
                     if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                        if self.struct_defs.contains_key(&el_id.name) {
-                            locals.slice_elem_struct_types.insert(name_ident.name.clone(), el_id.name.clone());
+                        let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                        if self.struct_defs.contains_key(&resolved_elem) {
+                            locals.slice_elem_struct_types.insert(name_ident.name.clone(), resolved_elem);
                         }
                     }
                 }
@@ -353,9 +354,10 @@ impl WasmCompiler {
             }
             if let ast::Expression::TypePointer(ptr) = &field.typ {
                 if let ast::Expression::Ident(type_ident) = ptr.typ.as_ref() {
-                    if self.struct_defs.contains_key(&type_ident.name) {
+                    let resolved_ptr_struct = self.resolve_struct_in_pkg(&type_ident.name);
+                    if self.struct_defs.contains_key(&resolved_ptr_struct) {
                         for name_ident in &field.name {
-                            locals.set_var_struct_type(&name_ident.name, &type_ident.name);
+                            locals.set_var_struct_type(&name_ident.name, &resolved_ptr_struct);
                             locals.pointer_to_struct_vars.insert(name_ident.name.clone());
                         }
                     } else {

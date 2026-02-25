@@ -673,7 +673,6 @@ impl WasmCompiler {
                 let (global_idx, _) = self.global_vars[var_name];
                 body.push(Instruction::GlobalSet(global_idx));
             }
-
             self.current_package = prev_pkg;
         }
 

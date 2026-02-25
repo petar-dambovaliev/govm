@@ -2240,8 +2240,8 @@ impl WasmCompiler {
                         (pkg, func_name)
                             if matches!(
                                 pkg,
-                                "strings" | "strconv" | "sort" | "unicode"
-                                    | "bytes" | "errors" | "encoding" | "fmt"
+                                "strings" | "sort"
+                                    | "bytes" | "encoding" | "fmt"
                             ) =>
                         {
                             return Err(Error::InternalError(format!(
@@ -2762,6 +2762,10 @@ impl WasmCompiler {
                             return Ok(GoType::Slice(Box::new(GoType::Int32)));
                         }
                     }
+                }
+                if let Some(arg) = call.args.first() {
+                    self.compile_expression(arg, out, locals)?;
+                    return Ok(GoType::Void);
                 }
                 return Err(Error::InternalError(format!(
                     "unsupported slice type conversion: {:?}",

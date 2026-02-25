@@ -29625,3 +29625,159 @@ func Run() int {
 //         Err(e) => eprintln!("Module load failed: {:#}", e),
 //     }
 // }
+
+#[test]
+fn test_unicode_is_letter_digit() {
+    let source = r#"
+package main
+
+import "unicode"
+
+func TestIsLetter(r int32) int32 {
+    if unicode.IsLetter(rune(r)) {
+        return 1
+    }
+    return 0
+}
+
+func TestIsDigit(r int32) int32 {
+    if unicode.IsDigit(rune(r)) {
+        return 1
+    }
+    return 0
+}
+
+func TestIsUpper(r int32) int32 {
+    if unicode.IsUpper(rune(r)) {
+        return 1
+    }
+    return 0
+}
+
+func TestIsLower(r int32) int32 {
+    if unicode.IsLower(rune(r)) {
+        return 1
+    }
+    return 0
+}
+
+func TestToUpper(r int32) int32 {
+    return int32(unicode.ToUpper(rune(r)))
+}
+
+func TestToLower(r int32) int32 {
+    return int32(unicode.ToLower(rune(r)))
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+    std::fs::write("/tmp/unicode_debug.wasm", &result.wasm_bytes).unwrap();
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 100_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let is_letter = instance.get_typed_func::<i32, i32>(&mut store, "TestIsLetter").expect("not found");
+    assert_eq!(is_letter.call(&mut store, 'A' as i32).unwrap(), 1, "IsLetter('A')");
+    assert_eq!(is_letter.call(&mut store, 'z' as i32).unwrap(), 1, "IsLetter('z')");
+    assert_eq!(is_letter.call(&mut store, '5' as i32).unwrap(), 0, "IsLetter('5')");
+    assert_eq!(is_letter.call(&mut store, ' ' as i32).unwrap(), 0, "IsLetter(' ')");
+
+    let is_digit = instance.get_typed_func::<i32, i32>(&mut store, "TestIsDigit").expect("not found");
+    assert_eq!(is_digit.call(&mut store, '0' as i32).unwrap(), 1, "IsDigit('0')");
+    assert_eq!(is_digit.call(&mut store, '9' as i32).unwrap(), 1, "IsDigit('9')");
+    assert_eq!(is_digit.call(&mut store, 'a' as i32).unwrap(), 0, "IsDigit('a')");
+
+    let is_upper = instance.get_typed_func::<i32, i32>(&mut store, "TestIsUpper").expect("not found");
+    assert_eq!(is_upper.call(&mut store, 'A' as i32).unwrap(), 1, "IsUpper('A')");
+    assert_eq!(is_upper.call(&mut store, 'a' as i32).unwrap(), 0, "IsUpper('a')");
+
+    let is_lower = instance.get_typed_func::<i32, i32>(&mut store, "TestIsLower").expect("not found");
+    assert_eq!(is_lower.call(&mut store, 'a' as i32).unwrap(), 1, "IsLower('a')");
+    assert_eq!(is_lower.call(&mut store, 'A' as i32).unwrap(), 0, "IsLower('A')");
+
+    let to_upper = instance.get_typed_func::<i32, i32>(&mut store, "TestToUpper").expect("not found");
+    assert_eq!(to_upper.call(&mut store, 'a' as i32).unwrap(), 'A' as i32, "ToUpper('a')");
+    assert_eq!(to_upper.call(&mut store, 'A' as i32).unwrap(), 'A' as i32, "ToUpper('A')");
+
+    let to_lower = instance.get_typed_func::<i32, i32>(&mut store, "TestToLower").expect("not found");
+    assert_eq!(to_lower.call(&mut store, 'A' as i32).unwrap(), 'a' as i32, "ToLower('A')");
+    assert_eq!(to_lower.call(&mut store, 'a' as i32).unwrap(), 'a' as i32, "ToLower('a')");
+}
+
+#[test]
+fn test_strconv_atoi_itoa() {
+    let source = r#"
+package main
+
+import "strconv"
+
+func TestAtoi(s string) int {
+    n, err := strconv.Atoi(s)
+    if err != nil {
+        return -9999
+    }
+    return n
+}
+
+func TestItoa(n int) string {
+    return strconv.Itoa(n)
+}
+
+func TestParseBool(s string) int32 {
+    b, err := strconv.ParseBool(s)
+    if err != nil {
+        return -1
+    }
+    if b {
+        return 1
+    }
+    return 0
+}
+
+func TestFormatBool(b bool) string {
+    return strconv.FormatBool(b)
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+
+    let gc_42 = make_gc_string(&mut store, &instance, "42");
+    let atoi_results = call_with_gc_string(&mut store, &instance, "TestAtoi", gc_42, &[]);
+    let n = match &atoi_results[0] {
+        Val::I64(v) => *v,
+        Val::I32(v) => *v as i64,
+        other => panic!("unexpected return type: {:?}", other),
+    };
+    assert_eq!(n, 42, "Atoi(\"42\")");
+
+    let gc_neg = make_gc_string(&mut store, &instance, "-123");
+    let atoi_results = call_with_gc_string(&mut store, &instance, "TestAtoi", gc_neg, &[]);
+    let n = match &atoi_results[0] {
+        Val::I64(v) => *v,
+        Val::I32(v) => *v as i64,
+        other => panic!("unexpected return type: {:?}", other),
+    };
+    assert_eq!(n, -123, "Atoi(\"-123\")");
+
+    let gc_bad = make_gc_string(&mut store, &instance, "abc");
+    let atoi_results = call_with_gc_string(&mut store, &instance, "TestAtoi", gc_bad, &[]);
+    let n = match &atoi_results[0] {
+        Val::I64(v) => *v,
+        Val::I32(v) => *v as i64,
+        other => panic!("unexpected return type: {:?}", other),
+    };
+    assert_eq!(n, -9999, "Atoi(\"abc\") should return error sentinel");
+}

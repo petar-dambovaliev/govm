@@ -268,11 +268,18 @@ impl WasmCompiler {
                     if let Some(st) = locals.slice_elem_struct_types.get(&ident.name) {
                         return Some(st.clone());
                     }
+                    let qualified = self.qualify_pkg_name(&ident.name);
+                    if let Some(st) = self.global_slice_elem_struct_types.get(&qualified) {
+                        return Some(st.clone());
+                    }
                 }
                 None
             }
             ast::Expression::Call(call) => {
                 self.infer_return_struct_type(call, locals)
+            }
+            ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
+                self.infer_struct_type_from_expr(&op.x, locals)
             }
             _ => None,
         }
@@ -444,8 +451,9 @@ impl WasmCompiler {
                     locals.nested_slice_inner_elem_types.insert(var_name.to_string(), inner_vt);
                 }
                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                    if self.struct_defs.contains_key(&el_id.name) {
-                        locals.slice_elem_struct_types.insert(var_name.to_string(), el_id.name.clone());
+                    let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                    if self.struct_defs.contains_key(&resolved_elem) {
+                        locals.slice_elem_struct_types.insert(var_name.to_string(), resolved_elem);
                     }
                     if el_id.name == "rune" || el_id.name == "int32" {
                         locals.rune_slices.insert(var_name.to_string());
@@ -699,6 +707,19 @@ impl WasmCompiler {
                     }
                 } else {
                     if op.op == Operator::And {
+                        if let ast::Expression::Index(idx) = op.x.as_ref() {
+                            if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
+                                if let Some(st) = locals.slice_elem_struct_types.get(&id.name)
+                                    .or_else(|| self.global_slice_elem_struct_types.get(&self.qualify_pkg_name(&id.name)))
+                                {
+                                    if let Some(sd) = self.struct_defs.get(st) {
+                                        if let Some(gc_idx) = sd.gc_type_idx {
+                                            return Self::gc_ref_val_type(gc_idx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         ValType::I32
                     } else if op.op == Operator::Star {
                         self.infer_deref_type(&op.x, locals)

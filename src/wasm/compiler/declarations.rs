@@ -862,6 +862,7 @@ impl WasmCompiler {
                             offset: embed_offset,
                             go_type_tag: None,
                             field_index: 0,
+                            slice_elem_type_tag: None,
                         });
                         for inner_field in &inner_def.fields {
                             let abs_offset = embed_offset + inner_field.offset;
@@ -871,6 +872,7 @@ impl WasmCompiler {
                                 offset: abs_offset,
                                 go_type_tag: inner_field.go_type_tag.clone(),
                                 field_index: 0,
+                                slice_elem_type_tag: inner_field.slice_elem_type_tag.clone(),
                             });
                         }
                         offset += inner_def.total_size;
@@ -884,6 +886,21 @@ impl WasmCompiler {
                 vec!["".to_string()]
             } else {
                 field.name.iter().map(|n| n.name.clone()).collect()
+            };
+
+            let slice_elem_type_tag = if let ast::Expression::TypeSlice(st) = &field.typ {
+                if let ast::Expression::Ident(el_id) = st.typ.as_ref() {
+                    let resolved = self.resolve_struct_in_pkg(&el_id.name);
+                    if self.struct_defs.contains_key(&resolved) {
+                        Some(resolved)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
             };
 
             let go_type_tag = match &field.typ {
@@ -935,6 +952,7 @@ impl WasmCompiler {
                         offset,
                         go_type_tag: go_type_tag.clone(),
                         field_index: 0,
+                        slice_elem_type_tag: slice_elem_type_tag.clone(),
                     });
                     offset += size;
                 } else {
@@ -952,6 +970,7 @@ impl WasmCompiler {
                             offset,
                             go_type_tag: if i == 0 { go_type_tag.clone() } else { None },
                             field_index: 0,
+                            slice_elem_type_tag: if i == 0 { slice_elem_type_tag.clone() } else { None },
                         });
                         offset += size;
                     }
@@ -992,6 +1011,7 @@ impl WasmCompiler {
                 })
         }) || spec.values.first().map_or(false, |v| {
             matches!(v, ast::Expression::CompositeLit(_))
+                || matches!(v, ast::Expression::Operation(op) if op.op == Operator::And && matches!(op.x.as_ref(), ast::Expression::CompositeLit(_)))
         });
 
         if is_composite_type {
@@ -1030,6 +1050,26 @@ impl WasmCompiler {
                         let resolved = self.resolve_struct_in_pkg(&type_id.name);
                         if self.struct_defs.contains_key(&resolved) {
                             // Will be tracked at usage site via global_var_struct_types
+                        }
+                    }
+                    if let ast::Expression::TypeSlice(slice_type) = type_expr {
+                        if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
+                            let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                            if self.struct_defs.contains_key(&resolved_elem) {
+                                self.global_slice_elem_struct_types.insert(var_name.clone(), resolved_elem);
+                            }
+                        }
+                    }
+                }
+                if let Some(val) = spec.values.first() {
+                    if let ast::Expression::CompositeLit(comp) = val {
+                        if let ast::Expression::TypeSlice(slice_type) = comp.typ.as_ref() {
+                            if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
+                                let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                                if self.struct_defs.contains_key(&resolved_elem) {
+                                    self.global_slice_elem_struct_types.insert(var_name.clone(), resolved_elem);
+                                }
+                            }
                         }
                     }
                 }
@@ -1655,6 +1695,12 @@ impl WasmCompiler {
                             ConstValue::Complex128(_, _) => ValType::I32,
                         };
                     }
+                    let qualified = self.qualify_pkg_name(&ident.name);
+                    if let Some((_, vt)) = self.global_vars.get(&qualified)
+                        .or_else(|| self.global_vars.get(&ident.name))
+                    {
+                        return *vt;
+                    }
                     ValType::I64
                 }
             },
@@ -1675,6 +1721,13 @@ impl WasmCompiler {
                     ValType::I64
                 } else {
                     lhs
+                }
+            }
+            ast::Expression::Operation(op) if op.y.is_none() => {
+                if op.op == Operator::And {
+                    ValType::I32
+                } else {
+                    self.infer_val_type_no_locals(&op.x)
                 }
             }
             ast::Expression::Call(call) => {

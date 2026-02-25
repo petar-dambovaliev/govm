@@ -573,6 +573,17 @@ impl WasmCompiler {
                                             locals.pointer_to_struct_vars.insert(ident.name.clone());
                                         }
                                     }
+                                } else if let ast::Expression::Index(idx_expr) = &*addr_op.x {
+                                    if let Some(ast::Expression::Ident(arr_ident)) = idx_expr.left.as_deref() {
+                                        if let Some(elem_struct_type) = locals.slice_elem_struct_types
+                                            .get(&arr_ident.name).cloned()
+                                        {
+                                            locals.set_var_struct_type(&ident.name, &elem_struct_type);
+                                            if self.struct_defs.contains_key(&elem_struct_type) {
+                                                locals.pointer_to_struct_vars.insert(ident.name.clone());
+                                            }
+                                        }
+                                    }
                                 } else if let ast::Expression::Ident(ref_ident) = &*addr_op.x {
                                     let ptr_tag = if let Some(st) = locals.get_var_struct_type(&ref_ident.name).map(|s| s.to_string()) {
                                         if self.struct_defs.contains_key(&st) {
@@ -592,6 +603,24 @@ impl WasmCompiler {
                                     };
                                     if let Some(tag) = ptr_tag {
                                         locals.set_var_struct_type(&ident.name, &tag);
+                                    }
+                                }
+                            }
+                        }
+
+                        if let ast::Expression::Selector(sel) = &assign.right[i] {
+                            if let Some(parent_type) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+                                if let Some(sd) = self.struct_defs.get(&parent_type) {
+                                    if let Some(field) = sd.find_field(&sel.sel.name) {
+                                        if field.go_type_tag.as_deref() == Some("__slice") {
+                                            locals.set_var_struct_type(&ident.name, "__slice");
+                                            if let Some(ref elem_tag) = field.slice_elem_type_tag {
+                                                locals.slice_elem_struct_types.insert(
+                                                    ident.name.clone(),
+                                                    elem_tag.clone(),
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -676,8 +705,9 @@ impl WasmCompiler {
                                                 locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
                                             }
                                             if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                                                if self.struct_defs.contains_key(&el_id.name) {
-                                                    locals.slice_elem_struct_types.insert(ident.name.clone(), el_id.name.clone());
+                                                let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                                                if self.struct_defs.contains_key(&resolved_elem) {
+                                                    locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
                                                 }
                                             }
                                         }
@@ -818,8 +848,9 @@ impl WasmCompiler {
                                     if el_id.name == "rune" || el_id.name == "int32" {
                                         locals.rune_slices.insert(ident.name.clone());
                                     }
-                                    if self.struct_defs.contains_key(&el_id.name) {
-                                        locals.slice_elem_struct_types.insert(ident.name.clone(), el_id.name.clone());
+                                    let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                                    if self.struct_defs.contains_key(&resolved_elem) {
+                                        locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
                                     }
                                 }
                             } else if let ast::Expression::TypeMap(map_type) = comp.typ.as_ref() {
@@ -3325,8 +3356,9 @@ impl WasmCompiler {
                                     locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
                                 }
                                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                                    if self.struct_defs.contains_key(&el_id.name) {
-                                        locals.slice_elem_struct_types.insert(ident.name.clone(), el_id.name.clone());
+                                    let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                                    if self.struct_defs.contains_key(&resolved_elem) {
+                                        locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
                                     }
                                 }
                             } else if let ast::Expression::TypeMap(map_type) = typ {

@@ -63,6 +63,7 @@ pub(crate) struct StructFieldDef {
     offset: u32,
     go_type_tag: Option<String>,
     pub(crate) field_index: u32,
+    pub(crate) slice_elem_type_tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -523,6 +524,7 @@ pub struct WasmCompiler {
     constant_types: HashMap<String, String>,
     global_vars: HashMap<String, (u32, ValType)>,
     global_array_elem_types: HashMap<String, (ValType, i32, u32)>,
+    global_slice_elem_struct_types: HashMap<String, String>,
     current_iota: Option<i128>,
     named_returns: Vec<(String, ValType)>,
     current_result_types: Vec<ValType>,
@@ -658,6 +660,7 @@ impl WasmCompiler {
             constant_types: HashMap::new(),
             global_vars: HashMap::new(),
             global_array_elem_types: HashMap::new(),
+            global_slice_elem_struct_types: HashMap::new(),
             current_iota: None,
             named_returns: Vec::new(),
             current_result_types: Vec::new(),

@@ -2001,8 +2001,18 @@ impl WasmCompiler {
 
                 if is_index_addr {
                     if let ast::Expression::Index(idx) = &*op.x {
-                        let (elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
-                        let _ = elem_vt;
+                        let is_gc_struct_elem = if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
+                            locals.slice_elem_struct_types.get(&id.name)
+                                .and_then(|st| self.struct_defs.get(st))
+                                .map_or(false, |sd| sd.gc_type_idx.is_some())
+                        } else { false };
+
+                        if is_gc_struct_elem {
+                            self.compile_index(idx, out, locals)?;
+                        } else {
+                            let (elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
+                            let _ = elem_vt;
+                        }
                     }
                 } else if is_struct_var || is_composite {
                     self.compile_expression(&op.x, out, locals)?;
@@ -2276,9 +2286,22 @@ impl WasmCompiler {
             }
         }
 
-        self.compile_expression(&sel.x, out, locals)?;
-
         let struct_type_name = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
+
+        let used_index_addr = if let ast::Expression::Index(idx) = sel.x.as_ref() {
+            if let Some(ref type_name) = struct_type_name {
+                if let Some(sd) = self.struct_defs.get(type_name) {
+                    if sd.gc_type_idx.is_none() && sd.find_field(&sel.sel.name).is_some() {
+                        let (_elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
+                        true
+                    } else { false }
+                } else { false }
+            } else { false }
+        } else { false };
+
+        if !used_index_addr {
+            self.compile_expression(&sel.x, out, locals)?;
+        }
 
         if let Some(type_name) = struct_type_name {
             if let Some(struct_def) = self.struct_defs.get(&type_name).cloned() {
@@ -2504,8 +2527,14 @@ impl WasmCompiler {
             Self::parse_go_int(&lit.value).map_err(|e| Error::SyntaxError(e))? as u32
         } else if matches!(arr_type.len.as_ref(), ast::Expression::Ellipsis(_)) {
             lit_val.values.len() as u32
+        } else if let Some(cv) = self.try_eval_const_expr(arr_type.len.as_ref()) {
+            cv.as_i64().ok_or_else(|| Error::InternalError(
+                "array length constant expression is not an integer".to_string()
+            ))? as u32
         } else {
-            return Err(Error::InternalError("array length must be a constant".to_string()));
+            return Err(Error::InternalError(format!(
+                "array length must be a constant, got {:?}", arr_type.len
+            )));
         };
 
         let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
@@ -2573,7 +2602,7 @@ impl WasmCompiler {
 
         // Resolve the element type name for composite literal type elision
         let elem_type_name = if let ast::Expression::Ident(id) = slice_type.typ.as_ref() {
-            Some(id.name.clone())
+            Some(self.resolve_struct_in_pkg(&id.name))
         } else {
             None
         };
@@ -2592,6 +2621,7 @@ impl WasmCompiler {
                 } else if let ast::Element::Expr(expr) = &kv.val {
                     self.compile_expression(expr, out, locals)?;
                 } else {
+                    out.push(Instruction::Drop);
                     continue;
                 }
             } else if is_struct_elem {
@@ -2628,6 +2658,7 @@ impl WasmCompiler {
                 let val_vt = self.infer_val_type(expr, locals);
                 Self::emit_typed_coerce(val_vt, elem_vt, out)?;
             } else {
+                out.push(Instruction::Drop);
                 continue;
             }
             let offset = i as u64 * elem_size as u64;
@@ -2793,7 +2824,11 @@ impl WasmCompiler {
 
         // Handle named composite types: MySlice{1,2,3} → resolve to underlying type
         if let ast::Expression::Ident(ident) = comp.typ.as_ref() {
-            if let Some(underlying) = self.named_composite_types.get(&ident.name).cloned() {
+            let qualified_name = self.qualify_pkg_name(&ident.name);
+            if let Some(underlying) = self.named_composite_types.get(&ident.name)
+                .or_else(|| self.named_composite_types.get(&qualified_name))
+                .cloned()
+            {
                 match &underlying {
                     ast::Expression::TypeSlice(slice_type) => {
                         self.compile_slice_literal(slice_type, &comp.val, out, locals)?;
