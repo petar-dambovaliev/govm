@@ -534,7 +534,6 @@ pub struct WasmCompiler {
     next_type_id: u32,
     iface_defs: HashMap<String, Vec<String>>,
     iface_method_sigs: HashMap<String, HashMap<String, (Vec<WasmType>, Vec<WasmType>)>>,
-    iface_var_type_ids: HashMap<String, u32>,
     next_anon_iface_id: u32,
 
     // init() function support
@@ -667,7 +666,6 @@ impl WasmCompiler {
             next_type_id: 1, // 0 = nil
             iface_defs: HashMap::new(),
             iface_method_sigs: HashMap::new(),
-            iface_var_type_ids: HashMap::new(),
             next_anon_iface_id: 0,
 
             init_func_indices: Vec::new(),

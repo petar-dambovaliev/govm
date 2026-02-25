@@ -359,7 +359,6 @@ impl WasmCompiler {
                         let tid_local = locals.find(&tid_param_name).unwrap_or_else(|| {
                             locals.add_local(&tid_param_name, ValType::I32)
                         });
-                        self.iface_var_type_ids.insert(name_ident.name.clone(), tid_local);
                         locals.iface_type_id_locals.insert(name_ident.name.clone(), tid_local);
                     }
                 }
@@ -774,6 +773,7 @@ impl WasmCompiler {
         let saved_stack_alloc_target = self.stack_alloc_target.take();
 
         let saved_constants = self.constants.clone();
+        self.symbols.new_context(true);
         let mut body: Vec<Instruction<'static>> = Vec::new();
         self.deferred_calls.push(Vec::new());
         let goto_targets = Self::scan_goto_targets(&func_lit.body);
@@ -786,6 +786,7 @@ impl WasmCompiler {
         }
         self.emit_deferred_calls(&mut body);
         self.deferred_calls.pop();
+        self.symbols.leave_context();
 
         self.constants = saved_constants;
         self.named_returns = saved_named_returns;

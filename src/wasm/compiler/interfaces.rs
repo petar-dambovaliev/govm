@@ -344,7 +344,6 @@ impl WasmCompiler {
 
     pub(crate) fn get_iface_type_id_local(&self, name: &str, locals: &LocalAlloc) -> Option<u32> {
         locals.iface_type_id_locals.get(name).copied()
-            .or_else(|| self.iface_var_type_ids.get(name).copied())
     }
 
     pub(crate) fn types_implementing_interface(&self, iface_name: &str) -> Vec<u32> {
@@ -661,7 +660,6 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(val_tid_local));
                 out.push(Instruction::I32Const(1));
                 out.push(Instruction::LocalSet(ok_local));
-                self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
                 locals.iface_type_id_locals.insert(val_var.to_string(), val_tid_local);
                 return Ok(());
             }
@@ -697,7 +695,6 @@ impl WasmCompiler {
             }
             out.push(Instruction::End);
 
-            self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
             locals.iface_type_id_locals.insert(val_var.to_string(), val_tid_local);
 
             return Ok(());

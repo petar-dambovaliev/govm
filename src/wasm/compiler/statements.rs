@@ -1969,6 +1969,7 @@ impl WasmCompiler {
         let has_init = if_stmt.init.is_some();
         if has_init {
             locals.push_scope();
+            self.symbols.enter_scope();
         }
 
         if let Some(init) = &if_stmt.init {
@@ -1994,6 +1995,7 @@ impl WasmCompiler {
         out.push(Instruction::End);
 
         if has_init {
+            self.symbols.leave_scope();
             locals.pop_scope();
         }
         Ok(())
@@ -2020,6 +2022,7 @@ impl WasmCompiler {
         let has_init = for_stmt.init.is_some();
         if has_init {
             locals.push_scope();
+            self.symbols.enter_scope();
         }
 
         if let Some(init) = &for_stmt.init {
@@ -2067,6 +2070,7 @@ impl WasmCompiler {
         self.loop_depth.pop();
 
         if has_init {
+            self.symbols.leave_scope();
             locals.pop_scope();
         }
 
@@ -2632,6 +2636,7 @@ impl WasmCompiler {
         let has_init = switch.init.is_some();
         if has_init {
             locals.push_scope();
+            self.symbols.enter_scope();
         }
 
         if let Some(init) = &switch.init {
@@ -2706,6 +2711,7 @@ impl WasmCompiler {
                 }
             }
             if has_init {
+                self.symbols.leave_scope();
                 locals.pop_scope();
             }
             return Ok(());
@@ -2804,6 +2810,7 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(matched));
 
                 locals.push_scope();
+                self.symbols.enter_scope();
                 for stmt in case.body.iter() {
                     if Self::is_fallthrough_stmt(stmt) {
                         out.push(Instruction::I32Const(1));
@@ -2812,6 +2819,7 @@ impl WasmCompiler {
                     }
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                self.symbols.leave_scope();
                 locals.pop_scope();
 
                 if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
@@ -2900,9 +2908,11 @@ impl WasmCompiler {
                 }
 
                 locals.push_scope();
+                self.symbols.enter_scope();
                 for stmt in case.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                self.symbols.leave_scope();
                 locals.pop_scope();
 
                 let is_last = i == num_cases - 1;
@@ -2940,6 +2950,7 @@ impl WasmCompiler {
         out.push(Instruction::End);
 
         if has_init {
+            self.symbols.leave_scope();
             locals.pop_scope();
         }
 
@@ -3300,7 +3311,6 @@ impl WasmCompiler {
                                     &format!("{}__type_id", ident.name),
                                     ValType::I32,
                                 );
-                                self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
                                 locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                             } else if let ast::Expression::TypeSlice(slice_type) = typ {
                                 locals.set_var_struct_type(&ident.name, "__slice");
@@ -3370,7 +3380,6 @@ impl WasmCompiler {
                                         &format!("{}__type_id", ident.name),
                                         ValType::I32,
                                     );
-                                    self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
                                     locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                                 } else if self.struct_defs.contains_key(&type_ident.name) {
                                     locals.set_var_struct_type(
@@ -3413,7 +3422,6 @@ impl WasmCompiler {
                                             &format!("{}__type_id", ident.name),
                                             ValType::I32,
                                         );
-                                        self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
                                         locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                                     }
                                 }
@@ -4046,7 +4054,6 @@ impl WasmCompiler {
                     &format!("{}__type_id", name),
                     ValType::I32,
                 );
-                self.iface_var_type_ids.insert(name.to_string(), tid_local);
                 locals.iface_type_id_locals.insert(name.to_string(), tid_local);
             }
             return true;
@@ -4279,6 +4286,7 @@ impl WasmCompiler {
             .push((Some("__goto_dispatch".to_string()), 0, false, true));
 
         locals.push_scope();
+        self.symbols.enter_scope();
 
         for k in 0..num_segments {
             self.goto_segment_depth = (num_segments - 1 - k) as u32;
@@ -4298,6 +4306,7 @@ impl WasmCompiler {
 
         out.push(Instruction::Br(1)); // exit past $exit block
 
+        self.symbols.leave_scope();
         locals.pop_scope();
 
         self.loop_depth.pop();
