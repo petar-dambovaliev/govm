@@ -135,6 +135,28 @@ impl WasmCompiler {
             ast::Expression::Operation(op) if op.y.is_none() && op.op == Operator::And => {
                 self.infer_concrete_type_name(&op.x, locals)
             }
+            ast::Expression::Call(call) => {
+                let go_type = if let ast::Expression::Ident(ident) = call.func.as_ref() {
+                    self.find_func_in_pkg(&ident.name)
+                        .and_then(|fi| fi.result_go_types.first().cloned())
+                } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
+                    self.resolve_selector_method_name(sel, locals)
+                        .and_then(|q| self.functions.iter().find(|f| f.name == q))
+                        .and_then(|fi| fi.result_go_types.first().cloned())
+                } else {
+                    None
+                };
+                if let Some(gt) = go_type {
+                    let stripped = gt.strip_prefix('*').unwrap_or(&gt);
+                    let resolved = self.resolve_struct_in_pkg(stripped);
+                    if self.struct_defs.contains_key(&resolved) {
+                        return resolved;
+                    }
+                    return gt;
+                }
+                let vt = self.infer_val_type(expr, locals);
+                Self::type_id_for_val_type(vt).to_string()
+            }
             _ => {
                 let vt = self.infer_val_type(expr, locals);
                 Self::type_id_for_val_type(vt).to_string()

@@ -237,7 +237,11 @@ impl WasmCompiler {
     pub(crate) fn infer_struct_type_from_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
         match expr {
             ast::Expression::Ident(ident) => {
-                locals.get_var_struct_type(&ident.name).map(|s| s.to_string())
+                if let Some(t) = locals.get_var_struct_type(&ident.name) {
+                    return Some(t.to_string());
+                }
+                let resolved = self.resolve_global_var_name(&ident.name);
+                self.global_var_struct_types.get(&resolved).cloned()
             }
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
@@ -277,6 +281,25 @@ impl WasmCompiler {
             }
             ast::Expression::Call(call) => {
                 self.infer_return_struct_type(call, locals)
+            }
+            ast::Expression::TypeAssert(ta) => {
+                if let Some(ref target) = ta.right {
+                    if let ast::Expression::TypePointer(ptr) = target.as_ref() {
+                        if let ast::Expression::Ident(type_ident) = ptr.typ.as_ref() {
+                            let resolved = self.resolve_struct_in_pkg(&type_ident.name);
+                            if self.struct_defs.contains_key(&resolved) {
+                                return Some(resolved);
+                            }
+                        }
+                    }
+                    if let ast::Expression::Ident(type_ident) = target.as_ref() {
+                        let resolved = self.resolve_struct_in_pkg(&type_ident.name);
+                        if self.struct_defs.contains_key(&resolved) {
+                            return Some(resolved);
+                        }
+                    }
+                }
+                None
             }
             ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
                 self.infer_struct_type_from_expr(&op.x, locals)

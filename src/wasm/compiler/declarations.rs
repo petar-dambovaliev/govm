@@ -1049,7 +1049,7 @@ impl WasmCompiler {
                     if let ast::Expression::Ident(type_id) = type_expr {
                         let resolved = self.resolve_struct_in_pkg(&type_id.name);
                         if self.struct_defs.contains_key(&resolved) {
-                            // Will be tracked at usage site via global_var_struct_types
+                            self.global_var_struct_types.insert(var_name.clone(), resolved);
                         }
                     }
                     if let ast::Expression::TypeSlice(slice_type) = type_expr {
@@ -1069,6 +1069,12 @@ impl WasmCompiler {
                                 if self.struct_defs.contains_key(&resolved_elem) {
                                     self.global_slice_elem_struct_types.insert(var_name.clone(), resolved_elem);
                                 }
+                            }
+                        }
+                        if let ast::Expression::Ident(type_id) = comp.typ.as_ref() {
+                            let resolved = self.resolve_struct_in_pkg(&type_id.name);
+                            if self.struct_defs.contains_key(&resolved) {
+                                self.global_var_struct_types.insert(var_name.clone(), resolved);
                             }
                         }
                     }

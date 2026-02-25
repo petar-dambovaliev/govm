@@ -525,6 +525,7 @@ pub struct WasmCompiler {
     global_vars: HashMap<String, (u32, ValType)>,
     global_array_elem_types: HashMap<String, (ValType, i32, u32)>,
     global_slice_elem_struct_types: HashMap<String, String>,
+    global_var_struct_types: HashMap<String, String>,
     current_iota: Option<i128>,
     named_returns: Vec<(String, ValType)>,
     current_result_types: Vec<ValType>,
@@ -661,6 +662,7 @@ impl WasmCompiler {
             global_vars: HashMap::new(),
             global_array_elem_types: HashMap::new(),
             global_slice_elem_struct_types: HashMap::new(),
+            global_var_struct_types: HashMap::new(),
             current_iota: None,
             named_returns: Vec::new(),
             current_result_types: Vec::new(),
@@ -737,7 +739,12 @@ impl WasmCompiler {
 
         self.iface_defs.insert("error".to_string(), vec!["Error".to_string()]);
         let mut error_sigs = HashMap::new();
-        error_sigs.insert("Error".to_string(), (vec![], vec![WasmType::I32, WasmType::I32]));
+        let error_result = if let Some(gc_idx) = self.gc_builtin_types.go_string {
+            vec![WasmType::Ref(gc_idx)]
+        } else {
+            vec![WasmType::I32, WasmType::I32]
+        };
+        error_sigs.insert("Error".to_string(), (vec![], error_result));
         self.iface_method_sigs.insert("error".to_string(), error_sigs);
     }
 

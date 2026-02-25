@@ -2293,6 +2293,7 @@ impl WasmCompiler {
                 if let Some(sd) = self.struct_defs.get(type_name) {
                     if sd.gc_type_idx.is_none() && sd.find_field(&sel.sel.name).is_some() {
                         let (_elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
+                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
                         true
                     } else { false }
                 } else { false }
