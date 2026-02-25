@@ -2538,7 +2538,7 @@ impl WasmCompiler {
         };
 
         let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
-        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
+        let (elem_size, align) = Self::go_type_elem_size_and_align(&arr_type.typ);
         let total_bytes = (arr_len as i32).checked_mul(elem_size).ok_or_else(|| {
             Error::InternalError(format!(
                 "array too large: [{}]T with element size {} bytes overflows",
@@ -2554,15 +2554,24 @@ impl WasmCompiler {
         );
         out.push(Instruction::LocalSet(ptr_local));
 
-        for (i, kv) in lit_val.values.iter().enumerate() {
+        let mut current_index: u64 = 0;
+        for kv in lit_val.values.iter() {
+            if let Some(ref key_elem) = kv.key {
+                if let ast::Element::Expr(key_expr) = key_elem {
+                    if let Some(cv) = self.try_eval_const_expr(key_expr) {
+                        current_index = cv.as_i64().unwrap_or(current_index as i64) as u64;
+                    }
+                }
+            }
             if let ast::Element::Expr(expr) = &kv.val {
                 out.push(Instruction::LocalGet(ptr_local));
                 self.compile_expression(expr, out, locals)?;
                 let val_vt = self.infer_val_type(expr, locals);
                 Self::emit_typed_coerce(val_vt, elem_vt, out)?;
-                let offset = i as u64 * elem_size as u64;
-                Self::emit_typed_store(elem_vt, offset, align, out);
+                let offset = current_index * elem_size as u64;
+                Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
             }
+            current_index += 1;
         }
 
         out.push(Instruction::LocalGet(ptr_local));
@@ -2577,7 +2586,7 @@ impl WasmCompiler {
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
         let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
-        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
+        let (elem_size, align) = Self::go_type_elem_size_and_align(&slice_type.typ);
         let n_elems = lit_val.values.len() as i32;
         let data_bytes = n_elems * elem_size;
         const HEADER_SIZE: i32 = 12;
@@ -2662,7 +2671,7 @@ impl WasmCompiler {
                 continue;
             }
             let offset = i as u64 * elem_size as u64;
-            Self::emit_typed_store(elem_vt, offset, align, out);
+            Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
         }
 
         out.push(Instruction::LocalGet(hdr_local));

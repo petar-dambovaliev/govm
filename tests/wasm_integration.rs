@@ -29668,11 +29668,11 @@ func TestToUpper(r int32) int32 {
 func TestToLower(r int32) int32 {
     return int32(unicode.ToLower(rune(r)))
 }
+
 "#;
 
     let mut compiler = WasmCompiler::new();
     let result = compiler.compile_source(source).expect("compilation failed");
-    std::fs::write("/tmp/unicode_debug.wasm", &result.wasm_bytes).unwrap();
 
     let runtime = UdfRuntime::new().expect("runtime init failed");
     let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
