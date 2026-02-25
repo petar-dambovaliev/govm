@@ -703,6 +703,15 @@ impl WasmCompiler {
         let val_local = locals.add_local(val_var, target_vt);
         let ok_local = locals.add_local(ok_var, ValType::I32);
 
+        if self.struct_defs.contains_key(&lookup_type_name) {
+            locals.set_var_struct_type(val_var, &lookup_type_name);
+        } else {
+            let resolved = self.resolve_struct_in_pkg(&lookup_type_name);
+            if self.struct_defs.contains_key(&resolved) {
+                locals.set_var_struct_type(val_var, &resolved);
+            }
+        }
+
         // Reset ok to 0 so that re-evaluation in a loop works correctly
         out.push(Instruction::I32Const(0));
         out.push(Instruction::LocalSet(ok_local));
@@ -972,6 +981,18 @@ impl WasmCompiler {
             Error::InternalError(format!("variable '{}' not found", iface_var))
         })?;
 
+        self.compile_interface_method_call_with_locals(tid_local, data_local, method_name, args, out, locals)
+    }
+
+    pub(crate) fn compile_interface_method_call_with_locals(
+        &mut self,
+        tid_local: u32,
+        data_local: u32,
+        method_name: &str,
+        args: &[ast::Expression],
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
         // Nil check: if type_id == 0, panic with a descriptive message
         out.push(Instruction::LocalGet(tid_local));
         out.push(Instruction::I32Eqz);
@@ -1035,10 +1056,6 @@ impl WasmCompiler {
             .collect();
 
         if candidates.is_empty() {
-            // No concrete types implement this method yet. The call is guarded
-            // by a type assertion that will fail at runtime, so emit unreachable.
-            // Still mark as interface return so assignment code doesn't try to
-            // box/validate the (unreachable) result.
             self.last_iface_call_returns_iface = true;
             out.push(Instruction::Unreachable);
             return Ok(());
@@ -1068,15 +1085,12 @@ impl WasmCompiler {
             out.push(Instruction::I32Eq);
             out.push(Instruction::If(BlockType::Empty));
             {
-                // Load the concrete value from the box (data_ptr is a pointer to the boxed value)
                 out.push(Instruction::LocalGet(data_local));
                 out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                // Push arguments
                 for (arg_local, _) in &arg_locals {
                     out.push(Instruction::LocalGet(*arg_local));
                 }
                 out.push(Instruction::Call(*func_idx));
-                // Store results in reverse order (last result first on stack)
                 for (rl, _) in result_locals.iter().rev() {
                     out.push(Instruction::LocalSet(*rl));
                 }

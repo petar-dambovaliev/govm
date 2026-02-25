@@ -1942,7 +1942,8 @@ impl WasmCompiler {
                     }
 
                     // Check compiled stdlib functions before hardcoded intrinsics
-                    if self.compiled_packages.contains(pkg_ident.name.as_str()) {
+                    let is_inlined = Self::INLINED_NATIVE_FUNCTIONS.contains(&sel.sel.name.as_str());
+                    if !is_inlined && self.compiled_packages.contains(pkg_ident.name.as_str()) {
                         let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()).cloned() {
                             if fi.is_variadic {
@@ -2425,6 +2426,22 @@ impl WasmCompiler {
                                 type_name, sel.sel.name
                             )));
                         }
+                    } else if self.is_interface_field_selector(sel.x.as_ref(), locals) {
+                        self.compile_expression(sel.x.as_ref(), out, locals)?;
+                        let tid_tmp = locals.add_local(
+                            &format!("__imc_fsel_tid_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        let data_tmp = locals.add_local(
+                            &format!("__imc_fsel_data_{}", locals.locals.len()),
+                            ValType::I32,
+                        );
+                        out.push(Instruction::LocalSet(tid_tmp));
+                        out.push(Instruction::LocalSet(data_tmp));
+                        self.compile_interface_method_call_with_locals(
+                            tid_tmp, data_tmp, &sel.sel.name, &call.args, out, locals,
+                        )?;
+                        return Ok(GoType::Int32);
                     } else {
                         self.compile_expression(sel.x.as_ref(), out, locals)?;
                         for arg in &call.args {

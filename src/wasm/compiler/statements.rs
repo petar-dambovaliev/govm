@@ -318,7 +318,10 @@ impl WasmCompiler {
                     } else {
                         if let Some(&expected_vt) = result_types.get(ws) {
                             let actual_vt = self.infer_val_type(expr, locals);
-                            if actual_vt != expected_vt {
+                            if actual_vt != expected_vt
+                                && !matches!(actual_vt, ValType::Ref(_))
+                                && !matches!(expected_vt, ValType::Ref(_))
+                            {
                                 Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
                             }
                         }
@@ -389,7 +392,10 @@ impl WasmCompiler {
                     } else {
                         if let Some(&expected_vt) = result_types.get(wasm_slot) {
                             let actual_vt = self.infer_val_type(expr, locals);
-                            if actual_vt != expected_vt {
+                            if actual_vt != expected_vt
+                                && !matches!(actual_vt, ValType::Ref(_))
+                                && !matches!(expected_vt, ValType::Ref(_))
+                            {
                                 Self::emit_typed_coerce(actual_vt, expected_vt, out)?;
                             }
                         }
@@ -630,27 +636,8 @@ impl WasmCompiler {
                             locals.unsigned_vars.insert(ident.name.clone());
                         }
 
-                        // Track string variables
                         if is_string_rhs {
-                            locals.set_var_struct_type(
-                                &ident.name,
-                                "__string",
-                            );
-                            if gc_string_mode {
-                                locals.gc_string_locals.insert(
-                                    ident.name.clone(),
-                                    local_idx,
-                                );
-                            } else {
-                                let len_local = locals.add_local(
-                                    &format!("{}__str_len", ident.name),
-                                    ValType::I32,
-                                );
-                                locals.string_locals.insert(
-                                    ident.name.clone(),
-                                    (local_idx, len_local),
-                                );
-                            }
+                            self.track_local_var_type(&ident.name, "string", local_idx, locals);
                         }
 
                         // Track type alias from arithmetic expressions with typed constants
@@ -720,22 +707,26 @@ impl WasmCompiler {
                                 } else if fn_ident.name == "new" {
                                     if let Some(type_arg) = call_expr.args.first() {
                                         if let ast::Expression::Ident(ti) = type_arg {
+                                            let resolved_new = self.resolve_struct_in_pkg(&ti.name);
                                             let ptr_tag = match ti.name.as_str() {
-                                                "int" | "int64" | "uint" | "uint64" => "__ptr_i64",
-                                                "float32" => "__ptr_f32",
-                                                "float64" => "__ptr_f64",
+                                                "int" | "int64" | "uint" | "uint64" => "__ptr_i64".to_string(),
+                                                "float32" => "__ptr_f32".to_string(),
+                                                "float64" => "__ptr_f64".to_string(),
                                                 _ => {
-                                                    if self.struct_defs.contains_key(&ti.name) {
+                                                    if self.struct_defs.contains_key(&resolved_new) {
                                                         locals.pointer_to_struct_vars.insert(ident.name.clone());
-                                                        &ti.name
+                                                        resolved_new
+                                                    } else if self.struct_defs.contains_key(&ti.name) {
+                                                        locals.pointer_to_struct_vars.insert(ident.name.clone());
+                                                        ti.name.clone()
                                                     } else {
-                                                        "__ptr_i32"
+                                                        "__ptr_i32".to_string()
                                                     }
                                                 }
                                             };
                                             locals.set_var_struct_type(
                                                 &ident.name,
-                                                ptr_tag,
+                                                &ptr_tag,
                                             );
                                         }
                                     }
@@ -778,8 +769,8 @@ impl WasmCompiler {
                         }
 
                         // Track struct type from function/method call return types
+                        let mut is_iface_from_call = false;
                         if let ast::Expression::Call(call_expr) = &assign.right[i] {
-                            // Check for type alias conversions like time.Duration(v) or Duration(v)
                             if let ast::Expression::Selector(sel) = call_expr.func.as_ref() {
                                 if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
                                     let qualified_alias = format!("{}.{}", pkg_id.name, sel.sel.name);
@@ -794,21 +785,9 @@ impl WasmCompiler {
                                 }
                             }
 
-                            let go_types = self.call_return_go_types(&assign.right[i], locals);
-                            if let Some(go_type) = go_types.first() {
-                                if go_type == "string" {
-                                    locals.set_var_struct_type(&ident.name, "__string");
-                                } else {
-                                    let base_type = go_type.strip_prefix('*').unwrap_or(go_type);
-                                    let resolved_struct = self.resolve_struct_in_pkg(base_type);
-                                    if self.struct_defs.contains_key(&resolved_struct) {
-                                        locals.set_var_struct_type(&ident.name, &resolved_struct);
-                                    } else if go_type.starts_with("[]") {
-                                        if locals.get_var_struct_type(&ident.name).is_none() {
-                                            locals.set_var_struct_type(&ident.name, "__slice");
-                                        }
-                                    }
-                                }
+                            let call_go_types = self.call_return_go_types(&assign.right[i], locals);
+                            if let Some(go_type) = call_go_types.first() {
+                                is_iface_from_call = self.track_local_var_type(&ident.name, go_type, local_idx, locals);
                             }
                             if self.is_string_expr(&assign.right[i], locals) {
                                 locals.set_var_struct_type(&ident.name, "__string");
@@ -921,44 +900,6 @@ impl WasmCompiler {
                                         locals.set_var_struct_type(&ident.name, &st);
                                     } else if let Some(st) = locals.slice_elem_struct_types.get(&src_ident.name).cloned() {
                                         locals.set_var_struct_type(&ident.name, &st);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Track interface returns from function calls
-                        let mut is_iface_from_call = false;
-                        if let ast::Expression::Call(call_expr) = &assign.right[i] {
-                            if let ast::Expression::Ident(fn_ident) = call_expr.func.as_ref() {
-                                if let Some(fi) = self.functions.iter().find(|f| f.name == fn_ident.name).cloned() {
-                                    if let Some(go_type) = fi.result_go_types.first() {
-                                        if self.is_iface_go_type(go_type) {
-                                            is_iface_from_call = true;
-                                            let iface_tag = format!("__iface_{}", go_type);
-                                            locals.set_var_struct_type(&ident.name, &iface_tag);
-                                            let tid_local = locals.add_local(
-                                                &format!("{}__type_id", ident.name),
-                                                ValType::I32,
-                                            );
-                                            self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
-                                        }
-                                    }
-                                }
-                            } else if let ast::Expression::Selector(sel) = call_expr.func.as_ref() {
-                                if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
-                                    if let Some(fi) = self.functions.iter().find(|f| f.name == qualified).cloned() {
-                                        if let Some(go_type) = fi.result_go_types.first() {
-                                            if self.is_iface_go_type(go_type) {
-                                                is_iface_from_call = true;
-                                                let iface_tag = format!("__iface_{}", go_type);
-                                                locals.set_var_struct_type(&ident.name, &iface_tag);
-                                                let tid_local = locals.add_local(
-                                                    &format!("{}__type_id", ident.name),
-                                                    ValType::I32,
-                                                );
-                                                self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -1597,7 +1538,10 @@ impl WasmCompiler {
                                         } else {
                                             if i < assign.right.len() {
                                                 let rhs_vt = self.infer_val_type(&assign.right[i], locals);
-                                                if rhs_vt != vt {
+                                                if rhs_vt != vt
+                                                    && !matches!(rhs_vt, ValType::Ref(_))
+                                                    && !matches!(vt, ValType::Ref(_))
+                                                {
                                                     Self::emit_typed_coerce(rhs_vt, vt, out)?;
                                                 }
                                             }
@@ -3423,7 +3367,16 @@ impl WasmCompiler {
                                         &ident.name,
                                         &type_ident.name,
                                     );
-                                } else if self.type_aliases.contains_key(&type_ident.name) {
+                                } else {
+                                    let resolved_struct = self.resolve_struct_in_pkg(&type_ident.name);
+                                    if self.struct_defs.contains_key(&resolved_struct) {
+                                        locals.set_var_struct_type(
+                                            &ident.name,
+                                            &resolved_struct,
+                                        );
+                                    }
+                                }
+                                if self.type_aliases.contains_key(&type_ident.name) {
                                     locals.set_var_struct_type(
                                         &ident.name,
                                         &type_ident.name,
@@ -3451,6 +3404,14 @@ impl WasmCompiler {
                                             ValType::I32,
                                         );
                                         self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                    }
+                                }
+                            } else if let ast::Expression::TypePointer(ptr) = typ {
+                                if let ast::Expression::Ident(type_ident) = ptr.typ.as_ref() {
+                                    let resolved_ptr_struct = self.resolve_struct_in_pkg(&type_ident.name);
+                                    if self.struct_defs.contains_key(&resolved_ptr_struct) {
+                                        locals.set_var_struct_type(&ident.name, &resolved_ptr_struct);
+                                        locals.pointer_to_struct_vars.insert(ident.name.clone());
                                     }
                                 }
                             }
@@ -4040,6 +4001,103 @@ impl WasmCompiler {
         }
     }
 
+    /// Shared type-tracking for a local variable based on its known Go type.
+    /// Returns `true` if the Go type is an interface type.
+    pub(crate) fn track_local_var_type(
+        &mut self,
+        name: &str,
+        go_type: &str,
+        local_idx: u32,
+        locals: &mut LocalAlloc,
+    ) -> bool {
+        if go_type == "string" {
+            locals.set_var_struct_type(name, "__string");
+            if self.gc_builtin_types.go_string.is_some() {
+                locals.gc_string_locals.insert(name.to_string(), local_idx);
+            } else if !locals.string_locals.contains_key(name) {
+                let len_local = locals.add_local(
+                    &format!("{}__str_len", name),
+                    ValType::I32,
+                );
+                locals.string_locals.insert(name.to_string(), (local_idx, len_local));
+            }
+            return false;
+        }
+
+        if self.is_iface_go_type(go_type) {
+            let iface_tag = format!("__iface_{}", go_type);
+            locals.set_var_struct_type(name, &iface_tag);
+            if !self.iface_var_type_ids.contains_key(name) {
+                let tid_local = locals.add_local(
+                    &format!("{}__type_id", name),
+                    ValType::I32,
+                );
+                self.iface_var_type_ids.insert(name.to_string(), tid_local);
+            }
+            return true;
+        }
+
+        let base_type = go_type.strip_prefix('*').unwrap_or(go_type);
+        let resolved = self.resolve_struct_in_pkg(base_type);
+        if self.struct_defs.contains_key(&resolved) {
+            locals.set_var_struct_type(name, &resolved);
+            if go_type.starts_with('*') {
+                locals.pointer_to_struct_vars.insert(name.to_string());
+            }
+        } else if go_type.starts_with("[]") {
+            locals.set_var_struct_type(name, "__slice");
+        } else if self.type_aliases.contains_key(go_type)
+            || self.current_package.as_ref().map_or(false, |pkg| {
+                self.type_aliases.contains_key(&format!("{}.{}", pkg, go_type))
+            })
+        {
+            locals.set_var_struct_type(name, go_type);
+        }
+
+        false
+    }
+
+    /// Define or find a local variable, track its Go type, and emit assignment
+    /// from temp local(s). For non-GC strings, `temp_locals` has two entries
+    /// (ptr, len); for everything else it has one.
+    /// Returns the primary local index.
+    pub(crate) fn assign_local_from_temp(
+        &mut self,
+        name: &str,
+        go_type: &str,
+        wasm_vt: ValType,
+        temp_locals: &[(u32, ValType)],
+        is_define: bool,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> u32 {
+        let local_idx = if is_define {
+            if let Some(existing) = locals.find_at_current_scope(name) {
+                existing
+            } else {
+                locals.add_local(name, wasm_vt)
+            }
+        } else {
+            locals.find(name).unwrap_or_else(|| locals.add_local(name, wasm_vt))
+        };
+
+        self.track_local_var_type(name, go_type, local_idx, locals);
+
+        if temp_locals.len() == 2 {
+            if let Some(&(ptr_local, len_local)) = locals.string_locals.get(name) {
+                out.push(Instruction::LocalGet(temp_locals[0].0));
+                out.push(Instruction::LocalSet(ptr_local));
+                out.push(Instruction::LocalGet(temp_locals[1].0));
+                out.push(Instruction::LocalSet(len_local));
+                return local_idx;
+            }
+        }
+
+        out.push(Instruction::LocalGet(temp_locals[0].0));
+        out.push(Instruction::LocalSet(local_idx));
+        local_idx
+    }
+
     pub(crate) fn compile_multi_return_define(
         &mut self,
         assign: &ast::AssignStmt,
@@ -4050,7 +4108,6 @@ impl WasmCompiler {
     ) -> Result<(), Error> {
         self.compile_expression(&assign.right[0], out, locals)?;
 
-        // Pop ALL WASM return slots into temp locals in reverse order (WASM stack is LIFO)
         let mut all_temps: Vec<(u32, ValType)> = Vec::new();
         for i in (0..ret_types.len()).rev() {
             let vt = ret_types[i];
@@ -4060,23 +4117,15 @@ impl WasmCompiler {
         }
         all_temps.reverse();
 
-        // Build mapping from Go-level index to WASM slot range
+        let gc_string = self.gc_builtin_types.go_string.is_some();
         let mut go_to_wasm: Vec<(usize, usize)> = Vec::new();
         let mut wasm_idx = 0;
-        let mut gt_idx = 0;
-        while gt_idx < go_types.len() && go_to_wasm.len() < assign.left.len() {
-            if go_types[gt_idx] == "string" && gt_idx + 1 < go_types.len() && go_types[gt_idx + 1] == "string" {
-                go_to_wasm.push((wasm_idx, 2));
-                wasm_idx += 2;
-                gt_idx += 2;
-            } else {
-                go_to_wasm.push((wasm_idx, 1));
-                wasm_idx += 1;
-                gt_idx += 1;
-            }
+        for go_type in go_types.iter() {
+            let slot_count = if !gc_string && go_type == "string" { 2 } else { 1 };
+            go_to_wasm.push((wasm_idx, slot_count));
+            wasm_idx += slot_count;
         }
 
-        // Assign from temps into named locals in forward order
         let is_define = assign.op == Operator::Define;
         for (i, left) in assign.left.iter().enumerate() {
             if let ast::Expression::Ident(ident) = left {
@@ -4085,90 +4134,10 @@ impl WasmCompiler {
                 }
                 let (slot_start, slot_count) = go_to_wasm.get(i).copied().unwrap_or((i, 1));
                 let vt = ret_types[slot_start];
-                let (tmp, _) = all_temps[slot_start];
+                let go_type = go_types.get(i).map(|s| s.as_str()).unwrap_or("");
+                let temps = &all_temps[slot_start..slot_start + slot_count];
 
-                let go_type_at = go_types.get(slot_start);
-                let is_iface = go_type_at.map_or(false, |gt| self.is_iface_go_type(gt));
-                if is_iface {
-                    let iface_tag = go_type_at
-                        .map(|gt| format!("__iface_{}", gt))
-                        .unwrap_or_else(|| "__interface".to_string());
-                    let local_idx = if is_define {
-                        if let Some(existing) = locals.find_at_current_scope(&ident.name) {
-                            existing
-                        } else {
-                            locals.add_local(&ident.name, vt)
-                        }
-                    } else {
-                        locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, vt))
-                    };
-                    locals.set_var_struct_type(&ident.name, &iface_tag);
-                    let tid_local = locals.add_local(
-                        &format!("{}_type_id", ident.name),
-                        ValType::I32,
-                    );
-                    self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
-                    out.push(Instruction::LocalGet(tmp));
-                    out.push(Instruction::LocalSet(local_idx));
-                    continue;
-                }
-
-                if slot_count == 2 {
-                    let ptr_local = if is_define {
-                        if let Some(existing) = locals.find_at_current_scope(&ident.name) {
-                            existing
-                        } else {
-                            locals.add_local(&ident.name, ValType::I32)
-                        }
-                    } else {
-                        locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, ValType::I32))
-                    };
-                    let len_local = if is_define {
-                        let len_name = format!("{}_len", ident.name);
-                        if let Some(existing) = locals.find_at_current_scope(&len_name) {
-                            existing
-                        } else {
-                            locals.add_local(&len_name, ValType::I32)
-                        }
-                    } else {
-                        let len_name = format!("{}_len", ident.name);
-                        locals.find(&len_name).unwrap_or_else(|| locals.add_local(&len_name, ValType::I32))
-                    };
-                    let (ptr_tmp, _) = all_temps[slot_start];
-                    let (len_tmp, _) = all_temps[slot_start + 1];
-                    out.push(Instruction::LocalGet(ptr_tmp));
-                    out.push(Instruction::LocalSet(ptr_local));
-                    out.push(Instruction::LocalGet(len_tmp));
-                    out.push(Instruction::LocalSet(len_local));
-                    continue;
-                }
-
-                let local_idx = if is_define {
-                    if let Some(existing) = locals.find_at_current_scope(&ident.name) {
-                        existing
-                    } else {
-                        locals.add_local(&ident.name, vt)
-                    }
-                } else {
-                    locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, vt))
-                };
-                out.push(Instruction::LocalGet(tmp));
-                out.push(Instruction::LocalSet(local_idx));
-
-                if let Some(go_type) = go_type_at {
-                    let resolved_struct = self.resolve_struct_in_pkg(go_type);
-                    if self.struct_defs.contains_key(&resolved_struct) {
-                        locals.set_var_struct_type(&ident.name, &resolved_struct);
-                    } else if go_type.starts_with("[]") {
-                        locals.set_var_struct_type(&ident.name, "__slice");
-                    } else if self.type_aliases.contains_key(go_type)
-                        || self.current_package.as_ref().map_or(false, |pkg| {
-                            self.type_aliases.contains_key(&format!("{}.{}", pkg, go_type))
-                        })
-                    {
-                        locals.set_var_struct_type(&ident.name, go_type);
-                    }
-                }
+                self.assign_local_from_temp(&ident.name, go_type, vt, temps, is_define, out, locals);
             }
         }
 

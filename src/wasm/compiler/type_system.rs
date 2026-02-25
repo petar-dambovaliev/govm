@@ -837,33 +837,25 @@ impl WasmCompiler {
                                 return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
                             }
                         }
-                        match (receiver.name.as_str(), sel.sel.name.as_str()) {
-                            ("math", _) => ValType::F64,
-                            _ => {
-                                let method_name = &sel.sel.name;
-                                // Check if receiver is an interface variable
-                                if self.is_interface_var(&receiver.name, locals) {
-                                    if let Some(fi) = self.functions.iter().find(|f| {
-                                        f.recv_type.is_some()
-                                            && f.name.ends_with(&format!(".{}", method_name))
-                                    }) {
-                                        return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
-                                    }
-                                }
-                                // Try qualified method name (Type.Method)
-                                if let Some(type_name) = locals.get_var_struct_type(&receiver.name) {
-                                    let qname = format!("{}.{}", type_name, method_name);
-                                    if let Some(fi) = self.functions.iter().find(|f| f.name == qname) {
-                                        return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
-                                    }
-                                }
-                                // Try bare method name
-                                if let Some(fi) = self.functions.iter().find(|f| f.name == *method_name) {
-                                    fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())
-                                } else {
-                                    ValType::I64
-                                }
+                        let method_name = &sel.sel.name;
+                        if self.is_interface_var(&receiver.name, locals) {
+                            if let Some(fi) = self.functions.iter().find(|f| {
+                                f.recv_type.is_some()
+                                    && f.name.ends_with(&format!(".{}", method_name))
+                            }) {
+                                return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
                             }
+                        }
+                        if let Some(type_name) = locals.get_var_struct_type(&receiver.name) {
+                            let qname = format!("{}.{}", type_name, method_name);
+                            if let Some(fi) = self.functions.iter().find(|f| f.name == qname) {
+                                return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
+                            }
+                        }
+                        if let Some(fi) = self.functions.iter().find(|f| f.name == *method_name) {
+                            fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type())
+                        } else {
+                            ValType::I64
                         }
                     } else {
                         ValType::I64

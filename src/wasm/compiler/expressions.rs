@@ -148,7 +148,8 @@ impl WasmCompiler {
                 return Ok(GoType::String);
             }
             LitKind::Char => {
-                let s = lit.value.trim_matches('\'');
+                let s = lit.value.strip_prefix('\'').unwrap_or(&lit.value);
+                let s = s.strip_suffix('\'').unwrap_or(s);
                 let ch = Self::unescape_go_char(s)? as i32;
                 out.push(Instruction::I32Const(ch));
                 return Ok(GoType::Int32);
@@ -920,6 +921,11 @@ impl WasmCompiler {
                             return true;
                         }
                     }
+                    if let Some(fi) = self.find_func_in_pkg(&ident.name) {
+                        if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                            return true;
+                        }
+                    }
                     false
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(recv) = sel.x.as_ref() {
@@ -951,6 +957,16 @@ impl WasmCompiler {
                                 && fi.result_go_types.first().map_or(false, |t| t == "string")
                             {
                                 return true;
+                            }
+                        }
+                    }
+                    if self.is_interface_field_selector(sel.x.as_ref(), locals) {
+                        let method_suffix = format!(".{}", sel.sel.name);
+                        for fi in &self.functions {
+                            if fi.recv_type.is_some() && fi.name.ends_with(&method_suffix) {
+                                if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -1500,14 +1516,6 @@ impl WasmCompiler {
                 return Ok(GoType::Bool);
             }
 
-            if matches!(op.op, Operator::Equal | Operator::NotEqual) {
-                let lhs_str = self.is_string_expr(&op.x, locals);
-                let rhs_str = self.is_string_expr(y, locals);
-                if lhs_str != rhs_str {
-                    eprintln!("DEBUG: string compare mismatch: lhs={} rhs={} op_x={:?} y={:?}", lhs_str, rhs_str, op.x, y);
-                }
-            }
-
             // Complex number arithmetic
             if self.is_complex_expr(&op.x, locals) && self.is_complex_expr(y, locals) {
                 self.emit_complex_binop(&op.x, y, op.op, out, locals)?;
@@ -1676,6 +1684,8 @@ impl WasmCompiler {
                         out.push(Instruction::F32ConvertI32S);
                     } else if lhs_type == ValType::I64 {
                         out.push(Instruction::F32ConvertI64S);
+                    } else if lhs_type == ValType::F64 {
+                        out.push(Instruction::F32DemoteF64);
                     }
                 }
                 out.extend(rhs_buf);
@@ -1684,6 +1694,8 @@ impl WasmCompiler {
                         out.push(Instruction::F32ConvertI32S);
                     } else if rhs_type == ValType::I64 {
                         out.push(Instruction::F32ConvertI64S);
+                    } else if rhs_type == ValType::F64 {
+                        out.push(Instruction::F32DemoteF64);
                     }
                 }
                 self.emit_f32_op(op.op, out)?;
@@ -1706,7 +1718,9 @@ impl WasmCompiler {
                     self.compile_expression(&op.x, &mut lhs_buf, locals)?;
                     out.extend(lhs_buf);
                     if lhs_type != ValType::F64 {
-                        if lhs_type == ValType::I32 {
+                        if lhs_type == ValType::F32 {
+                            out.push(Instruction::F64PromoteF32);
+                        } else if lhs_type == ValType::I32 {
                             out.push(Instruction::F64ConvertI32S);
                         } else {
                             out.push(Instruction::F64ConvertI64S);
@@ -1726,7 +1740,9 @@ impl WasmCompiler {
                     self.compile_expression(y, &mut rhs_buf, locals)?;
                     out.extend(rhs_buf);
                     if rhs_type != ValType::F64 {
-                        if rhs_type == ValType::I32 {
+                        if rhs_type == ValType::F32 {
+                            out.push(Instruction::F64PromoteF32);
+                        } else if rhs_type == ValType::I32 {
                             out.push(Instruction::F64ConvertI32S);
                         } else {
                             out.push(Instruction::F64ConvertI64S);

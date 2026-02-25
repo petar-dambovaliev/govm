@@ -228,7 +228,7 @@ impl WasmCompiler {
         "Float64frombits",
     ];
 
-    const INLINED_NATIVE_FUNCTIONS: &'static [&'static str] = &[
+    pub(crate) const INLINED_NATIVE_FUNCTIONS: &'static [&'static str] = &[
         "Float32bits",
         "Float32frombits",
         "Float64bits",

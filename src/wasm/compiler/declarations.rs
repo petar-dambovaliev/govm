@@ -170,6 +170,34 @@ impl WasmCompiler {
                     "Float64frombits" | "Float64bits" | "Float32frombits" | "Float32bits"
                 );
                 if is_inlined_native {
+                    let internal_name = self.qualify_pkg_name(name);
+                    let mut result_types: Vec<ValType> = Vec::new();
+                    let mut result_go_types: Vec<String> = Vec::new();
+                    for field in &func_decl.typ.result.list {
+                        let go_type_name = self.expr_type_name(&field.typ);
+                        let field_wasm_types = self.field_to_wasm_types(field);
+                        for wt in &field_wasm_types {
+                            result_types.push(wt.to_val_type());
+                            result_go_types.push(go_type_name.clone());
+                        }
+                    }
+                    let wasm_results: Vec<WasmType> = result_types
+                        .iter()
+                        .map(|vt| Self::val_type_to_wasm_type(*vt))
+                        .collect();
+                    self.functions.push(FuncInfo {
+                        wasm_func_idx: 0,
+                        type_idx: 0,
+                        name: internal_name.clone(),
+                        params: Vec::new(),
+                        results: wasm_results,
+                        result_go_types,
+                        is_exported: false,
+                        recv_type: None,
+                        is_variadic: false,
+                        variadic_elem_vt: None,
+                        iface_param_indices: Vec::new(),
+                    });
                     continue;
                 }
                 if let Some(&import_idx) = self.wasm_imports.get(name.as_str()) {
@@ -1357,7 +1385,8 @@ impl WasmCompiler {
                     Self::extract_string_content(&lit.value).map(ConstValue::Str)
                 }
                 LitKind::Char => {
-                    let s = lit.value.trim_matches('\'');
+                    let s = lit.value.strip_prefix('\'').unwrap_or(&lit.value);
+                    let s = s.strip_suffix('\'').unwrap_or(s);
                     Self::unescape_go_char(s).ok().map(|c| ConstValue::I64(c as i128))
                 }
                 LitKind::Imag => {
