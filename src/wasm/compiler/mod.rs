@@ -1,6 +1,6 @@
 use crate::parser::ast;
 use crate::parser::token::{Keyword, LitKind, Operator};
-use crate::symbols::{Error, SymbolTable};
+use crate::symbols::{DefineType, Error, Qualifier, SymbolTable};
 use crate::wasm::types::WasmType;
 use crate::wasm::udf::{
     AggregateDescriptor, FieldDescriptor, FunctionDescriptor, Manifest, OutputDescriptor,
@@ -326,10 +326,10 @@ pub(crate) struct LocalAlloc {
     array_info: HashMap<String, (ValType, u32, i32, u32)>, // (elem_vt, array_length, go_elem_size, go_elem_align)
     nested_array_inner_info: HashMap<String, (ValType, u32)>, // inner (elem_type, inner_length) for [M][N]T
     rune_slices: std::collections::HashSet<String>,
-    var_go_types: HashMap<String, GoType>,
     memory_backed_vars: HashMap<String, (u32, ValType)>,
     pointer_to_struct_vars: std::collections::HashSet<String>,
     pub(crate) func_typed_params: HashMap<String, FuncTypedParamInfo>,
+    pub(crate) iface_type_id_locals: HashMap<String, u32>,
 }
 
 impl LocalAlloc {
@@ -354,19 +354,11 @@ impl LocalAlloc {
             array_info: HashMap::new(),
             nested_array_inner_info: HashMap::new(),
             rune_slices: std::collections::HashSet::new(),
-            var_go_types: HashMap::new(),
             memory_backed_vars: HashMap::new(),
             pointer_to_struct_vars: std::collections::HashSet::new(),
             func_typed_params: HashMap::new(),
+            iface_type_id_locals: HashMap::new(),
         }
-    }
-
-    pub(crate) fn find_go_type(&self, name: &str) -> Option<&GoType> {
-        self.var_go_types.get(name)
-    }
-
-    pub(crate) fn set_go_type(&mut self, name: &str, gt: GoType) {
-        self.var_go_types.insert(name.to_string(), gt);
     }
 
     pub(crate) fn param_count(&self) -> u32 {
@@ -706,6 +698,236 @@ impl WasmCompiler {
             gc_slice_types: HashMap::new(),
             gc_builtin_types: GcBuiltinTypes::default(),
             gc_closure_env_types: Vec::new(),
+        }
+    }
+
+    pub(crate) fn pkg(&self) -> &str {
+        self.current_package.as_deref().unwrap_or("")
+    }
+
+    pub(crate) fn define_var(&mut self, name: &str, dt: DefineType) {
+        self.symbols.define(
+            self.current_package.as_deref().unwrap_or(""),
+            name,
+            DefineType::Qualified(Qualifier::Var, Box::new(dt)),
+            false,
+        );
+    }
+
+    pub(crate) fn resolve_var_type(&self, name: &str) -> Option<DefineType> {
+        let pkg = self.current_package.as_deref().unwrap_or("");
+        self.symbols.resolve_type(pkg, name).map(|dt| dt.unwrap_to_base_type())
+    }
+
+    pub(crate) fn is_string_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::String))
+    }
+
+    pub(crate) fn is_sym_interface_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Interface { .. }))
+    }
+
+    pub(crate) fn is_unsigned_var(&self, name: &str) -> bool {
+        matches!(
+            self.resolve_var_type(name),
+            Some(DefineType::Uint | DefineType::Uint8 | DefineType::Uint16 |
+                 DefineType::Uint32 | DefineType::Uint64 | DefineType::Uintptr |
+                 DefineType::Byte)
+        )
+    }
+
+    pub(crate) fn is_slice_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Slice(_)))
+    }
+
+    pub(crate) fn is_map_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Map(_, _)))
+    }
+
+    pub(crate) fn is_array_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Array { .. }))
+    }
+
+    pub(crate) fn is_context_var(&self, name: &str) -> bool {
+        matches!(
+            self.resolve_var_type(name),
+            Some(DefineType::Struct { ref name, .. }) if name == "Context"
+        )
+    }
+
+    pub(crate) fn is_complex64_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Complex64))
+    }
+
+    pub(crate) fn is_complex_var(&self, name: &str) -> bool {
+        matches!(
+            self.resolve_var_type(name),
+            Some(DefineType::Complex64 | DefineType::Complex128)
+        )
+    }
+
+    pub(crate) fn get_struct_var_type(&self, name: &str) -> Option<String> {
+        match self.resolve_var_type(name) {
+            Some(DefineType::Struct { name: sname, .. }) => Some(sname),
+            Some(DefineType::Spec { name: sname, .. }) => Some(sname),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn get_iface_var_name(&self, name: &str) -> Option<String> {
+        match self.resolve_var_type(name) {
+            Some(DefineType::Interface { name: iname, .. }) => Some(iname),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn infer_define_type_from_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<DefineType> {
+        match expr {
+            ast::Expression::BasicLit(lit) => match lit.kind {
+                LitKind::String => Some(DefineType::String),
+                LitKind::Integer => Some(DefineType::Int),
+                LitKind::Float => Some(DefineType::Float64),
+                LitKind::Imag => Some(DefineType::Complex128),
+                _ => None,
+            },
+            ast::Expression::Ident(id) => {
+                self.resolve_var_type(&id.name)
+            }
+            ast::Expression::CompositeLit(comp) => self.expr_to_define_type(&comp.typ),
+            ast::Expression::Operation(op) if op.op == Operator::And && op.y.is_none() => {
+                let inner = self.infer_define_type_from_expr(&op.x, locals)?;
+                Some(DefineType::Ref(Box::new(inner)))
+            }
+            ast::Expression::Call(call) => {
+                if let ast::Expression::Ident(fn_id) = call.func.as_ref() {
+                    match fn_id.name.as_str() {
+                        "make" => {
+                            if let Some(type_arg) = call.args.first() {
+                                self.expr_to_define_type(type_arg)
+                            } else {
+                                None
+                            }
+                        }
+                        "append" => Some(DefineType::Slice(Box::new(DefineType::Null))),
+                        "new" => {
+                            if let Some(type_arg) = call.args.first() {
+                                let inner = self.expr_to_define_type(type_arg).unwrap_or(DefineType::Null);
+                                Some(DefineType::Ref(Box::new(inner)))
+                            } else {
+                                None
+                            }
+                        }
+                        "complex" => Some(DefineType::Complex128),
+                        _ => {
+                            let go_type = self.go_type_name_to_define_type(&fn_id.name);
+                            if !matches!(go_type, DefineType::Struct { .. }) {
+                                Some(go_type)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                } else if let ast::Expression::TypeSlice(_) = call.func.as_ref() {
+                    self.expr_to_define_type(call.func.as_ref())
+                } else if let ast::Expression::TypeArray(_) = call.func.as_ref() {
+                    self.expr_to_define_type(call.func.as_ref())
+                } else {
+                    None
+                }
+            }
+            ast::Expression::Slice(sl) => {
+                if let ast::Expression::Ident(src) = &*sl.left {
+                    if self.is_string_var(&src.name) {
+                        return Some(DefineType::String);
+                    }
+                }
+                Some(DefineType::Slice(Box::new(DefineType::Null)))
+            }
+            ast::Expression::TypeAssert(ta) => {
+                if let Some(ref target) = ta.right {
+                    self.expr_to_define_type(target)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn expr_to_define_type(&self, expr: &ast::Expression) -> Option<DefineType> {
+        match expr {
+            ast::Expression::Ident(id) => Some(self.go_type_name_to_define_type(&id.name)),
+            ast::Expression::TypeSlice(sl) => {
+                let inner = self.expr_to_define_type(&sl.typ).unwrap_or(DefineType::Null);
+                Some(DefineType::Slice(Box::new(inner)))
+            }
+            ast::Expression::TypeArray(arr) => {
+                let inner = self.expr_to_define_type(&arr.typ).unwrap_or(DefineType::Null);
+                let len = if let ast::Expression::BasicLit(lit) = arr.len.as_ref() {
+                    lit.value.parse().unwrap_or(0)
+                } else {
+                    0
+                };
+                Some(DefineType::Array { inner_type: Box::new(inner), len })
+            }
+            ast::Expression::TypePointer(ptr) => {
+                let inner = self.expr_to_define_type(&ptr.typ).unwrap_or(DefineType::Null);
+                Some(DefineType::Ref(Box::new(inner)))
+            }
+            ast::Expression::TypeMap(m) => {
+                let k = self.expr_to_define_type(&m.key).unwrap_or(DefineType::Null);
+                let v = self.expr_to_define_type(&m.val).unwrap_or(DefineType::Null);
+                Some(DefineType::Map(Box::new(k), Box::new(v)))
+            }
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    if pkg.name == "context" && sel.sel.name == "Context" {
+                        return Some(DefineType::Struct {
+                            name: "Context".to_string(),
+                            fields: vec![],
+                            methods: vec![],
+                        });
+                    }
+                    Some(self.go_type_name_to_define_type(&sel.sel.name))
+                } else {
+                    None
+                }
+            }
+            ast::Expression::TypeInterface(_) => {
+                Some(DefineType::Interface { name: String::new(), methods: vec![] })
+            }
+            ast::Expression::TypeFunction(_) => None,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn go_type_name_to_define_type(&self, name: &str) -> DefineType {
+        match name {
+            "int" => DefineType::Int,
+            "int8" => DefineType::Int8,
+            "int16" => DefineType::Int16,
+            "int32" | "rune" => DefineType::Int32,
+            "int64" => DefineType::Int64,
+            "uint" => DefineType::Uint,
+            "uint8" | "byte" => DefineType::Uint8,
+            "uint16" => DefineType::Uint16,
+            "uint32" | "uintptr" => DefineType::Uint32,
+            "uint64" => DefineType::Uint64,
+            "float32" => DefineType::Float32,
+            "float64" => DefineType::Float64,
+            "bool" => DefineType::Bool,
+            "string" => DefineType::String,
+            "complex64" => DefineType::Complex64,
+            "complex128" => DefineType::Complex128,
+            "error" => DefineType::Interface { name: "error".to_string(), methods: vec![] },
+            "any" => DefineType::Interface { name: "any".to_string(), methods: vec![] },
+            _ if self.iface_defs.contains_key(name) => {
+                DefineType::Interface { name: name.to_string(), methods: vec![] }
+            }
+            _ if self.struct_defs.contains_key(name) => {
+                DefineType::Struct { name: name.to_string(), fields: vec![], methods: vec![] }
+            }
+            _ => DefineType::Struct { name: name.to_string(), fields: vec![], methods: vec![] },
         }
     }
 

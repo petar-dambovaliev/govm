@@ -9,9 +9,11 @@ impl WasmCompiler {
         result_types: &[ValType],
     ) -> Result<(), Error> {
         locals.push_scope();
+        self.symbols.enter_scope();
         for stmt in &block.list {
             self.compile_statement(stmt, out, locals, result_types)?;
         }
+        self.symbols.leave_scope();
         locals.pop_scope();
         Ok(())
     }
@@ -551,6 +553,9 @@ impl WasmCompiler {
                     };
 
                     if i < assign.right.len() {
+                        if let Some(dt) = self.infer_define_type_from_expr(&assign.right[i], locals) {
+                            self.define_var(&ident.name, dt);
+                        }
                         // Track struct type from composite literals
                         if let ast::Expression::CompositeLit(comp) = &assign.right[i] {
                             if let ast::Expression::Ident(type_ident) = comp.typ.as_ref()
@@ -966,7 +971,7 @@ impl WasmCompiler {
                                 ValType::I32,
                             );
                             out.push(Instruction::LocalSet(wrapper));
-                            let tid_local = *self.iface_var_type_ids.get(&ident.name).ok_or_else(|| {
+                            let tid_local = self.get_iface_type_id_local(&ident.name, locals).ok_or_else(|| {
                                 Error::InternalError(format!(
                                     "interface type-id local not found for '{}'", ident.name
                                 ))
@@ -1170,7 +1175,7 @@ impl WasmCompiler {
                         }
                         // Interface variable assignment: box value and set type_id
                         if self.is_interface_var(&ident.name, locals) {
-                            if let Some(tid_local) = self.get_iface_type_id_local(&ident.name) {
+                            if let Some(tid_local) = self.get_iface_type_id_local(&ident.name, locals) {
                                 let data_local = locals.find(&ident.name).ok_or_else(|| {
                                     Error::InternalError(format!("interface var '{}' not found", ident.name))
                                 })?;
@@ -1200,7 +1205,7 @@ impl WasmCompiler {
                                 } else if rhs_is_iface_var {
                                     // RHS is another interface variable — copy type_id and data_ptr.
                                     if let ast::Expression::Ident(rhs_id) = &assign.right[i] {
-                                        if let Some(rhs_tid) = self.get_iface_type_id_local(&rhs_id.name) {
+                                        if let Some(rhs_tid) = self.get_iface_type_id_local(&rhs_id.name, locals) {
                                             let rhs_data = locals.find(&rhs_id.name).ok_or_else(|| {
                                                 Error::InternalError(format!("variable '{}' not found", rhs_id.name))
                                             })?;
@@ -3285,6 +3290,9 @@ impl WasmCompiler {
                         let mut is_iface = false;
                         let mut iface_type_name: Option<String> = None;
                         if let Some(ref typ) = spec.typ {
+                            if let Some(dt) = self.expr_to_define_type(typ) {
+                                self.define_var(&ident.name, dt);
+                            }
                             if let ast::Expression::TypeInterface(_) = typ {
                                 is_iface = true;
                                 locals.set_var_struct_type(&ident.name, "__interface");
@@ -3293,6 +3301,7 @@ impl WasmCompiler {
                                     ValType::I32,
                                 );
                                 self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                             } else if let ast::Expression::TypeSlice(slice_type) = typ {
                                 locals.set_var_struct_type(&ident.name, "__slice");
                                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
@@ -3362,6 +3371,7 @@ impl WasmCompiler {
                                         ValType::I32,
                                     );
                                     self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                    locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                                 } else if self.struct_defs.contains_key(&type_ident.name) {
                                     locals.set_var_struct_type(
                                         &ident.name,
@@ -3404,6 +3414,7 @@ impl WasmCompiler {
                                             ValType::I32,
                                         );
                                         self.iface_var_type_ids.insert(ident.name.clone(), tid_local);
+                                        locals.iface_type_id_locals.insert(ident.name.clone(), tid_local);
                                     }
                                 }
                             } else if let ast::Expression::TypePointer(ptr) = typ {
@@ -3530,7 +3541,7 @@ impl WasmCompiler {
                                     }
                                 }
                                 let type_id = self.get_or_create_type_id(&rhs_type_name);
-                                let tid_local = *self.iface_var_type_ids.get(&ident.name).ok_or_else(|| {
+                                let tid_local = self.get_iface_type_id_local(&ident.name, locals).ok_or_else(|| {
                                     Error::InternalError(format!(
                                         "interface type-id local not found for '{}'", ident.name
                                     ))
@@ -4010,6 +4021,9 @@ impl WasmCompiler {
         local_idx: u32,
         locals: &mut LocalAlloc,
     ) -> bool {
+        let dt = self.go_type_name_to_define_type(go_type);
+        self.define_var(name, dt);
+
         if go_type == "string" {
             locals.set_var_struct_type(name, "__string");
             if self.gc_builtin_types.go_string.is_some() {
@@ -4027,12 +4041,13 @@ impl WasmCompiler {
         if self.is_iface_go_type(go_type) {
             let iface_tag = format!("__iface_{}", go_type);
             locals.set_var_struct_type(name, &iface_tag);
-            if !self.iface_var_type_ids.contains_key(name) {
+            if !locals.iface_type_id_locals.contains_key(name) {
                 let tid_local = locals.add_local(
                     &format!("{}__type_id", name),
                     ValType::I32,
                 );
                 self.iface_var_type_ids.insert(name.to_string(), tid_local);
+                locals.iface_type_id_locals.insert(name.to_string(), tid_local);
             }
             return true;
         }

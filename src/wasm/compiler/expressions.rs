@@ -1526,7 +1526,7 @@ impl WasmCompiler {
             if op.op == Operator::Equal || op.op == Operator::NotEqual {
                 let (iface_name, is_nil_cmp) = self.check_interface_nil_cmp(&op.x, y, locals);
                 if is_nil_cmp {
-                    if let Some(tid_local) = self.get_iface_type_id_local(&iface_name) {
+                    if let Some(tid_local) = self.get_iface_type_id_local(&iface_name, locals) {
                         out.push(Instruction::LocalGet(tid_local));
                         if op.op == Operator::Equal {
                             out.push(Instruction::I32Eqz);
@@ -1544,8 +1544,8 @@ impl WasmCompiler {
                     let rhs_is_iface = self.is_interface_var(&rhs_id.name, locals);
                     if lhs_is_iface && rhs_is_iface {
                         if let (Some(lhs_tid), Some(rhs_tid)) = (
-                            self.get_iface_type_id_local(&lhs_id.name),
-                            self.get_iface_type_id_local(&rhs_id.name),
+                            self.get_iface_type_id_local(&lhs_id.name, locals),
+                            self.get_iface_type_id_local(&rhs_id.name, locals),
                         ) {
                             let lhs_data = locals.find(&lhs_id.name).ok_or_else(|| {
                                 Error::InternalError(format!("variable '{}' not found", lhs_id.name))
@@ -3185,7 +3185,7 @@ impl WasmCompiler {
                         out.push(Instruction::LocalGet(ptr_local));
                         out.push(Instruction::I32Const(0));
                         out.push(Instruction::I32Store(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                    } else if let Some(&tid_local) = self.iface_var_type_ids.get(&iface_ident.name) {
+                    } else if let Some(tid_local) = self.get_iface_type_id_local(&iface_ident.name, locals) {
                         self.compile_expression(elem_expr, out, locals)?;
                         let data_tmp = locals.add_local(
                             &format!("__comp_iface_data_{}", locals.locals.len()),

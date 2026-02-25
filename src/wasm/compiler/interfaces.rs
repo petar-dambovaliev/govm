@@ -251,6 +251,9 @@ impl WasmCompiler {
     }
 
     pub(crate) fn is_interface_var(&self, name: &str, locals: &LocalAlloc) -> bool {
+        if self.is_sym_interface_var(name) {
+            return true;
+        }
         if let Some(st) = locals.get_var_struct_type(name) {
             st == "__interface" || st.starts_with("__iface_")
         } else {
@@ -339,8 +342,9 @@ impl WasmCompiler {
         false
     }
 
-    pub(crate) fn get_iface_type_id_local(&self, name: &str) -> Option<u32> {
-        self.iface_var_type_ids.get(name).copied()
+    pub(crate) fn get_iface_type_id_local(&self, name: &str, locals: &LocalAlloc) -> Option<u32> {
+        locals.iface_type_id_locals.get(name).copied()
+            .or_else(|| self.iface_var_type_ids.get(name).copied())
     }
 
     pub(crate) fn types_implementing_interface(&self, iface_name: &str) -> Vec<u32> {
@@ -482,7 +486,7 @@ impl WasmCompiler {
 
         // Get the interface variable -- either from a named var or by compiling the expression
         let (tid_local, data_local) = if let ast::Expression::Ident(ident) = ta.left.as_ref() {
-            let tid = self.get_iface_type_id_local(&ident.name).ok_or_else(|| {
+            let tid = self.get_iface_type_id_local(&ident.name, locals).ok_or_else(|| {
                 Error::InternalError(format!("'{}' is not an interface variable", ident.name))
             })?;
             let data = locals.find(&ident.name).ok_or_else(|| {
@@ -596,7 +600,7 @@ impl WasmCompiler {
         let target_type_name = self.resolve_type_assert_target(target_type)?;
 
         let (tid_local, data_local) = if let ast::Expression::Ident(ident) = ta.left.as_ref() {
-            let tid = self.get_iface_type_id_local(&ident.name).ok_or_else(|| {
+            let tid = self.get_iface_type_id_local(&ident.name, locals).ok_or_else(|| {
                 Error::InternalError(format!("'{}' is not an interface variable", ident.name))
             })?;
             let data = locals.find(&ident.name).ok_or_else(|| {
@@ -658,6 +662,7 @@ impl WasmCompiler {
                 out.push(Instruction::I32Const(1));
                 out.push(Instruction::LocalSet(ok_local));
                 self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
+                locals.iface_type_id_locals.insert(val_var.to_string(), val_tid_local);
                 return Ok(());
             }
 
@@ -693,6 +698,7 @@ impl WasmCompiler {
             out.push(Instruction::End);
 
             self.iface_var_type_ids.insert(val_var.to_string(), val_tid_local);
+            locals.iface_type_id_locals.insert(val_var.to_string(), val_tid_local);
 
             return Ok(());
         }
@@ -786,7 +792,7 @@ impl WasmCompiler {
         // The tag is stored as a Statement (an assignment or expression statement)
         let (iface_var_name, bind_name) = self.extract_type_switch_guard(ts)?;
 
-        let tid_local = self.get_iface_type_id_local(&iface_var_name).ok_or_else(|| {
+        let tid_local = self.get_iface_type_id_local(&iface_var_name, locals).ok_or_else(|| {
             Error::InternalError(format!("'{}' is not an interface variable", iface_var_name))
         })?;
         let data_local = locals.find(&iface_var_name).ok_or_else(|| {
@@ -974,7 +980,7 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let tid_local = self.get_iface_type_id_local(iface_var).ok_or_else(|| {
+        let tid_local = self.get_iface_type_id_local(iface_var, locals).ok_or_else(|| {
             Error::InternalError(format!("'{}' is not an interface variable", iface_var))
         })?;
         let data_local = locals.find(iface_var).ok_or_else(|| {

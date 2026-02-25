@@ -266,9 +266,12 @@ impl WasmCompiler {
             .collect();
         let mut locals = LocalAlloc::new(param_entries);
 
+        self.symbols.new_context(false);
+
         // Track variadic parameter as slice
         if let Some(ref vp_name) = variadic_param_name {
             locals.set_var_struct_type(vp_name, "__slice");
+            self.define_var(vp_name, DefineType::Slice(Box::new(DefineType::Null)));
             if let Some(evtype) = variadic_elem_vt {
                 locals.slice_elem_types.insert(vp_name.clone(), evtype);
             }
@@ -280,12 +283,20 @@ impl WasmCompiler {
                 let recv_name = field.name.first().map_or("self", |id| &id.name);
                 if let Some(ref rtn) = recv_type_name {
                     locals.set_var_struct_type(recv_name, rtn);
+                    self.define_var(recv_name, self.go_type_name_to_define_type(rtn));
                 }
             }
         }
 
         // Track struct types and signedness for parameters
         for field in &decl.typ.params.list {
+            let param_dt = self.expr_to_define_type(&field.typ);
+            for name_ident in &field.name {
+                if let Some(ref dt) = param_dt {
+                    self.define_var(&name_ident.name, dt.clone());
+                }
+            }
+
             if let ast::Expression::TypeSlice(slice_type) = &field.typ {
                 let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
                 for name_ident in &field.name {
@@ -349,6 +360,7 @@ impl WasmCompiler {
                             locals.add_local(&tid_param_name, ValType::I32)
                         });
                         self.iface_var_type_ids.insert(name_ident.name.clone(), tid_local);
+                        locals.iface_type_id_locals.insert(name_ident.name.clone(), tid_local);
                     }
                 }
             }
@@ -422,8 +434,10 @@ impl WasmCompiler {
 
         // Collect named return variables
         let mut named_returns: Vec<(String, ValType)> = Vec::new();
+        let mut named_return_tracking: Vec<(String, String, u32)> = Vec::new();
         for field in &decl.typ.result.list {
             let field_wasm_types = self.field_to_wasm_types(field);
+            let go_type_name = self.expr_type_name(&field.typ);
             for (i, ident) in field.name.iter().enumerate() {
                 let vt = if i < field_wasm_types.len() {
                     field_wasm_types[i].to_val_type()
@@ -432,7 +446,8 @@ impl WasmCompiler {
                 } else {
                     ValType::I64
                 };
-                let _local_idx = locals.add_local(&ident.name, vt);
+                let local_idx = locals.add_local(&ident.name, vt);
+                named_return_tracking.push((ident.name.clone(), go_type_name.clone(), local_idx));
                 named_returns.push((ident.name.clone(), vt));
             }
         }
@@ -527,6 +542,9 @@ impl WasmCompiler {
 
         if let Some(body) = &decl.body {
             let saved_constants = self.constants.clone();
+            for (name, go_type, local_idx) in &named_return_tracking {
+                self.track_local_var_type(name, go_type, *local_idx, &mut locals);
+            }
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();
             self.current_result_go_types = result_go_types.clone();
@@ -618,6 +636,8 @@ impl WasmCompiler {
                 self.code_buffer.push((closure_idx, closure_func));
             }
         }
+
+        self.symbols.leave_context();
 
         Ok(())
     }

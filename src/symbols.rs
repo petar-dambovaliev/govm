@@ -860,6 +860,22 @@ impl SymbolTable {
         self.current_context().define(pkg, name, dt, invar)
     }
 
+    pub fn resolve_type(&self, pkg: &str, name: &str) -> Option<DefineType> {
+        for ctx in self.contexts.iter().rev() {
+            if let Some((_, dt)) = ctx.resolve(pkg, name) {
+                return Some(dt);
+            }
+            if !ctx.is_closure {
+                break;
+            }
+        }
+        if self.contexts.len() > 1 {
+            self.contexts[0].resolve(pkg, name).map(|(_, dt)| dt)
+        } else {
+            None
+        }
+    }
+
     pub fn resolve(&mut self, pkg: &str, name: &str) -> Option<Resolved> {
         for (i, ctx) in self.contexts.iter().rev().enumerate() {
             let symbol = ctx.resolve(pkg, name);

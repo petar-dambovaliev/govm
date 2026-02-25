@@ -1540,7 +1540,7 @@ impl WasmCompiler {
                                 if let ast::Expression::Ident(arg_ident) = arg {
                                     if arg_ident.name == "nil" {
                                         out.push(Instruction::I32Const(0));
-                                    } else if let Some(&tid) = self.iface_var_type_ids.get(&arg_ident.name) {
+                                    } else if let Some(tid) = self.get_iface_type_id_local(&arg_ident.name, locals) {
                                         out.push(Instruction::LocalGet(tid));
                                     } else {
                                         let concrete_type = locals.get_var_struct_type(&arg_ident.name)
@@ -2009,7 +2009,7 @@ impl WasmCompiler {
                                         if let ast::Expression::Ident(arg_ident) = arg {
                                             if arg_ident.name == "nil" {
                                                 out.push(Instruction::I32Const(0));
-                                            } else if let Some(&tid) = self.iface_var_type_ids.get(&arg_ident.name) {
+                                            } else if let Some(tid) = self.get_iface_type_id_local(&arg_ident.name, locals) {
                                                 out.push(Instruction::LocalGet(tid));
                                             } else {
                                                 let concrete_type = locals.get_var_struct_type(&arg_ident.name)
