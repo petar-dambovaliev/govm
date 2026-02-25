@@ -268,6 +268,16 @@ impl WasmCompiler {
 
         self.symbols.new_context(false);
 
+        // #region agent log
+        if func_idx >= 248 && func_idx <= 290 {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{{"func_idx":{},"name":"{}","pkg":"{}","param_count":{},"result_count":{}}},"timestamp":{}}}"#,
+                    func_idx, decl.name.name, self.current_package.as_deref().unwrap_or(""), param_types.len(), result_types.len(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+        }
+        // #endregion
+
         // Track variadic parameter as slice
         if let Some(ref vp_name) = variadic_param_name {
             locals.set_var_struct_type(vp_name, "__slice");
@@ -458,6 +468,19 @@ impl WasmCompiler {
         let stack_frame = if let Some(body) = &decl.body {
             let escaping = Self::analyze_function_escapes(body);
             let mut sf = self.compute_stack_frame(decl, &escaping);
+            // #region agent log
+            if decl.name.name == "genericFtoa" || decl.name.name == "bigFtoa" {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                    let frame_locals: Vec<String> = sf.locals.iter().map(|sl| format!("{}:{}:{}", sl.name, sl.offset, sl.size)).collect();
+                    let esc_list: Vec<String> = escaping.iter().cloned().collect();
+                    let ds_keys: Vec<String> = self.struct_defs.keys().filter(|k| k.contains("decimal")).cloned().collect();
+                    let _ = writeln!(f, r#"{{"hypothesisId":"H","location":"functions.rs:stack_frame","message":"stack frame info","data":{{"func":"{}","total_size":{},"frame_locals":"{}","escaping":"{}","decimal_struct_keys":"{}"}},"timestamp":{}}}"#,
+                        decl.name.name, sf.total_size, frame_locals.join("|"), esc_list.join("|"), ds_keys.join("|"),
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                }
+            }
+            // #endregion
             if sf.total_size > 0 {
                 let fb = locals.add_local("__frame_base", ValType::I32);
                 sf.frame_base_local = Some(fb);
@@ -491,23 +514,54 @@ impl WasmCompiler {
             for sl in &stack_frame.locals {
                 if addr_taken_set.contains(&sl.name) {
                     let vt = {
-                        let mut found_vt = ValType::I64;
+                        let mut found_vt: Option<ValType> = None;
                         for field in &decl.typ.params.list {
                             for name in &field.name {
                                 if name.name == sl.name {
                                     if let ast::Expression::Ident(ti) = &field.typ {
-                                        found_vt = match ti.name.as_str() {
+                                        found_vt = Some(match ti.name.as_str() {
                                             "float32" => ValType::F32,
                                             "float64" => ValType::F64,
                                             "int32" | "uint32" | "int16" | "uint16" |
                                             "int8" | "uint8" | "byte" | "bool" => ValType::I32,
                                             _ => ValType::I64,
-                                        };
+                                        });
                                     }
                                 }
                             }
                         }
-                        found_vt
+                        if found_vt.is_none() {
+                            if let Some(body) = &decl.body {
+                                for stmt in &body.list {
+                                    if let ast::Statement::Declaration(ast::DeclStmt::Variable(vd)) = stmt {
+                                        for spec in &vd.specs {
+                                            for nm in &spec.name {
+                                                if nm.name == sl.name {
+                                                    if let Some(ref typ) = spec.typ {
+                                                        if let ast::Expression::Ident(ti) = typ {
+                                                            found_vt = Some(match ti.name.as_str() {
+                                                                "float32" => ValType::F32,
+                                                                "float64" => ValType::F64,
+                                                                "int32" | "uint32" | "int16" | "uint16" |
+                                                                "int8" | "uint8" | "byte" | "bool" => ValType::I32,
+                                                                _ => {
+                                                                    if Self::struct_defs_contains(&ti.name, &self.struct_defs) {
+                                                                        ValType::I32
+                                                                    } else {
+                                                                        ValType::I64
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        found_vt.unwrap_or(ValType::I64)
                     };
                     locals.memory_backed_vars.insert(sl.name.clone(), (sl.offset, vt));
                 }
@@ -560,6 +614,21 @@ impl WasmCompiler {
             self.current_result_go_types = Vec::new();
             self.constants = saved_constants;
         }
+
+        // #region agent log
+        if decl.name.name == "genericFtoa" || decl.name.name == "bigFtoa" {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                let locals_info: Vec<String> = locals.locals.iter().enumerate().map(|(i, (name, vt, _scope))| {
+                    format!("{}:{}:{:?}", locals.param_count() as usize + i, name, vt)
+                }).collect();
+                let _ = writeln!(f, r#"{{"hypothesisId":"G","location":"functions.rs:compile_func_decl","message":"locals dump","data":{{"func":"{}","func_idx":{},"param_count":{},"locals_count":{},"locals":"{}"}},"timestamp":{}}}"#,
+                    decl.name.name, func_idx, locals.param_count(), locals.locals.len(),
+                    locals_info.join("|"),
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+        }
+        // #endregion
 
         self.current_stack_frame = saved_stack_frame;
         self.stack_alloc_target = saved_stack_alloc_target;

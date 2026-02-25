@@ -968,6 +968,11 @@ impl WasmCompiler {
                 wasm_types = vec![WasmType::I32, WasmType::I32];
             }
 
+            // String fields in linear memory structs need two i32 slots: ptr and len
+            if go_type_tag.as_deref() == Some("__string") && wasm_types.len() == 1 && matches!(wasm_types[0], WasmType::Ref(_)) {
+                wasm_types = vec![WasmType::I32, WasmType::I32];
+            }
+
             for name in &names {
                 if wasm_types.len() == 1 {
                     let wt = wasm_types[0];
@@ -1019,6 +1024,17 @@ impl WasmCompiler {
         for (i, f) in result_fields.iter_mut().enumerate() {
             f.field_index = i as u32;
         }
+
+        // #region agent log
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                let fields_str: String = result_fields.iter().map(|fd| format!("{}:{}@{}", fd.name, fd.wasm_type.byte_size(), fd.offset)).collect::<Vec<_>>().join(",");
+                let _ = writeln!(f, r#"{{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{{"fields":"{}","total_size":{},"pkg":"{}"}},"timestamp":{}}}"#,
+                    fields_str, total_size, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+        }
+        // #endregion
 
         StructDef {
             fields: result_fields,

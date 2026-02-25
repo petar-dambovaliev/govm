@@ -251,14 +251,23 @@ impl WasmCompiler {
     }
 
     pub(crate) fn is_interface_var(&self, name: &str, locals: &LocalAlloc) -> bool {
-        if self.is_sym_interface_var(name) {
-            return true;
-        }
-        if let Some(st) = locals.get_var_struct_type(name) {
+        let sym_says = self.is_sym_interface_var(name);
+        let old_says = if let Some(st) = locals.get_var_struct_type(name) {
             st == "__interface" || st.starts_with("__iface_")
         } else {
             false
+        };
+        // #region agent log
+        if sym_says != old_says {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                let old_tag = locals.get_var_struct_type(name).unwrap_or("(none)");
+                let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{{"name":"{}","sym_says":{},"old_says":{},"old_tag":"{}","pkg":"{}"}},"timestamp":{}}}"#,
+                    name, sym_says, old_says, old_tag, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
         }
+        // #endregion
+        sym_says || old_says
     }
 
     pub(crate) fn is_interface_var_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
@@ -344,6 +353,62 @@ impl WasmCompiler {
 
     pub(crate) fn get_iface_type_id_local(&self, name: &str, locals: &LocalAlloc) -> Option<u32> {
         locals.iface_type_id_locals.get(name).copied()
+    }
+
+    pub(crate) fn compile_iface_expr_to_locals(
+        &mut self,
+        expr: &ast::Expression,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(u32, u32), Error> {
+        if let ast::Expression::Ident(id) = expr {
+            if let Some(tid_local) = self.get_iface_type_id_local(&id.name, locals) {
+                let data_local = locals.find(&id.name).ok_or_else(|| {
+                    Error::InternalError(format!("interface variable '{}' not found", id.name))
+                })?;
+                return Ok((data_local, tid_local));
+            }
+
+            let resolved = self.resolve_global_var_name(&id.name);
+            let tid_key = format!("{}_tid", resolved);
+            if let Some(&(tid_global, _)) = self.global_vars.get(&tid_key) {
+                let &(data_global, _) = self.resolve_global_var(&id.name).ok_or_else(|| {
+                    Error::InternalError(format!("global interface '{}' data not found", id.name))
+                })?;
+                let data_tmp = locals.add_local(
+                    &format!("__iface_cmp_data_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                let tid_tmp = locals.add_local(
+                    &format!("__iface_cmp_tid_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::GlobalGet(data_global));
+                out.push(Instruction::LocalSet(data_tmp));
+                out.push(Instruction::GlobalGet(tid_global));
+                out.push(Instruction::LocalSet(tid_tmp));
+                return Ok((data_tmp, tid_tmp));
+            }
+        }
+
+        if self.is_interface_field_selector(expr, locals) {
+            let tid_tmp = locals.add_local(
+                &format!("__iface_cmp_tid_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            let data_tmp = locals.add_local(
+                &format!("__iface_cmp_data_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            self.compile_expression(expr, out, locals)?;
+            out.push(Instruction::LocalSet(tid_tmp));
+            out.push(Instruction::LocalSet(data_tmp));
+            return Ok((data_tmp, tid_tmp));
+        }
+
+        Err(Error::InternalError(format!(
+            "expression is not an interface-typed expression"
+        )))
     }
 
     pub(crate) fn types_implementing_interface(&self, iface_name: &str) -> Vec<u32> {

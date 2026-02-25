@@ -397,6 +397,17 @@ impl WasmCompiler {
         if let Some(&(offset, vt)) = locals.memory_backed_vars.get(&ident.name) {
             if let Some(sf) = &self.current_stack_frame {
                 if let Some(fb) = sf.frame_base_local {
+                    // #region agent log
+                    {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                            let struct_type = locals.get_var_struct_type(&ident.name).map(|s| s.to_string()).unwrap_or_else(|| "(none)".to_string());
+                            let _ = writeln!(f, r#"{{"hypothesisId":"I","location":"expressions.rs:compile_ident","message":"memory-backed var access","data":{{"name":"{}","offset":{},"vt":"{:?}","struct_type":"{}","pkg":"{}"}},"timestamp":{}}}"#,
+                                ident.name, offset, vt, struct_type, self.current_package.as_deref().unwrap_or(""),
+                                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                        }
+                    }
+                    // #endregion
                     out.push(Instruction::LocalGet(fb));
                     if offset > 0 {
                         out.push(Instruction::I32Const(offset as i32));
@@ -1567,6 +1578,26 @@ impl WasmCompiler {
                             return Ok(GoType::Bool);
                         }
                     }
+                }
+
+                let lhs_is_any_iface = self.is_interface_var_expr(&op.x, locals)
+                    || self.is_interface_field_selector(&op.x, locals);
+                let rhs_is_any_iface = self.is_interface_var_expr(y, locals)
+                    || self.is_interface_field_selector(y, locals);
+                if lhs_is_any_iface || rhs_is_any_iface {
+                    let (lhs_data, lhs_tid) = self.compile_iface_expr_to_locals(&op.x, out, locals)?;
+                    let (rhs_data, rhs_tid) = self.compile_iface_expr_to_locals(y, out, locals)?;
+                    out.push(Instruction::LocalGet(lhs_tid));
+                    out.push(Instruction::LocalGet(rhs_tid));
+                    out.push(Instruction::I32Eq);
+                    out.push(Instruction::LocalGet(lhs_data));
+                    out.push(Instruction::LocalGet(rhs_data));
+                    out.push(Instruction::I32Eq);
+                    out.push(Instruction::I32And);
+                    if op.op == Operator::NotEqual {
+                        out.push(Instruction::I32Eqz);
+                    }
+                    return Ok(GoType::Bool);
                 }
             }
 
@@ -2948,6 +2979,24 @@ impl WasmCompiler {
         let ptr_local = locals.add_local("__comp_ptr", ValType::I32);
         out.push(Instruction::LocalSet(ptr_local));
 
+        let primary_indices: Vec<usize> = if let Some(ref sd) = struct_def {
+            let mut indices = Vec::new();
+            let mut idx = 0;
+            while idx < sd.fields.len() {
+                indices.push(idx);
+                if idx + 1 < sd.fields.len()
+                    && sd.fields[idx + 1].name == format!("{}_{}", sd.fields[idx].name, 1)
+                {
+                    idx += 2;
+                } else {
+                    idx += 1;
+                }
+            }
+            indices
+        } else {
+            (0..comp.val.values.len()).collect()
+        };
+
         for (i, kv) in comp.val.values.iter().enumerate() {
             if let ast::Element::LitValue(nested_lit) = &kv.val {
                 // Check if this is an embedded struct field (should be stored inline)
@@ -2960,9 +3009,10 @@ impl WasmCompiler {
                         )
                     } else { None }
                 } else if let Some(ref sd) = struct_def {
-                    if i < sd.fields.len() {
+                    let fi = primary_indices.get(i).copied().unwrap_or(i);
+                    if fi < sd.fields.len() {
                         sd.embedded_types.iter()
-                            .find(|(name, _)| name == &sd.fields[i].name)
+                            .find(|(name, _)| name == &sd.fields[fi].name)
                             .map(|(name, off)| (name.clone(), *off))
                     } else { None }
                 } else { None };
@@ -2985,9 +3035,10 @@ impl WasmCompiler {
                         })
                     } else { None }
                 } else if let Some(ref sd) = struct_def {
-                    if i < sd.fields.len() {
+                    let fi = primary_indices.get(i).copied().unwrap_or(i);
+                    if fi < sd.fields.len() {
                         self.struct_defs.iter().find_map(|(name, def)| {
-                            if def.total_size == sd.fields[i].wasm_type.byte_size() || sd.fields[i].wasm_type == WasmType::I32 {
+                            if def.total_size == sd.fields[fi].wasm_type.byte_size() || sd.fields[fi].wasm_type == WasmType::I32 {
                                 Some(name.clone())
                             } else { None }
                         })
@@ -3047,8 +3098,9 @@ impl WasmCompiler {
                         } else { (i as u64 * 8, None) }
                     } else { (i as u64 * 8, None) }
                 } else if let Some(ref sd) = struct_def {
-                    if i < sd.fields.len() {
-                        (sd.fields[i].offset as u64, Some(sd.fields[i].wasm_type))
+                    let fi = primary_indices.get(i).copied().unwrap_or(i);
+                    if fi < sd.fields.len() {
+                        (sd.fields[fi].offset as u64, Some(sd.fields[fi].wasm_type))
                     } else { (i as u64 * 8, None) }
                 } else { (i as u64 * 8, None) };
 
@@ -3082,9 +3134,10 @@ impl WasmCompiler {
                         )
                     } else { None }
                 } else if let Some(ref sd) = struct_def {
-                    if i < sd.fields.len() {
+                    let fi = primary_indices.get(i).copied().unwrap_or(i);
+                    if fi < sd.fields.len() {
                         sd.embedded_types.iter()
-                            .find(|(name, _)| name == &sd.fields[i].name)
+                            .find(|(name, _)| name == &sd.fields[fi].name)
                             .map(|(name, off)| (name.clone(), *off))
                     } else { None }
                 } else { None };
@@ -3122,17 +3175,19 @@ impl WasmCompiler {
                     ));
                 }
             } else if let Some(ref sd) = struct_def {
-                if i < sd.fields.len() {
+                let fi = primary_indices.get(i).copied().unwrap_or(i);
+                if fi < sd.fields.len() {
                     (
-                        sd.fields[i].offset as u64,
-                        Some(sd.fields[i].wasm_type),
-                        sd.fields[i].go_type_tag.clone(),
+                        sd.fields[fi].offset as u64,
+                        Some(sd.fields[fi].wasm_type),
+                        sd.fields[fi].go_type_tag.clone(),
                     )
                 } else {
                     return Err(Error::InternalError(format!(
-                        "too many fields in struct literal: got {}, struct has {}",
+                        "too many fields in struct literal: got {}, struct has {} (primary: {})",
                         i + 1,
-                        sd.fields.len()
+                        sd.fields.len(),
+                        primary_indices.len()
                     )));
                 }
             } else {
@@ -3171,7 +3226,6 @@ impl WasmCompiler {
                     align: 2,
                     memory_index: 0,
                 }));
-                out.push(Instruction::LocalGet(ptr_local));
                 continue;
             }
 
@@ -3246,7 +3300,6 @@ impl WasmCompiler {
                     out.push(Instruction::I32Const(0));
                     out.push(Instruction::I32Store(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
                 }
-                out.push(Instruction::LocalGet(ptr_local));
                 continue;
             }
 
@@ -4540,6 +4593,8 @@ impl WasmCompiler {
                                 self.functions.iter().find(|f| f.name == ident.name)
                             {
                                 fi.results.len()
+                            } else if let Some(fi) = self.find_func_in_pkg(&ident.name) {
+                                fi.results.len()
                             } else {
                                 1
                             }
@@ -4554,6 +4609,15 @@ impl WasmCompiler {
                                 if let Some(loc) = locals {
                                     if let Some(qualified) = self.resolve_selector_method_name(sel, loc) {
                                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
+                                            // #region agent log
+                                            {
+                                                use std::io::Write;
+                                                if let Ok(mut f2) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                                                    let _ = writeln!(f2, r#"{{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{{"qualified":"{}","results":{},"method":"{}"}},"timestamp":{}}}"#,
+                                                        qualified, fi.results.len(), sel.sel.name, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                                                }
+                                            }
+                                            // #endregion
                                             return fi.results.len();
                                         }
                                     }
@@ -4562,8 +4626,27 @@ impl WasmCompiler {
                                 if let Some(fi) = self.functions.iter().find(|f| {
                                     f.name.ends_with(&format!(".{}", method_name))
                                 }) {
+                                    // #region agent log
+                                    {
+                                        use std::io::Write;
+                                        if let Ok(mut f2) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                                            let _ = writeln!(f2, r#"{{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via ends_with","data":{{"func_name":"{}","results":{},"method":"{}"}},"timestamp":{}}}"#,
+                                                fi.name, fi.results.len(), sel.sel.name, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                                        }
+                                    }
+                                    // #endregion
                                     fi.results.len()
                                 } else {
+                                    // #region agent log
+                                    {
+                                        use std::io::Write;
+                                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                                            let recv_name = if let ast::Expression::Ident(ri) = sel.x.as_ref() { ri.name.as_str() } else { "?" };
+                                            let _ = writeln!(f, r#"{{"hypothesisId":"C","location":"expressions.rs:expression_result_count","message":"defaulting to 1 for unresolved method","data":{{"recv":"{}","method":"{}","pkg":"{}"}},"timestamp":{}}}"#,
+                                                recv_name, sel.sel.name, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                                        }
+                                    }
+                                    // #endregion
                                     1
                                 }
                             }

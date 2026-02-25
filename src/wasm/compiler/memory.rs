@@ -196,6 +196,16 @@ impl WasmCompiler {
             (ValType::F32, ValType::I64) => out.push(Instruction::I64TruncF32S),
             (ValType::F32, ValType::I32) => out.push(Instruction::I32TruncF32S),
             _ => {
+                // #region agent log
+                {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                        let bt = std::backtrace::Backtrace::force_capture();
+                        let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"memory.rs:emit_typed_coerce","message":"unsupported coercion","data":{{"from":"{:?}","to":"{:?}","backtrace":"{}"}},"timestamp":{}}}"#,
+                            from, to, format!("{}", bt).replace('\n', " | ").replace('"', "'"), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                    }
+                }
+                // #endregion
                 return Err(Error::InternalError(format!(
                     "unsupported type coercion from {:?} to {:?}",
                     from, to

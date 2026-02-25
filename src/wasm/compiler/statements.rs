@@ -43,6 +43,19 @@ impl WasmCompiler {
                 }
                 self.compile_expression(&expr_stmt.expr, out, locals)?;
                 let wasm_types = self.expression_result_count(&expr_stmt.expr, Some(locals));
+                // #region agent log
+                if wasm_types > 0 {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                        let expr_desc = match &expr_stmt.expr {
+                            ast::Expression::Call(c) => format!("call:{:?}", c.func),
+                            other => format!("{:?}", other),
+                        };
+                        let _ = writeln!(f, r#"{{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{{"count":{},"expr":"{}","pkg":"{}"}},"timestamp":{}}}"#,
+                            wasm_types, expr_desc.replace('"', "'").chars().take(200).collect::<String>(), self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+                    }
+                }
+                // #endregion
                 for _ in 0..wasm_types {
                     out.push(Instruction::Drop);
                 }
@@ -1833,40 +1846,89 @@ impl WasmCompiler {
                                 }
                             }
                         } else {
-                            let (offset, field_vt) =
-                                self.compile_selector_store_addr(sel, out, locals)?;
-                            let (_, align) = Self::elem_size_and_align(field_vt);
+                            let field_tag = struct_type_name.as_ref().and_then(|name| {
+                                self.struct_defs.get(name)?
+                                    .find_field(&sel.sel.name)?
+                                    .go_type_tag.as_deref()
+                                    .map(|s| s.to_string())
+                            });
 
-                            let addr_tmp = locals.add_local(
-                                &format!("__sel_addr_{}", locals.locals.len()),
-                                ValType::I32,
-                            );
-                            out.push(Instruction::LocalSet(addr_tmp));
+                            if field_tag.as_deref() == Some("__string")
+                                && self.gc_builtin_types.go_string.is_some()
+                                && matches!(rhs_vt, ValType::Ref(_))
+                            {
+                                let go_string_idx = self.gc_builtin_types.go_string.unwrap();
+                                let (offset, _field_vt) =
+                                    self.compile_selector_store_addr(sel, out, locals)?;
+                                let addr_tmp = locals.add_local(
+                                    &format!("__sel_addr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(addr_tmp));
 
-                            match assign.op {
-                                Operator::Assign => {
-                                    out.push(Instruction::LocalGet(addr_tmp));
-                                    out.push(Instruction::LocalGet(rhs_tmp));
-                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
-                                    Self::emit_typed_store(field_vt, offset, align, out);
-                                }
-                                _ => {
-                                    out.push(Instruction::LocalGet(addr_tmp));
-                                    Self::emit_typed_load(field_vt, offset, align, out);
+                                out.push(Instruction::LocalGet(rhs_tmp));
+                                self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
+                                let str_len = locals.add_local(
+                                    &format!("__sel_str_len_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                let str_ptr = locals.add_local(
+                                    &format!("__sel_str_ptr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(str_len));
+                                out.push(Instruction::LocalSet(str_ptr));
 
-                                    out.push(Instruction::LocalGet(rhs_tmp));
-                                    Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(str_ptr));
+                                out.push(Instruction::I32Store(MemArg {
+                                    offset,
+                                    align: 2,
+                                    memory_index: 0,
+                                }));
+                                out.push(Instruction::LocalGet(addr_tmp));
+                                out.push(Instruction::LocalGet(str_len));
+                                out.push(Instruction::I32Store(MemArg {
+                                    offset: offset + 4,
+                                    align: 2,
+                                    memory_index: 0,
+                                }));
+                            } else {
+                                let (offset, field_vt) =
+                                    self.compile_selector_store_addr(sel, out, locals)?;
+                                let (_, align) = Self::elem_size_and_align(field_vt);
 
-                                    self.emit_compound_op(&assign.op, field_vt, false, out)?;
+                                let addr_tmp = locals.add_local(
+                                    &format!("__sel_addr_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::LocalSet(addr_tmp));
 
-                                    let result_tmp = locals.add_local(
-                                        &format!("__sel_res_{}", locals.locals.len()),
-                                        field_vt,
-                                    );
-                                    out.push(Instruction::LocalSet(result_tmp));
-                                    out.push(Instruction::LocalGet(addr_tmp));
-                                    out.push(Instruction::LocalGet(result_tmp));
-                                    Self::emit_typed_store(field_vt, offset, align, out);
+                                match assign.op {
+                                    Operator::Assign => {
+                                        out.push(Instruction::LocalGet(addr_tmp));
+                                        out.push(Instruction::LocalGet(rhs_tmp));
+                                        Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+                                        Self::emit_typed_store(field_vt, offset, align, out);
+                                    }
+                                    _ => {
+                                        out.push(Instruction::LocalGet(addr_tmp));
+                                        Self::emit_typed_load(field_vt, offset, align, out);
+
+                                        out.push(Instruction::LocalGet(rhs_tmp));
+                                        Self::emit_typed_coerce(rhs_vt, field_vt, out)?;
+
+                                        self.emit_compound_op(&assign.op, field_vt, false, out)?;
+
+                                        let result_tmp = locals.add_local(
+                                            &format!("__sel_res_{}", locals.locals.len()),
+                                            field_vt,
+                                        );
+                                        out.push(Instruction::LocalSet(result_tmp));
+                                        out.push(Instruction::LocalGet(addr_tmp));
+                                        out.push(Instruction::LocalGet(result_tmp));
+                                        Self::emit_typed_store(field_vt, offset, align, out);
+                                    }
                                 }
                             }
                         }

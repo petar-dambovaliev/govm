@@ -704,6 +704,16 @@ impl WasmCompiler {
     }
 
     pub(crate) fn define_var(&mut self, name: &str, dt: DefineType) {
+        // #region agent log
+        if matches!(dt, DefineType::Interface { .. }) {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
+                let iname = if let DefineType::Interface { ref name, .. } = dt { name.as_str() } else { "" };
+                let _ = writeln!(f, r#"{{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{{"var_name":"{}","iface_name":"{}","pkg":"{}"}},"timestamp":{}}}"#,
+                    name, iname, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+        }
+        // #endregion
         self.symbols.define(
             self.current_package.as_deref().unwrap_or(""),
             name,

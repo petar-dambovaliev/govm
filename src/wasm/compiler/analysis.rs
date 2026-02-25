@@ -995,11 +995,21 @@ impl WasmCompiler {
         }
     }
 
+    pub(crate) fn struct_defs_contains(name: &str, struct_defs: &HashMap<String, StructDef>) -> bool {
+        struct_defs.contains_key(name)
+            || struct_defs.keys().any(|k| k.ends_with(&format!(".{}", name)))
+    }
+
+    pub(crate) fn struct_defs_get<'a>(name: &str, struct_defs: &'a HashMap<String, StructDef>) -> Option<&'a StructDef> {
+        struct_defs.get(name)
+            .or_else(|| struct_defs.iter().find(|(k, _)| k.ends_with(&format!(".{}", name))).map(|(_, v)| v))
+    }
+
     pub(crate) fn is_struct_expr(expr: &ast::Expression, struct_defs: &HashMap<String, StructDef>) -> bool {
         match expr {
             ast::Expression::CompositeLit(comp) => {
                 if let ast::Expression::Ident(ti) = comp.typ.as_ref() {
-                    struct_defs.contains_key(&ti.name)
+                    Self::struct_defs_contains(&ti.name, struct_defs)
                 } else { false }
             }
             ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
@@ -1009,7 +1019,7 @@ impl WasmCompiler {
                 if let ast::Expression::Ident(fn_id) = call.func.as_ref() {
                     if fn_id.name == "new" {
                         if let Some(ast::Expression::Ident(ti)) = call.args.first() {
-                            return struct_defs.contains_key(&ti.name);
+                            return Self::struct_defs_contains(&ti.name, struct_defs);
                         }
                     }
                 }
@@ -1076,7 +1086,7 @@ impl WasmCompiler {
                             }
                             let is_struct = if let Some(ref typ) = spec.typ {
                                 if let ast::Expression::Ident(ti) = typ {
-                                    struct_defs.contains_key(&ti.name)
+                                    Self::struct_defs_contains(&ti.name, struct_defs)
                                 } else { false }
                             } else { false };
                             if is_struct {
@@ -1184,7 +1194,7 @@ impl WasmCompiler {
     ) -> Option<u32> {
         match typ {
             ast::Expression::Ident(id) => {
-                if let Some(sdef) = struct_defs.get(&id.name) {
+                if let Some(sdef) = Self::struct_defs_get(&id.name, struct_defs) {
                     Some(sdef.total_size)
                 } else {
                     match id.name.as_str() {
