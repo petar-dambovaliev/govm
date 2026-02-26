@@ -4601,6 +4601,12 @@ impl WasmCompiler {
                             if self.gc_builtin_types.go_string.is_some() { 1 } else { 2 }
                         }
                         _ => {
+                            if self.iface_defs.contains_key(&ident.name)
+                                || ident.name == "error"
+                                || ident.name == "any"
+                            {
+                                return 2;
+                            }
                             if let Some(loc) = locals {
                                 if let Some(&(func_idx, _)) = loc.closure_info.get(&ident.name) {
                                     if let Some(fi) = self.functions.iter().find(|f| f.wasm_func_idx == func_idx) {

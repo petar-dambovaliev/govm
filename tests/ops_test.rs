@@ -1157,3 +1157,102 @@ func F() int {
     let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
     assert_eq!(f.call(&mut s, ()).unwrap(), 3);
 }
+
+// ============================================================
+// Multi-return and math stdlib tests
+// ============================================================
+
+#[test]
+fn test_multi_return_float64() {
+    let src = r#"package main
+func split(x float64) (float64, float64) {
+    return x + 1.0, x + 2.0
+}
+func F() int {
+    a, b := split(10.0)
+    return int(a + b)
+}
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 23);
+}
+
+#[test]
+fn test_multi_return_discard() {
+    let src = r#"package main
+func split(x float64) (float64, float64) {
+    return x + 1.0, x + 2.0
+}
+func F() int {
+    a, _ := split(10.0)
+    return int(a)
+}
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 11);
+}
+
+#[test]
+fn test_multi_return_discard_first() {
+    let src = r#"package main
+func split(x float64) (float64, float64) {
+    return x + 1.0, x + 2.0
+}
+func F() int {
+    _, b := split(10.0)
+    return int(b)
+}
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 12);
+}
+
+#[test]
+fn test_math_abs() {
+    let src = r#"package main
+import "math"
+func F() int { return int(math.Abs(-5.0)) }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 5);
+}
+
+#[test]
+fn test_math_trunc() {
+    let src = r#"package main
+import "math"
+func F() int { return int(math.Trunc(3.7)) }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 3);
+}
+
+#[test]
+fn test_math_modf() {
+    let src = r#"package main
+import "math"
+func F() int {
+    i, f := math.Modf(3.7)
+    return int(i) * 10 + int(f * 10)
+}
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 37);
+}
+
+#[test]
+fn test_math_floor() {
+    let src = r#"package main
+import "math"
+func F() int { return int(math.Floor(3.7)) }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 3);
+}
