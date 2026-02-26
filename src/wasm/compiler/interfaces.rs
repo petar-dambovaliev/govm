@@ -230,7 +230,7 @@ impl WasmCompiler {
     ) -> (String, bool) {
         // Check: lhs is interface var, rhs is nil (or vice versa)
         if let ast::Expression::Ident(id) = lhs {
-            if self.is_interface_var(&id.name, locals) {
+            if self.is_interface_var(&id.name, locals) || self.is_interface_var_expr(lhs, locals) {
                 if let ast::Expression::Ident(rhs_id) = rhs {
                     if rhs_id.name == "nil" {
                         return (id.name.clone(), true);
@@ -239,7 +239,7 @@ impl WasmCompiler {
             }
         }
         if let ast::Expression::Ident(id) = rhs {
-            if self.is_interface_var(&id.name, locals) {
+            if self.is_interface_var(&id.name, locals) || self.is_interface_var_expr(rhs, locals) {
                 if let ast::Expression::Ident(lhs_id) = lhs {
                     if lhs_id.name == "nil" {
                         return (id.name.clone(), true);

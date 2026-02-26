@@ -1547,6 +1547,18 @@ impl WasmCompiler {
                         }
                         return Ok(GoType::Bool);
                     }
+                    let resolved = self.resolve_global_var_name(&iface_name);
+                    let tid_key = format!("{}_tid", resolved);
+                    if let Some(&(tid_global, _)) = self.global_vars.get(&tid_key) {
+                        out.push(Instruction::GlobalGet(tid_global));
+                        if op.op == Operator::Equal {
+                            out.push(Instruction::I32Eqz);
+                        } else {
+                            out.push(Instruction::I32Const(0));
+                            out.push(Instruction::I32Ne);
+                        }
+                        return Ok(GoType::Bool);
+                    }
                 }
 
                 // Interface-to-interface equality: err == target
