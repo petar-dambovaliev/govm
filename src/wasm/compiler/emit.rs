@@ -643,7 +643,6 @@ impl WasmCompiler {
             let is_gc_string_global = self.global_vars.get(var_name).map_or(false, |&(_, vt)| matches!(vt, ValType::Ref(_)));
             let is_string_global = !is_gc_string_global && self.global_vars.contains_key(&format!("{}_1", var_name));
             let is_iface_global = self.global_vars.contains_key(&format!("{}_tid", var_name));
-
             if is_gc_string_global {
                 self.compile_expression(init_expr, &mut body, &mut locals)?;
                 let (global_idx, _) = self.global_vars[var_name];

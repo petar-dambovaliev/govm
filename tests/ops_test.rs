@@ -1159,6 +1159,71 @@ func F() int {
 }
 
 // ============================================================
+// strconv stdlib tests
+// ============================================================
+
+#[test]
+fn test_struct_with_negative_int_field() {
+    let src = r#"package main
+type Info struct {
+    a uint
+    b uint
+    c int
+}
+var info = Info{23, 8, -127}
+func F() int { return info.c }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), -127);
+}
+
+#[test]
+fn test_global_slice_of_structs_with_strings() {
+    let src = r#"package main
+type Entry struct {
+    delta  int
+    cutoff string
+}
+var entries = []Entry{
+    {0, ""},
+    {1, "5"},
+    {2, "25"},
+}
+func F() int { return entries[2].delta }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 2);
+}
+
+#[test]
+fn test_global_slice_float32() {
+    let src = r#"package main
+var vals = []float32{1.0, 10.0, 100.0}
+func F() int { return int(vals[1]) }
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 10);
+}
+
+#[test]
+fn test_errors_new_global() {
+    let src = r#"package main
+import "errors"
+var ErrFoo = errors.New("some error")
+func F() int {
+    if ErrFoo == nil { return -1 }
+    return 1
+}
+"#;
+    let (mut s, i) = compile_and_instantiate(src);
+    let f = i.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 1);
+}
+
+// ============================================================
 // Multi-return and math stdlib tests
 // ============================================================
 

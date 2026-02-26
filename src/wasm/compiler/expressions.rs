@@ -2625,9 +2625,84 @@ impl WasmCompiler {
             }
             if let ast::Element::Expr(expr) = &kv.val {
                 out.push(Instruction::LocalGet(ptr_local));
-                self.compile_expression(expr, out, locals)?;
-                let val_vt = self.infer_val_type(expr, locals);
-                Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+
+                let is_unsigned_elem = Self::is_unsigned_array_elem(&arr_type.typ);
+                if let Some(cv) = self.try_eval_const_expr(expr) {
+                    if elem_vt == ValType::I64 {
+                        let int_val = match cv {
+                            ConstValue::I64(v) => v as i64,
+                            ConstValue::F64(v) => v as u64 as i64,
+                            _ => {
+                                self.compile_expression(expr, out, locals)?;
+                                let val_vt = self.infer_val_type(expr, locals);
+                                Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                                let offset = current_index * elem_size as u64;
+                                Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
+                                current_index += 1;
+                                continue;
+                            }
+                        };
+                        out.push(Instruction::I64Const(int_val));
+                    } else if elem_vt == ValType::I32 {
+                        let int_val = match cv {
+                            ConstValue::I64(v) => v as i32,
+                            ConstValue::F64(v) if is_unsigned_elem => v as u32 as i32,
+                            ConstValue::F64(v) => v as i32,
+                            _ => {
+                                self.compile_expression(expr, out, locals)?;
+                                let val_vt = self.infer_val_type(expr, locals);
+                                Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                                let offset = current_index * elem_size as u64;
+                                Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
+                                current_index += 1;
+                                continue;
+                            }
+                        };
+                        out.push(Instruction::I32Const(int_val));
+                    } else if elem_vt == ValType::F64 {
+                        let f_val = match cv {
+                            ConstValue::F64(v) => v,
+                            ConstValue::I64(v) => v as f64,
+                            _ => {
+                                self.compile_expression(expr, out, locals)?;
+                                let offset = current_index * elem_size as u64;
+                                Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
+                                current_index += 1;
+                                continue;
+                            }
+                        };
+                        out.push(Instruction::F64Const(f_val.into()));
+                    } else if elem_vt == ValType::F32 {
+                        let f_val = match cv {
+                            ConstValue::F64(v) => v as f32,
+                            ConstValue::I64(v) => v as f32,
+                            _ => {
+                                self.compile_expression(expr, out, locals)?;
+                                let offset = current_index * elem_size as u64;
+                                Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
+                                current_index += 1;
+                                continue;
+                            }
+                        };
+                        out.push(Instruction::F32Const(f_val.into()));
+                    } else {
+                        self.compile_expression(expr, out, locals)?;
+                        let val_vt = self.infer_val_type(expr, locals);
+                        Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                    }
+                } else {
+                    self.compile_expression(expr, out, locals)?;
+                    let val_vt = self.infer_val_type(expr, locals);
+                    if val_vt != elem_vt {
+                        if is_unsigned_elem && val_vt == ValType::F64 && elem_vt == ValType::I64 {
+                            out.push(Instruction::I64TruncF64U);
+                        } else if is_unsigned_elem && val_vt == ValType::F64 && elem_vt == ValType::I32 {
+                            out.push(Instruction::I32TruncF64U);
+                        } else {
+                            Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                        }
+                    }
+                }
                 let offset = current_index * elem_size as u64;
                 Self::emit_go_typed_store(elem_size, align, offset, elem_vt, out);
             }
@@ -2636,6 +2711,14 @@ impl WasmCompiler {
 
         out.push(Instruction::LocalGet(ptr_local));
         Ok(())
+    }
+
+    fn is_unsigned_array_elem(elem_type: &ast::Expression) -> bool {
+        matches!(elem_type,
+            ast::Expression::Ident(id) if matches!(id.name.as_str(),
+                "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "byte"
+            )
+        )
     }
 
     pub(crate) fn compile_slice_literal(
@@ -2723,9 +2806,55 @@ impl WasmCompiler {
                     self.compile_composite_lit(&synth_comp, out, locals)?;
                 }
             } else if let ast::Element::Expr(expr) = &kv.val {
-                self.compile_expression(expr, out, locals)?;
-                let val_vt = self.infer_val_type(expr, locals);
-                Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                let is_unsigned_elem = Self::is_unsigned_array_elem(&slice_type.typ);
+                if let Some(cv) = self.try_eval_const_expr(expr) {
+                    match (elem_vt, &cv) {
+                        (ValType::I64, ConstValue::F64(v)) => {
+                            out.push(Instruction::I64Const(*v as u64 as i64));
+                        }
+                        (ValType::I64, ConstValue::I64(v)) => {
+                            out.push(Instruction::I64Const(*v as i64));
+                        }
+                        (ValType::I32, ConstValue::F64(v)) if is_unsigned_elem => {
+                            out.push(Instruction::I32Const(*v as u32 as i32));
+                        }
+                        (ValType::I32, ConstValue::F64(v)) => {
+                            out.push(Instruction::I32Const(*v as i32));
+                        }
+                        (ValType::I32, ConstValue::I64(v)) => {
+                            out.push(Instruction::I32Const(*v as i32));
+                        }
+                        (ValType::F64, ConstValue::F64(v)) => {
+                            out.push(Instruction::F64Const((*v).into()));
+                        }
+                        (ValType::F64, ConstValue::I64(v)) => {
+                            out.push(Instruction::F64Const((*v as f64).into()));
+                        }
+                        (ValType::F32, ConstValue::F64(v)) => {
+                            out.push(Instruction::F32Const((*v as f32).into()));
+                        }
+                        (ValType::F32, ConstValue::I64(v)) => {
+                            out.push(Instruction::F32Const((*v as f32).into()));
+                        }
+                        _ => {
+                            self.compile_expression(expr, out, locals)?;
+                            let val_vt = self.infer_val_type(expr, locals);
+                            Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                        }
+                    }
+                } else {
+                    self.compile_expression(expr, out, locals)?;
+                    let val_vt = self.infer_val_type(expr, locals);
+                    if val_vt != elem_vt {
+                        if is_unsigned_elem && val_vt == ValType::F64 && elem_vt == ValType::I64 {
+                            out.push(Instruction::I64TruncF64U);
+                        } else if is_unsigned_elem && val_vt == ValType::F64 && elem_vt == ValType::I32 {
+                            out.push(Instruction::I32TruncF64U);
+                        } else {
+                            Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                        }
+                    }
+                }
             } else {
                 out.push(Instruction::Drop);
                 continue;
