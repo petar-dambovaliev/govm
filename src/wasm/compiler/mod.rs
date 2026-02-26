@@ -8,10 +8,11 @@ use crate::wasm::udf::{
 };
 use std::collections::HashMap;
 use wasm_encoder::{
-    BlockType, CodeSection, CompositeInnerType, CompositeType, ConstExpr, ElementSection, Elements,
-    ExportKind, ExportSection, FieldType, Function, FunctionSection, GlobalSection, GlobalType,
-    HeapType, ImportSection, Instruction, MemArg, MemorySection, MemoryType, Module, RefType,
-    StorageType, StructType, SubType, TableSection, TableType, TypeSection, ValType,
+    BlockType, CodeSection, CompositeInnerType, CompositeType, ConstExpr, DataSection,
+    ElementSection, Elements, ExportKind, ExportSection, FieldType, Function, FunctionSection,
+    GlobalSection, GlobalType, HeapType, ImportSection, Instruction, MemArg, MemorySection,
+    MemoryType, Module, RefType, StorageType, StructType, SubType, TableSection, TableType,
+    TypeSection, ValType,
 };
 
 pub struct CompileResult {
@@ -23,16 +24,16 @@ pub struct CompileResult {
 #[derive(Clone)]
 pub(crate) struct FuncInfo {
     pub(crate) wasm_func_idx: u32,
-    type_idx: u32,
-    name: String,
-    params: Vec<(String, WasmType)>,
-    results: Vec<WasmType>,
-    result_go_types: Vec<String>,
-    is_exported: bool,
-    recv_type: Option<String>,
-    is_variadic: bool,
-    variadic_elem_vt: Option<ValType>,
-    iface_param_indices: Vec<usize>,
+    pub(crate) type_idx: u32,
+    pub(crate) name: String,
+    pub(crate) params: Vec<(String, WasmType)>,
+    pub(crate) results: Vec<WasmType>,
+    pub(crate) result_go_types: Vec<String>,
+    pub(crate) is_exported: bool,
+    pub(crate) recv_type: Option<String>,
+    pub(crate) is_variadic: bool,
+    pub(crate) variadic_elem_vt: Option<ValType>,
+    pub(crate) iface_param_indices: Vec<usize>,
 }
 
 pub(crate) struct DeferredCall {
@@ -59,9 +60,9 @@ pub(crate) struct StructDef {
 #[derive(Debug, Clone)]
 pub(crate) struct StructFieldDef {
     pub(crate) name: String,
-    wasm_type: WasmType,
+    pub(crate) wasm_type: WasmType,
     offset: u32,
-    go_type_tag: Option<String>,
+    pub(crate) go_type_tag: Option<String>,
     pub(crate) field_index: u32,
     pub(crate) slice_elem_type_tag: Option<String>,
 }
@@ -343,19 +344,19 @@ impl LocalAlloc {
             var_types: HashMap::new(),
             closure_info: HashMap::new(),
             closure_env_captures: HashMap::new(),
-            method_expr_vars: std::collections::HashSet::new(),
+            method_expr_vars: HashSet::new(),
             slice_elem_types: HashMap::new(),
             slice_elem_struct_types: HashMap::new(),
             nested_slice_inner_elem_types: HashMap::new(),
             string_locals: HashMap::new(),
             gc_string_locals: HashMap::new(),
-            unsigned_vars: std::collections::HashSet::new(),
+            unsigned_vars: HashSet::new(),
             map_types: HashMap::new(),
             array_info: HashMap::new(),
             nested_array_inner_info: HashMap::new(),
-            rune_slices: std::collections::HashSet::new(),
+            rune_slices: HashSet::new(),
             memory_backed_vars: HashMap::new(),
-            pointer_to_struct_vars: std::collections::HashSet::new(),
+            pointer_to_struct_vars: HashSet::new(),
             func_typed_params: HashMap::new(),
             iface_type_id_locals: HashMap::new(),
         }
@@ -485,6 +486,7 @@ pub struct WasmCompiler {
     code_section: CodeSection,
     table_section: TableSection,
     element_section: ElementSection,
+    data_section: DataSection,
 
     next_type_idx: u32,
     next_func_idx: u32,
@@ -535,6 +537,20 @@ pub struct WasmCompiler {
     iface_defs: HashMap<String, Vec<String>>,
     iface_method_sigs: HashMap<String, HashMap<String, (Vec<WasmType>, Vec<WasmType>)>>,
     next_anon_iface_id: u32,
+
+    // Runtime type descriptor table
+    type_cmp_funcs: HashMap<String, u32>,
+    data_offset: u32,
+    rt_streq_func_idx: Option<u32>,
+    rt_strcmp_func_idx: Option<u32>,
+    rt_eq_func_idx: Option<u32>,
+
+    // Vtable / itab support
+    iface_ids: HashMap<String, u32>,
+    next_iface_id: u32,
+    itab_entries: Vec<(u32, u32, Vec<u32>)>,
+    itab_base: u32,
+    max_iface_methods: u32,
 
     // init() function support
     init_func_indices: Vec<u32>,
@@ -607,6 +623,7 @@ mod memory;
 mod statements;
 mod strings;
 mod type_system;
+mod udf_wrapper;
 
 impl WasmCompiler {
     pub fn new() -> Self {
@@ -621,6 +638,7 @@ impl WasmCompiler {
             code_section: CodeSection::new(),
             table_section: TableSection::new(),
             element_section: ElementSection::new(),
+            data_section: DataSection::new(),
 
             next_type_idx: 0,
             next_func_idx: 0,
@@ -668,6 +686,18 @@ impl WasmCompiler {
             iface_method_sigs: HashMap::new(),
             next_anon_iface_id: 0,
 
+            type_cmp_funcs: HashMap::new(),
+            data_offset: 0,
+            rt_streq_func_idx: None,
+            rt_strcmp_func_idx: None,
+            rt_eq_func_idx: None,
+
+            iface_ids: HashMap::new(),
+            next_iface_id: 0,
+            itab_entries: Vec::new(),
+            itab_base: 0,
+            max_iface_methods: 0,
+
             init_func_indices: Vec::new(),
             start_func_idx: None,
 
@@ -704,16 +734,6 @@ impl WasmCompiler {
     }
 
     pub(crate) fn define_var(&mut self, name: &str, dt: DefineType) {
-        // #region agent log
-        if matches!(dt, DefineType::Interface { .. }) {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                let iname = if let DefineType::Interface { ref name, .. } = dt { name.as_str() } else { "" };
-                let _ = writeln!(f, r#"{{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{{"var_name":"{}","iface_name":"{}","pkg":"{}"}},"timestamp":{}}}"#,
-                    name, iname, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-            }
-        }
-        // #endregion
         self.symbols.define(
             self.current_package.as_deref().unwrap_or(""),
             name,
@@ -1429,6 +1449,10 @@ impl WasmCompiler {
         self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 
+        // Emit runtime string comparison functions
+        self.emit_rt_streq();
+        self.emit_rt_strcmp();
+
         // Phase 1: Prescan all types (stdlib + user) and forward-declare all functions.
         for imp in &file.imports {
             let path = imp.path.value.trim_matches('"');
@@ -1462,10 +1486,21 @@ impl WasmCompiler {
             self.compile_declaration(decl)?;
         }
 
+        // Emit per-type comparison functions and runtime equality dispatcher
+        self.emit_type_cmp_functions();
+        self.emit_rt_eq();
+
+        // Emit itab after all functions are declared
+        self.emit_itab_table();
+
+        // Emit type descriptor table (finalization)
+        self.emit_type_descriptor_table();
+
         self.emit_global_var_init_function()?;
         self.emit_init_function();
 
         self.build_manifest(file)?;
+        self.emit_udf_wrappers(file)?;
 
         Ok(CompileResult {
             wasm_bytes: self.build_module(),
@@ -1633,6 +1668,21 @@ impl WasmCompiler {
 
             let type_name = self.expr_type_name(&field.typ);
 
+            // Expand []StructType into per-field descriptors
+            if let Some(struct_name) = type_name.strip_prefix("[]") {
+                if let Some(sd) = self.struct_defs.get(struct_name) {
+                    for sf in &sd.fields {
+                        let go_type = self.resolve_udf_field_type(sf);
+                        fields.push(FieldDescriptor {
+                            name: crate::wasm::udf::to_snake_case(&sf.name),
+                            field_type: go_type,
+                            nullable: false,
+                        });
+                    }
+                    continue;
+                }
+            }
+
             if field.name.is_empty() {
                 fields.push(FieldDescriptor {
                     name: String::new(),
@@ -1642,7 +1692,7 @@ impl WasmCompiler {
             } else {
                 for name in &field.name {
                     fields.push(FieldDescriptor {
-                        name: name.name.clone(),
+                        name: crate::wasm::udf::to_snake_case(&name.name),
                         field_type: type_name.clone(),
                         nullable: false,
                     });
@@ -1666,11 +1716,27 @@ impl WasmCompiler {
                 returns_error = true;
                 continue;
             }
+
+            // Expand []StructType into per-field descriptors
+            if let Some(struct_name) = type_name.strip_prefix("[]") {
+                if let Some(sd) = self.struct_defs.get(struct_name) {
+                    for sf in &sd.fields {
+                        let go_type = self.resolve_udf_field_type(sf);
+                        output_fields.push(FieldDescriptor {
+                            name: crate::wasm::udf::to_snake_case(&sf.name),
+                            field_type: go_type,
+                            nullable: false,
+                        });
+                    }
+                    continue;
+                }
+            }
+
             output_fields.push(FieldDescriptor {
                 name: field
                     .name
                     .first()
-                    .map_or(String::new(), |n| n.name.clone()),
+                    .map_or(String::new(), |n| crate::wasm::udf::to_snake_case(&n.name)),
                 field_type: type_name.clone(),
                 nullable: false,
             });
@@ -1691,6 +1757,36 @@ impl WasmCompiler {
         };
 
         (output, returns_error)
+    }
+
+    fn resolve_udf_field_type(&self, sf: &StructFieldDef) -> String {
+        if let Some(ref tag) = sf.go_type_tag {
+            if tag == "time.Time" {
+                return "timestamp".to_string();
+            }
+            if tag == "bool" {
+                return "bool".to_string();
+            }
+        }
+        self.go_type_from_wasm_type(sf.wasm_type)
+    }
+
+    fn go_type_from_wasm_type(&self, wt: WasmType) -> String {
+        match wt {
+            WasmType::I32 => "int32".to_string(),
+            WasmType::I64 => "int64".to_string(),
+            WasmType::F32 => "float32".to_string(),
+            WasmType::F64 => "float64".to_string(),
+            WasmType::Ref(idx) => {
+                if Some(idx) == self.gc_builtin_types.go_string {
+                    "string".to_string()
+                } else if self.gc_struct_types.get("time.Time") == Some(&idx) {
+                    "timestamp".to_string()
+                } else {
+                    "unknown".to_string()
+                }
+            }
+        }
     }
 
     pub(crate) fn expr_type_name(&self, expr: &ast::Expression) -> String {
@@ -1759,6 +1855,12 @@ impl WasmCompiler {
         }
 
         module.section(&self.code_section);
+
+        if !self.data_section.is_empty() {
+            let data_count = wasm_encoder::DataCountSection { count: self.data_section.len() };
+            module.section(&data_count);
+            module.section(&self.data_section);
+        }
 
         module.finish()
     }

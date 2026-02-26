@@ -670,55 +670,98 @@ impl WasmCompiler {
             out.push(Instruction::LocalSet(ptr1));
 
             if op == Operator::Equal || op == Operator::NotEqual {
-                let result = locals.add_local(&format!("__scmp_res_{}", locals.locals.len()), ValType::I32);
-                let idx = locals.add_local(&format!("__scmp_idx_{}", locals.locals.len()), ValType::I32);
+                if let Some(streq_idx) = self.rt_streq_func_idx {
+                    out.push(Instruction::LocalGet(ptr1));
+                    out.push(Instruction::LocalGet(len1));
+                    out.push(Instruction::LocalGet(ptr2));
+                    out.push(Instruction::LocalGet(len2));
+                    out.push(Instruction::Call(streq_idx));
+                    if op == Operator::NotEqual {
+                        out.push(Instruction::I32Eqz);
+                    }
+                } else {
+                    let result = locals.add_local(&format!("__scmp_res_{}", locals.locals.len()), ValType::I32);
+                    let idx = locals.add_local(&format!("__scmp_idx_{}", locals.locals.len()), ValType::I32);
 
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::LocalSet(result));
 
-                out.push(Instruction::LocalGet(len1));
-                out.push(Instruction::LocalGet(len2));
-                out.push(Instruction::I32Ne);
-                out.push(Instruction::If(BlockType::Empty));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(result));
-                out.push(Instruction::Else);
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(idx));
-                out.push(Instruction::Block(BlockType::Empty));
-                out.push(Instruction::Loop(BlockType::Empty));
-                out.push(Instruction::LocalGet(idx));
-                out.push(Instruction::LocalGet(len1));
-                out.push(Instruction::I32GeU);
-                out.push(Instruction::BrIf(1));
-                out.push(Instruction::LocalGet(ptr1));
-                out.push(Instruction::LocalGet(idx));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                out.push(Instruction::LocalGet(ptr2));
-                out.push(Instruction::LocalGet(idx));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                out.push(Instruction::I32Ne);
-                out.push(Instruction::If(BlockType::Empty));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(result));
-                out.push(Instruction::Br(2));
-                out.push(Instruction::End);
-                out.push(Instruction::LocalGet(idx));
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::LocalSet(idx));
-                out.push(Instruction::Br(0));
-                out.push(Instruction::End); // loop
-                out.push(Instruction::End); // block
-                out.push(Instruction::End); // else
+                    out.push(Instruction::LocalGet(len1));
+                    out.push(Instruction::LocalGet(len2));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Else);
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(idx));
+                    out.push(Instruction::Block(BlockType::Empty));
+                    out.push(Instruction::Loop(BlockType::Empty));
+                    out.push(Instruction::LocalGet(idx));
+                    out.push(Instruction::LocalGet(len1));
+                    out.push(Instruction::I32GeU);
+                    out.push(Instruction::BrIf(1));
+                    out.push(Instruction::LocalGet(ptr1));
+                    out.push(Instruction::LocalGet(idx));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::LocalGet(ptr2));
+                    out.push(Instruction::LocalGet(idx));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(result));
+                    out.push(Instruction::Br(2));
+                    out.push(Instruction::End);
+                    out.push(Instruction::LocalGet(idx));
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::LocalSet(idx));
+                    out.push(Instruction::Br(0));
+                    out.push(Instruction::End); // loop
+                    out.push(Instruction::End); // block
+                    out.push(Instruction::End); // else
 
-                out.push(Instruction::LocalGet(result));
-                if op == Operator::NotEqual {
-                    out.push(Instruction::I32Eqz);
+                    out.push(Instruction::LocalGet(result));
+                    if op == Operator::NotEqual {
+                        out.push(Instruction::I32Eqz);
+                    }
                 }
             } else {
+                if let Some(strcmp_idx) = self.rt_strcmp_func_idx {
+                    out.push(Instruction::LocalGet(ptr1));
+                    out.push(Instruction::LocalGet(len1));
+                    out.push(Instruction::LocalGet(ptr2));
+                    out.push(Instruction::LocalGet(len2));
+                    out.push(Instruction::Call(strcmp_idx));
+
+                    match op {
+                        Operator::Less => {
+                            out.push(Instruction::I32Const(-1i32));
+                            out.push(Instruction::I32Eq);
+                        }
+                        Operator::Greater => {
+                            out.push(Instruction::I32Const(1));
+                            out.push(Instruction::I32Eq);
+                        }
+                        Operator::LessEqual => {
+                            out.push(Instruction::I32Const(1));
+                            out.push(Instruction::I32Ne);
+                        }
+                        Operator::GreaterEqual => {
+                            out.push(Instruction::I32Const(-1i32));
+                            out.push(Instruction::I32Ne);
+                        }
+                        _ => {
+                            return Err(Error::InternalError(format!(
+                                "unsupported operator {:?} for string comparison",
+                                op
+                            )));
+                        }
+                    }
+                } else {
                 let cmp = locals.add_local(&format!("__scmp_cmp_{}", locals.locals.len()), ValType::I32);
                 let idx = locals.add_local(&format!("__scmp_idx_{}", locals.locals.len()), ValType::I32);
                 let min_len = locals.add_local(&format!("__scmp_min_{}", locals.locals.len()), ValType::I32);
@@ -832,6 +875,7 @@ impl WasmCompiler {
                         )));
                     }
                 }
+                } // else (fallback inline strcmp)
             }
         }
 

@@ -960,6 +960,19 @@ impl WasmCompiler {
                 ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name) => {
                     Some(id.name.clone())
                 }
+                ast::Expression::Selector(sel) => {
+                    if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
+                        let qualified = format!("{}.{}", pkg_id.name, sel.sel.name);
+                        if self.struct_defs.contains_key(&qualified) {
+                            Some(qualified)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                ast::Expression::Ident(id) if id.name == "bool" => Some("bool".to_string()),
                 _ => None,
             };
 

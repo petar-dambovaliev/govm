@@ -171,56 +171,64 @@ impl WasmCompiler {
     ) {
         if mti.is_string_key {
             let kl = key_len_local.expect("key_len_local must be set for string-keyed maps");
-            let eq_result = locals.add_local(&format!("__mkeq_{}", locals.locals.len()), ValType::I32);
-            let cmp_idx = locals.add_local(&format!("__mkcidx_{}", locals.locals.len()), ValType::I32);
 
-            // Load stored key len, compare with search key len
-            out.push(Instruction::LocalGet(entry_local));
-            out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
-            out.push(Instruction::LocalGet(kl));
-            out.push(Instruction::I32Ne);
-            out.push(Instruction::If(BlockType::Result(ValType::I32)));
-            out.push(Instruction::I32Const(0));
-            out.push(Instruction::Else);
-            {
-                // Lengths equal, compare bytes
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::LocalSet(eq_result));
-                out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(cmp_idx));
-                out.push(Instruction::Block(BlockType::Empty));
-                out.push(Instruction::Loop(BlockType::Empty));
-                out.push(Instruction::LocalGet(cmp_idx));
-                out.push(Instruction::LocalGet(kl));
-                out.push(Instruction::I32GeU);
-                out.push(Instruction::BrIf(1));
-                // byte at stored_ptr + idx
+            if let Some(streq_idx) = self.rt_streq_func_idx {
+                // Use __rt_streq(stored_ptr, stored_len, search_ptr, search_len)
                 out.push(Instruction::LocalGet(entry_local));
                 out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                out.push(Instruction::LocalGet(cmp_idx));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                // byte at search_ptr + idx
+                out.push(Instruction::LocalGet(entry_local));
+                out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
                 out.push(Instruction::LocalGet(key_local));
-                out.push(Instruction::LocalGet(cmp_idx));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                out.push(Instruction::LocalGet(kl));
+                out.push(Instruction::Call(streq_idx));
+            } else {
+                let eq_result = locals.add_local(&format!("__mkeq_{}", locals.locals.len()), ValType::I32);
+                let cmp_idx = locals.add_local(&format!("__mkcidx_{}", locals.locals.len()), ValType::I32);
+
+                out.push(Instruction::LocalGet(entry_local));
+                out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalGet(kl));
                 out.push(Instruction::I32Ne);
-                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::If(BlockType::Result(ValType::I32)));
                 out.push(Instruction::I32Const(0));
-                out.push(Instruction::LocalSet(eq_result));
-                out.push(Instruction::Br(2));
-                out.push(Instruction::End);
-                out.push(Instruction::LocalGet(cmp_idx));
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::I32Add);
-                out.push(Instruction::LocalSet(cmp_idx));
-                out.push(Instruction::Br(0));
-                out.push(Instruction::End); // loop
-                out.push(Instruction::End); // block
-                out.push(Instruction::LocalGet(eq_result));
+                out.push(Instruction::Else);
+                {
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::LocalSet(eq_result));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(cmp_idx));
+                    out.push(Instruction::Block(BlockType::Empty));
+                    out.push(Instruction::Loop(BlockType::Empty));
+                    out.push(Instruction::LocalGet(cmp_idx));
+                    out.push(Instruction::LocalGet(kl));
+                    out.push(Instruction::I32GeU);
+                    out.push(Instruction::BrIf(1));
+                    out.push(Instruction::LocalGet(entry_local));
+                    out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                    out.push(Instruction::LocalGet(cmp_idx));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::LocalGet(key_local));
+                    out.push(Instruction::LocalGet(cmp_idx));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                    out.push(Instruction::I32Ne);
+                    out.push(Instruction::If(BlockType::Empty));
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalSet(eq_result));
+                    out.push(Instruction::Br(2));
+                    out.push(Instruction::End);
+                    out.push(Instruction::LocalGet(cmp_idx));
+                    out.push(Instruction::I32Const(1));
+                    out.push(Instruction::I32Add);
+                    out.push(Instruction::LocalSet(cmp_idx));
+                    out.push(Instruction::Br(0));
+                    out.push(Instruction::End); // loop
+                    out.push(Instruction::End); // block
+                    out.push(Instruction::LocalGet(eq_result));
+                }
+                out.push(Instruction::End); // if/else
             }
-            out.push(Instruction::End); // if/else
         } else {
             out.push(Instruction::LocalGet(entry_local));
             let (_, key_align) = Self::elem_size_and_align(mti.key_vt);

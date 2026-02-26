@@ -1136,24 +1136,113 @@ impl WasmCompiler {
             result_locals.push((rl, vt));
         }
 
-        // Emit if/else chain on type_id
-        for (type_id, func_idx, _result_types, _result_go_types) in candidates.iter() {
+        // Try vtable-based dispatch if itab is populated
+        let method_index = self.find_method_index_in_iface(method_name);
+        if self.itab_base > 0 && self.max_iface_methods > 0 && method_index.is_some() {
+            let method_idx = method_index.unwrap();
+
+            // Build the function type for call_indirect
+            let mut param_types: Vec<ValType> = vec![ValType::I32]; // receiver
+            for (_, vt) in &arg_locals {
+                param_types.push(*vt);
+            }
+            let call_type_idx = self.next_type_idx;
+            self.type_section.ty().function(param_types, result_vts.clone());
+            self.next_type_idx += 1;
+
+            // Compute itab pointer:
+            // itab_ptr = itab_base + (tid * max_ifaces + iface_id) * (max_methods * 4)
+            // func_idx = i32.load(itab_ptr + method_index * 4)
+            let func_idx_local = locals.add_local(
+                &format!("__vtbl_fidx_{}", locals.locals.len()),
+                ValType::I32,
+            );
+
+            let max_ifaces = self.next_iface_id;
+            let entry_size = self.max_iface_methods * 4;
+
+            // Find which interface this method belongs to
+            let iface_id = self.find_iface_id_for_method(method_name);
+
+            out.push(Instruction::I32Const(self.itab_base as i32));
             out.push(Instruction::LocalGet(tid_local));
-            out.push(Instruction::I32Const(*type_id as i32));
-            out.push(Instruction::I32Eq);
+            out.push(Instruction::I32Const(max_ifaces as i32));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::I32Const(iface_id as i32));
+            out.push(Instruction::I32Add);
+            out.push(Instruction::I32Const(entry_size as i32));
+            out.push(Instruction::I32Mul);
+            out.push(Instruction::I32Add);
+            out.push(Instruction::I32Load(MemArg {
+                offset: (method_idx * 4) as u64,
+                align: 2,
+                memory_index: 0,
+            }));
+            out.push(Instruction::LocalSet(func_idx_local));
+
+            // If func_idx is 0, fall through to if/else chain
+            out.push(Instruction::LocalGet(func_idx_local));
+            out.push(Instruction::I32Eqz);
+            out.push(Instruction::I32Eqz); // func_idx != 0
             out.push(Instruction::If(BlockType::Empty));
             {
+                // Push receiver (unwrap box)
                 out.push(Instruction::LocalGet(data_local));
                 out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
                 for (arg_local, _) in &arg_locals {
                     out.push(Instruction::LocalGet(*arg_local));
                 }
-                out.push(Instruction::Call(*func_idx));
+                out.push(Instruction::LocalGet(func_idx_local));
+                out.push(Instruction::CallIndirect { type_index: call_type_idx, table_index: 0 });
                 for (rl, _) in result_locals.iter().rev() {
                     out.push(Instruction::LocalSet(*rl));
                 }
             }
+            out.push(Instruction::Else);
+            {
+                // Fallback: if/else chain for types not in itab
+                for (type_id, func_idx, _result_types, _result_go_types) in candidates.iter() {
+                    out.push(Instruction::LocalGet(tid_local));
+                    out.push(Instruction::I32Const(*type_id as i32));
+                    out.push(Instruction::I32Eq);
+                    out.push(Instruction::If(BlockType::Empty));
+                    {
+                        out.push(Instruction::LocalGet(data_local));
+                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                        for (arg_local, _) in &arg_locals {
+                            out.push(Instruction::LocalGet(*arg_local));
+                        }
+                        out.push(Instruction::Call(*func_idx));
+                        for (rl, _) in result_locals.iter().rev() {
+                            out.push(Instruction::LocalSet(*rl));
+                        }
+                    }
+                    out.push(Instruction::End);
+                }
+            }
             out.push(Instruction::End);
+
+            self.needs_func_table = true;
+        } else {
+            // Fallback: if/else chain on type_id (original behavior)
+            for (type_id, func_idx, _result_types, _result_go_types) in candidates.iter() {
+                out.push(Instruction::LocalGet(tid_local));
+                out.push(Instruction::I32Const(*type_id as i32));
+                out.push(Instruction::I32Eq);
+                out.push(Instruction::If(BlockType::Empty));
+                {
+                    out.push(Instruction::LocalGet(data_local));
+                    out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    for (arg_local, _) in &arg_locals {
+                        out.push(Instruction::LocalGet(*arg_local));
+                    }
+                    out.push(Instruction::Call(*func_idx));
+                    for (rl, _) in result_locals.iter().rev() {
+                        out.push(Instruction::LocalSet(*rl));
+                    }
+                }
+                out.push(Instruction::End);
+            }
         }
 
         // Push results
@@ -1162,5 +1251,25 @@ impl WasmCompiler {
         }
 
         Ok(())
+    }
+
+    fn find_method_index_in_iface(&self, method_name: &str) -> Option<u32> {
+        for (_, methods) in &self.iface_defs {
+            for (i, m) in methods.iter().enumerate() {
+                if m == method_name {
+                    return Some(i as u32);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_iface_id_for_method(&self, method_name: &str) -> u32 {
+        for (iface_name, methods) in &self.iface_defs {
+            if methods.iter().any(|m| m == method_name) {
+                return self.iface_ids.get(iface_name).copied().unwrap_or(0);
+            }
+        }
+        0
     }
 }
