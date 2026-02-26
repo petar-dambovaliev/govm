@@ -549,12 +549,18 @@ pub struct WasmCompiler {
     rt_strcmp_func_idx: Option<u32>,
     rt_eq_func_idx: Option<u32>,
 
+    /// Cache for `call_indirect` type indices, keyed by (params, results).
+    call_indirect_type_cache: Vec<(Vec<ValType>, Vec<ValType>, u32)>,
+
     // Vtable / itab support
     iface_ids: HashMap<String, u32>,
     next_iface_id: u32,
     itab_entries: Vec<(u32, u32, Vec<u32>)>,
     itab_base: u32,
     max_iface_methods: u32,
+    /// The type ID count captured during `precompute_itab_layout`, used to
+    /// bound the itab dimensions in both code generation and data population.
+    itab_max_type_id: u32,
 
     // init() function support
     init_func_indices: Vec<u32>,
@@ -698,11 +704,14 @@ impl WasmCompiler {
             rt_strcmp_func_idx: None,
             rt_eq_func_idx: None,
 
+            call_indirect_type_cache: Vec::new(),
+
             iface_ids: HashMap::new(),
             next_iface_id: 0,
             itab_entries: Vec::new(),
             itab_base: 0,
             max_iface_methods: 0,
+            itab_max_type_id: 0,
 
             init_func_indices: Vec::new(),
             start_func_idx: None,
@@ -1455,9 +1464,10 @@ impl WasmCompiler {
         self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 
-        // Emit runtime string comparison functions
+        // Emit runtime comparison functions (before code generation so indices are available)
         self.emit_rt_streq();
         self.emit_rt_strcmp();
+        self.emit_rt_eq();
 
         // Phase 1: Prescan all types (stdlib + user) and forward-declare all functions.
         for imp in &file.imports {
@@ -1474,6 +1484,9 @@ impl WasmCompiler {
         self.emit_gc_struct_rec_group();
         let sorted_decls = Self::sort_declarations_by_deps(&file.decl);
         self.forward_declare_functions(&sorted_decls);
+
+        // Pre-compute itab layout so vtable dispatch can be emitted during Phase 2/3
+        self.precompute_itab_layout();
 
         // Phase 2: Compile stdlib function bodies.
         for imp in &file.imports {
@@ -1492,9 +1505,8 @@ impl WasmCompiler {
             self.compile_declaration(decl)?;
         }
 
-        // Emit per-type comparison functions and runtime equality dispatcher
+        // Emit per-type comparison functions (after all types are known)
         self.emit_type_cmp_functions();
-        self.emit_rt_eq();
 
         // Emit itab after all functions are declared
         self.emit_itab_table();

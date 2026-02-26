@@ -999,6 +999,25 @@ impl WasmCompiler {
         idx
     }
 
+    /// Returns a cached type index for a `call_indirect` signature, creating it
+    /// in the type section on first use of that particular (params, results) pair.
+    pub(crate) fn get_or_create_call_indirect_type(
+        &mut self,
+        params: &[ValType],
+        results: &[ValType],
+    ) -> u32 {
+        for (p, r, idx) in &self.call_indirect_type_cache {
+            if p.as_slice() == params && r.as_slice() == results {
+                return *idx;
+            }
+        }
+        let idx = self.next_type_idx;
+        self.type_section.ty().function(params.to_vec(), results.to_vec());
+        self.next_type_idx += 1;
+        self.call_indirect_type_cache.push((params.to_vec(), results.to_vec(), idx));
+        idx
+    }
+
     /// Phase 3: Emit per-type comparison functions and register in function table.
     pub(crate) fn emit_type_cmp_functions(&mut self) {
         let type_names: Vec<(String, u32)> = self.type_registry.iter()
@@ -1028,79 +1047,8 @@ impl WasmCompiler {
 
             let mut func = Function::new(vec![]);
 
-            match type_name.as_str() {
-                "int" | "int64" | "uint" | "uint64" => {
-                    // i64.load(ptr_a) == i64.load(ptr_b)
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::I64Eq);
-                }
-                "float64" => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::F64Eq);
-                }
-                "float32" => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::F32Eq);
-                }
-                "int32" | "uint32" | "rune" | "uintptr" => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                }
-                "int16" | "uint16" => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                }
-                "int8" | "uint8" | "byte" | "bool" => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                }
-                "string" => {
-                    // String: ptr_a -> (data_ptr, len), ptr_b -> (data_ptr, len)
-                    // Call __rt_streq(data_ptr_a, len_a, data_ptr_b, len_b)
-                    if let Some(streq_idx) = self.rt_streq_func_idx {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::Call(streq_idx));
-                    } else {
-                        func.instruction(&Instruction::I32Const(0));
-                    }
-                }
-                _ => {
-                    // Struct types: field-by-field, or fallback to pointer equality
-                    if let Some(sdef) = self.struct_defs.get(type_name).cloned() {
-                        self.emit_struct_cmp_func_body(&sdef, &mut func);
-                    } else {
-                        // Pointer equality fallback for unknown types
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Eq);
-                    }
-                }
-            }
+            let resolved = self.resolve_type_name(type_name).to_string();
+            self.emit_type_cmp_body(&resolved, type_name, &mut func);
 
             func.instruction(&Instruction::End);
 
@@ -1123,6 +1071,77 @@ impl WasmCompiler {
                 variadic_elem_vt: None,
                 iface_param_indices: vec![],
             });
+        }
+    }
+
+    fn emit_type_cmp_body(&self, resolved: &str, type_name: &str, func: &mut Function) {
+        match resolved {
+            "int" | "int64" | "uint" | "uint64" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+                func.instruction(&Instruction::I64Eq);
+            }
+            "float64" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+                func.instruction(&Instruction::F64Eq);
+            }
+            "float32" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::F32Eq);
+            }
+            "int32" | "uint32" | "rune" | "uintptr" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::I32Eq);
+            }
+            "int16" | "uint16" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
+                func.instruction(&Instruction::I32Eq);
+            }
+            "int8" | "uint8" | "byte" | "bool" => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                func.instruction(&Instruction::I32Eq);
+            }
+            "string" => {
+                if let Some(streq_idx) = self.rt_streq_func_idx {
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::Call(streq_idx));
+                } else {
+                    func.instruction(&Instruction::I32Const(0));
+                }
+            }
+            _ => {
+                if let Some(sdef) = self.struct_defs.get(type_name).cloned() {
+                    self.emit_struct_cmp_func_body(&sdef, func);
+                } else {
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32Eq);
+                }
+            }
         }
     }
 
@@ -1232,6 +1251,9 @@ impl WasmCompiler {
         }
 
         let table_size = max_type_id as usize * Self::TYPE_DESC_ENTRY_SIZE as usize;
+        if Self::TYPE_DESC_BASE as usize + table_size > Self::HEAP_BASE as usize {
+            return;
+        }
         let mut data = vec![0u8; table_size];
 
         for (type_name, &type_id) in &self.type_registry {
@@ -1314,17 +1336,18 @@ impl WasmCompiler {
         func.instruction(&Instruction::I32Add);
         func.instruction(&Instruction::LocalSet(3));
 
-        // cmp_func_idx = i32.load(desc_ptr + 4)
+        // Check flags (offset 8): if flags == 0 the type is not comparable
         func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-        func.instruction(&Instruction::LocalSet(4));
-
-        // if cmp_func_idx == 0: return 0 (not comparable)
-        func.instruction(&Instruction::LocalGet(4));
+        func.instruction(&Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
         func.instruction(&Instruction::I32Eqz);
         func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
         func.instruction(&Instruction::I32Const(0));
         func.instruction(&Instruction::Else);
+
+        // cmp_func_idx = i32.load(desc_ptr + 4)
+        func.instruction(&Instruction::LocalGet(3));
+        func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        func.instruction(&Instruction::LocalSet(4));
 
         // call_indirect(cmp_func_idx, ptr_a, ptr_b)
         func.instruction(&Instruction::LocalGet(1));
@@ -1360,9 +1383,10 @@ impl WasmCompiler {
         });
     }
 
-    /// Phase 6: Emit the itab (interface table) into the data section.
-    pub(crate) fn emit_itab_table(&mut self) {
-        // Assign interface IDs
+    /// Pre-compute the itab layout (interface IDs, dimensions, base address)
+    /// so that vtable dispatch code can be emitted during Phase 3.
+    /// Must be called after prescan when `iface_defs` and `type_registry` are populated.
+    pub(crate) fn precompute_itab_layout(&mut self) {
         let iface_names: Vec<String> = self.iface_defs.keys().cloned().collect();
         for name in &iface_names {
             if !self.iface_ids.contains_key(name) {
@@ -1376,7 +1400,6 @@ impl WasmCompiler {
             return;
         }
 
-        // Find max methods across all interfaces
         let mut max_methods: u32 = 0;
         for methods in self.iface_defs.values() {
             max_methods = max_methods.max(methods.len() as u32);
@@ -1387,40 +1410,51 @@ impl WasmCompiler {
         self.max_iface_methods = max_methods;
 
         let max_type_id = self.next_type_id;
+        self.itab_max_type_id = max_type_id;
         let max_iface_id = self.next_iface_id;
 
-        // itab entry size = max_methods * 4 bytes
         let entry_size = max_methods as usize * 4;
         let table_size = max_type_id as usize * max_iface_id as usize * entry_size;
 
-        // Place itab after type descriptor table
-        let itab_base = if self.data_offset > 0 {
-            ((self.data_offset + 7) / 8) * 8 // align to 8
-        } else {
-            (Self::TYPE_DESC_BASE as u32 + max_type_id * Self::TYPE_DESC_ENTRY_SIZE as u32 + 7) & !7
-        };
+        let itab_base =
+            (Self::TYPE_DESC_BASE as u32 + max_type_id * Self::TYPE_DESC_ENTRY_SIZE as u32 + 7) & !7;
 
         if itab_base as usize + table_size > Self::HEAP_BASE as usize {
-            // Itab would overflow into the heap region; skip vtable-based dispatch.
             return;
         }
         self.itab_base = itab_base;
+    }
+
+    /// Populate the itab data section using the layout from `precompute_itab_layout`.
+    /// Must be called after all functions are compiled so method indices are known.
+    pub(crate) fn emit_itab_table(&mut self) {
+        if self.itab_base == 0 || self.max_iface_methods == 0 {
+            return;
+        }
+
+        let max_type_id = self.itab_max_type_id;
+        let max_iface_id = self.next_iface_id;
+        let max_methods = self.max_iface_methods;
+
+        let entry_size = max_methods as usize * 4;
+        let table_size = max_type_id as usize * max_iface_id as usize * entry_size;
 
         let mut data = vec![0u8; table_size];
 
-        // For each (concrete_type, interface) pair, populate the vtable
         let type_entries: Vec<(String, u32)> = self.type_registry.iter()
             .map(|(n, &id)| (n.clone(), id))
             .collect();
 
         for (type_name, type_id) in &type_entries {
+            if *type_id >= max_type_id {
+                continue;
+            }
             for (iface_name, &iface_id) in &self.iface_ids {
                 let methods = match self.iface_defs.get(iface_name) {
                     Some(m) => m.clone(),
                     None => continue,
                 };
 
-                // Check if this type implements this interface
                 let mut all_found = true;
                 let mut method_indices: Vec<u32> = Vec::new();
                 for method_name in &methods {
@@ -1449,7 +1483,7 @@ impl WasmCompiler {
         if data.iter().any(|&b| b != 0) {
             self.data_section.active(
                 0,
-                &ConstExpr::i32_const(itab_base as i32),
+                &ConstExpr::i32_const(self.itab_base as i32),
                 data.into_iter(),
             );
         }

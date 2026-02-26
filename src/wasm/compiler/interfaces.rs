@@ -1141,14 +1141,12 @@ impl WasmCompiler {
         if self.itab_base > 0 && self.max_iface_methods > 0 && iface_info.is_some() {
             let (iface_id, method_idx) = iface_info.unwrap();
 
-            // Build the function type for call_indirect
+            // Build the function type for call_indirect (deduplicated)
             let mut param_types: Vec<ValType> = vec![ValType::I32]; // receiver
             for (_, vt) in &arg_locals {
                 param_types.push(*vt);
             }
-            let call_type_idx = self.next_type_idx;
-            self.type_section.ty().function(param_types, result_vts.clone());
-            self.next_type_idx += 1;
+            let call_type_idx = self.get_or_create_call_indirect_type(&param_types, &result_vts);
 
             // Compute itab pointer:
             // itab_ptr = itab_base + (tid * max_ifaces + iface_id) * (max_methods * 4)
