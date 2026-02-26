@@ -644,10 +644,6 @@ impl WasmCompiler {
             let is_string_global = !is_gc_string_global && self.global_vars.contains_key(&format!("{}_1", var_name));
             let is_iface_global = self.global_vars.contains_key(&format!("{}_tid", var_name));
 
-            // #region agent log
-            let body_len_before = body.len();
-            // #endregion
-
             if is_gc_string_global {
                 self.compile_expression(init_expr, &mut body, &mut locals)?;
                 let (global_idx, _) = self.global_vars[var_name];
@@ -655,17 +651,6 @@ impl WasmCompiler {
             } else if is_string_global || is_iface_global {
                 let expr_results = self.expression_result_count(init_expr, Some(&locals));
                 self.compile_expression(init_expr, &mut body, &mut locals)?;
-
-                // #region agent log
-                {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                        let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{{"var":"{}","expr_results":{},"is_iface":{},"is_string":{}}},"timestamp":{}}}"#,
-                            var_name, expr_results, is_iface_global, is_string_global,
-                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-                    }
-                }
-                // #endregion
 
                 if is_iface_global && expr_results == 1 {
                     let box_ptr = locals.add_local(
@@ -709,75 +694,6 @@ impl WasmCompiler {
                 let (global_idx, _) = self.global_vars[var_name];
                 body.push(Instruction::GlobalSet(global_idx));
             }
-            // #region agent log
-            {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                    let instrs_added = body.len() - body_len_before;
-                    let mut stack_effect: i32 = 0;
-                    for instr in &body[body_len_before..] {
-                        match instr {
-                            Instruction::I32Const(_) | Instruction::I64Const(_) |
-                            Instruction::F32Const(_) | Instruction::F64Const(_) => stack_effect += 1,
-                            Instruction::LocalGet(_) | Instruction::GlobalGet(_) => stack_effect += 1,
-                            Instruction::LocalSet(_) | Instruction::GlobalSet(_) => stack_effect -= 1,
-                            Instruction::LocalTee(_) => {},
-                            Instruction::I32Store(_) | Instruction::I64Store(_) |
-                            Instruction::F32Store(_) | Instruction::F64Store(_) |
-                            Instruction::I32Store8(_) | Instruction::I32Store16(_) => stack_effect -= 2,
-                            Instruction::I32Load(_) | Instruction::I64Load(_) |
-                            Instruction::F32Load(_) | Instruction::F64Load(_) |
-                            Instruction::I32Load8S(_) | Instruction::I32Load8U(_) |
-                            Instruction::I32Load16S(_) | Instruction::I32Load16U(_) => {},
-                            Instruction::Drop => stack_effect -= 1,
-                            Instruction::Call(idx) => {
-                                if let Some(fi) = self.functions.iter().find(|f| f.wasm_func_idx == *idx) {
-                                    stack_effect -= fi.params.len() as i32;
-                                    stack_effect += fi.results.len() as i32;
-                                }
-                            },
-                            Instruction::I32Add | Instruction::I32Sub | Instruction::I32Mul |
-                            Instruction::I32And | Instruction::I32Or | Instruction::I32Xor |
-                            Instruction::I32Shl | Instruction::I32ShrU | Instruction::I32ShrS |
-                            Instruction::I64Add | Instruction::I64Sub | Instruction::I64Mul |
-                            Instruction::I64And | Instruction::I64Or | Instruction::I64Xor |
-                            Instruction::I64Shl | Instruction::I64ShrU | Instruction::I64ShrS |
-                            Instruction::I32Eq | Instruction::I32Ne |
-                            Instruction::I32GeU | Instruction::I32LeU |
-                            Instruction::I32GtU | Instruction::I32LtU |
-                            Instruction::I32GeS | Instruction::I32LeS |
-                            Instruction::I32GtS | Instruction::I32LtS |
-                            Instruction::F64Add | Instruction::F64Sub | Instruction::F64Mul | Instruction::F64Div => stack_effect -= 1,
-                            Instruction::I32WrapI64 | Instruction::I64ExtendI32S | Instruction::I64ExtendI32U |
-                            Instruction::I32TruncF64S | Instruction::F64ConvertI64S => {},
-                            Instruction::StructNew(_idx) => {
-                                stack_effect -= 2;
-                                stack_effect += 1;
-                            },
-                            Instruction::StructNewDefault(_) => stack_effect += 1,
-                            Instruction::StructGet { .. } => {},
-                            Instruction::StructSet { .. } => stack_effect -= 2,
-                            Instruction::ArrayNewFixed { array_size, .. } => {
-                                stack_effect -= *array_size as i32;
-                                stack_effect += 1;
-                            },
-                            Instruction::ArrayGetU { .. } => {},
-                            Instruction::RefNull(_) => stack_effect += 1,
-                            Instruction::Block(_) | Instruction::Loop(_) |
-                            Instruction::End | Instruction::Br(_) | Instruction::BrIf(_) => {},
-                            Instruction::If(_) => stack_effect -= 1,
-                            Instruction::MemoryCopy { .. } => stack_effect -= 3,
-                            Instruction::Return | Instruction::Unreachable => {},
-                            _ => {},
-                        }
-                    }
-                    let _ = writeln!(f, r#"{{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{{"var":"{}","instrs":{},"stack_effect":{},"is_gc_str":{},"is_str":{},"is_iface":{}}},"timestamp":{}}}"#,
-                        var_name, instrs_added, stack_effect, is_gc_string_global, is_string_global, is_iface_global,
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-                }
-            }
-            // #endregion
-
             self.current_package = prev_pkg;
         }
 

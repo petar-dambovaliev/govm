@@ -4165,7 +4165,7 @@ impl WasmCompiler {
             locals.find(name).unwrap_or_else(|| locals.add_local(name, wasm_vt))
         };
 
-        self.track_local_var_type(name, go_type, local_idx, locals);
+        let is_iface = self.track_local_var_type(name, go_type, local_idx, locals);
 
         if temp_locals.len() == 2 {
             if let Some(&(ptr_local, len_local)) = locals.string_locals.get(name) {
@@ -4173,6 +4173,19 @@ impl WasmCompiler {
                 out.push(Instruction::LocalSet(ptr_local));
                 out.push(Instruction::LocalGet(temp_locals[1].0));
                 out.push(Instruction::LocalSet(len_local));
+                return local_idx;
+            }
+        }
+
+        if is_iface && temp_locals.len() == 1 {
+            if let Some(&tid_local) = locals.iface_type_id_locals.get(name) {
+                let box_ptr = temp_locals[0].0;
+                out.push(Instruction::LocalGet(box_ptr));
+                out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalSet(local_idx));
+                out.push(Instruction::LocalGet(box_ptr));
+                out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                out.push(Instruction::LocalSet(tid_local));
                 return local_idx;
             }
         }

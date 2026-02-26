@@ -30,14 +30,18 @@ impl WasmCompiler {
                     done = true;
                 }
             }
-            if !done && locals.get_var_struct_type(&ident.name) == Some("__slice") {
-                self.compile_expression(arg, out, locals)?;
-                out.push(Instruction::I32Load(MemArg {
-                    offset: 4,
-                    align: 2,
-                    memory_index: 0,
-                }));
-                done = true;
+            if !done {
+                let is_slice = locals.get_var_struct_type(&ident.name) == Some("__slice")
+                    || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice");
+                if is_slice {
+                    self.compile_expression(arg, out, locals)?;
+                    out.push(Instruction::I32Load(MemArg {
+                        offset: 4,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    done = true;
+                }
             }
             if !done && locals.get_var_struct_type(&ident.name) == Some("__map") {
                 self.compile_expression(arg, out, locals)?;
@@ -144,14 +148,18 @@ impl WasmCompiler {
                 out.push(Instruction::I32Const(arr_len as i32));
                 done = true;
             }
-            if !done && locals.get_var_struct_type(&ident.name) == Some("__slice") {
-                self.compile_expression(arg, out, locals)?;
-                out.push(Instruction::I32Load(MemArg {
-                    offset: 8,
-                    align: 2,
-                    memory_index: 0,
-                }));
-                done = true;
+            if !done {
+                let is_slice = locals.get_var_struct_type(&ident.name) == Some("__slice")
+                    || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice");
+                if is_slice {
+                    self.compile_expression(arg, out, locals)?;
+                    out.push(Instruction::I32Load(MemArg {
+                        offset: 8,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    done = true;
+                }
             }
         }
 

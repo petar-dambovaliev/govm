@@ -3551,6 +3551,7 @@ impl WasmCompiler {
         // Detect __slice header variables so we can load data_ptr/len/cap from header
         let is_slice_header = if let ast::Expression::Ident(ident) = &*slice.left {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
         } else {
             false
         };
@@ -4102,6 +4103,7 @@ impl WasmCompiler {
 
         let is_slice_header = if let ast::Expression::Ident(ident) = left {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
         } else {
             false
         };
@@ -4297,21 +4299,26 @@ impl WasmCompiler {
 
         let is_slice_header = if let ast::Expression::Ident(ident) = left {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
         } else {
             false
         };
 
-        let elem_vt = if let ast::Expression::Ident(ident) = left {
-            locals
-                .slice_elem_types
-                .get(&ident.name)
-                .copied()
-                .unwrap_or(ValType::I64)
+        let (elem_vt, elem_size, align) = if let ast::Expression::Ident(ident) = left {
+            if let Some(&vt) = locals.slice_elem_types.get(&ident.name) {
+                let (es, al) = Self::elem_size_and_align(vt);
+                (vt, es, al)
+            } else {
+                let resolved = self.resolve_global_var_name(&ident.name);
+                if let Some(&(vt, es, al)) = self.global_array_elem_types.get(&resolved) {
+                    (vt, es, al)
+                } else {
+                    (ValType::I64, 8, 3)
+                }
+            }
         } else {
-            ValType::I64
+            (ValType::I64, 8, 3)
         };
-
-        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
 
         if is_slice_header {
             self.compile_expression(left, out, locals)?;

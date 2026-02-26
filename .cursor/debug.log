@@ -483,3 +483,618 @@ N:8@0","total_size":8,"pkg":""},"timestamp":1772066055618}
 1772066055715}
 {"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066055715}
 {"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066055715}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066282380}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282416}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282416}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282416}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282416}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282417}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282417}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282418}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17720662824181772066282418}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282418}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":88,"pkg":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"errorserr"},"timestamp":","iface_name":"1772066282419error}
+","pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17720662824191772066282419}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"errerr","iface_name":"","iface_name":"errorerror","pkg":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"errorsu","sym_says":"},"timestamp":","pkg":"1772066282419errorsfalse"},"timestamp":}
+1772066282419}
+,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282419}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282420}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282420}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282420}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282420}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282421}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282421}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282422}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282422}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282423}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282423}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282423}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282423}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282424}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282424}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282426}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282427}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282429}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282429}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282433}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"targetu","iface_name":"","sym_says":errorfalse","pkg":","old_says":errorstrue"},"timestamp":,"old_tag":"1772066282433__interface}
+","pkg":"errors"},"timestamp":1772066282433}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282434}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"false,"old_says":utrue","sym_says":,"old_tag":"false__interface,"old_says":","pkg":"trueerrors,"old_tag":""},"timestamp":1772066282434}
+__interface","pkg":"errors"},"timestamp":1772066282434}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282434}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"","instrs":u26","sym_says":,"stack_effect":false0,"old_says":,"is_gc_str":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282434}
+false,"is_str":false,"is_iface":false},"timestamp":1772066282434}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282435}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"","results":errors1","method":","method":"NewNew","is_inlined":"},"timestamp":false1772066282435,"in_compiled_pkgs":}
+true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282435}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066282436}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"false,"in_compiled_pkgs":errtrue","iface_name":","found_fn_idx":"error","pkg":""},"timestamp":1772066282436}
+Some(11)","current_pkg":""},"timestamp":1772066282436}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282436}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282436}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"e","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282437}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":15,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282437}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"nums","instrs":nums26","instrs":,"stack_effect":260,"stack_effect":,"is_gc_str":0false,"is_gc_str":,"is_str":falsefalse,"is_str":,"is_iface":falsefalse,"is_iface":},"timestamp":false1772066282489},"timestamp":}
+1772066282489}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"errorsDelta:8@0,Tag:4@8,Tag_1:4@12"},"timestamp":","total_size":177206628249016}
+,"pkg":""},"timestamp":1772066282490}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282490}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066282491}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282491}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282493}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282494}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282498}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"","total_size":u16","sym_says":,"pkg":"false"},"timestamp":,"old_says":1772066282499true}
+,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282499}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066282499}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282499}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"__interfaceitems","pkg":"","instrs":errors239"},"timestamp":,"stack_effect":17720662824998}
+,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282499}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282500}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282500}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282502}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"greeting","instrs":9,"stack_effect":0,"is_gc_str":true,"is_str":false,"is_iface":false},"timestamp":1772066282502}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":","pkg":"target","iface_name":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"errorDelta:8@0,Tag:4@8,Tag_1:4@12","pkg":"","total_size":errors16"},"timestamp":,"pkg":"1772066282503"},"timestamp":}
+1772066282503}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":""},"timestamp":Name:4@0,Name_1:4@4,Val:8@81772066282503","total_size":}
+16,"pkg":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":""},"timestamp":Delta:8@0,Tag:4@8,Tag_1:4@121772066282503","total_size":}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"16u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282503}
+,"pkg":""},"timestamp":1772066282503}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066282504}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282504}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"p","instrs":11,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282504}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8Name:4@0,Name_1:4@4,Val:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720662825061772066282506}
+}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282507}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282507}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066282513}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066282513}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282513}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"","instrs":errors57","method":","stack_effect":New2","is_inlined":,"is_gc_str":falsefalse,"in_compiled_pkgs":,"is_str":truefalse,"found_fn_idx":","is_iface":Somefalse(},"timestamp":111772066282513)}
+","current_pkg":""},"timestamp":1772066282513}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrNotFound","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282516}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrNotFound","instrs":20,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282517}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066282522}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282525}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrTimeout","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282525}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrTimeout","instrs":18,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282526}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"","total_size":d8","iface_name":","pkg":"Doer"},"timestamp":","pkg":"1772066282562"},"timestamp":}
+1772066282562}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":""},"timestamp":1772066282562}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066282563}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":""},"timestamp":1772066282564}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"s","iface_name":"Stringer","pkg":""},"timestamp":1772066282564}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"a","iface_name":"Adder","pkg":""},"timestamp":1772066282566}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282588}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282588}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282592}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066282595}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282597}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282598}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282599}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282600}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282600}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282600}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066282601}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066282601}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282601}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066282602}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066282602}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066282602}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282602}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrA","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282603}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrA","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282603}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066282603}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282603}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrB","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282604}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrB","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282605}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066282605}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066282605}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrC","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066282606}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrC","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066282606}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066282640}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066282640}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8X:8@0,Y:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720662826401772066282640}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772066282641}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772066282641}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066282643}
+Val:8@0","total_size":8,"pkg":""},"timestamp":1772066282643}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066282643}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066282643}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","results":Val:8@00","total_size":,"method":"8Inc,"pkg":""},"timestamp":"},"timestamp":17720662826431772066282643}
+}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066282643}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066282644}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066282646}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066282646}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066282658}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066282658}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066433888}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433931}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433931}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433932}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433933}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433933}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433934}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433941}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8s:4@0,s_1:4@4,"pkg":"","total_size":errors8"},"timestamp":,"pkg":"1772066433941errors}
+"},"timestamp":1772066433941}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":1772066433942}
+"},"timestamp":1772066433942}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066433942}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":""},"timestamp":err1772066433943err}
+","iface_name":"error","iface_name":"","pkg":"error","pkg":"errors"},"timestamp":1772066433943}
+errors"},"timestamp":1772066433943}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":""},"timestamp":u1772066433943","sym_says":}
+false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433943}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433944}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433944}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433944{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"}
+u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433944}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433945}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433945}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433945}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066433946}
+error","pkg":"errors{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":""},"timestamp":err","iface_name":"error","pkg":"errors1772066433945"},"timestamp":}
+1772066433946}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433946}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066433947}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433947}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433947}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066433948}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066433948}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433949}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433949}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066433949}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433949}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"__interface","pkg":"uerrors","sym_says":"},"timestamp":false1772066433950,"old_says":}
+true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433950}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433950}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433951}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066433951}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066433951}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066433951}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066433952}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066433952}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066433953}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066433953}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066433953}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066433953}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066433954}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"e","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066433954}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":15,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066433954}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434002}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434002}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434004}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434004}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066434005}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434006}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434007}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434007}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"numserr","instrs":","iface_name":"26nums,"stack_effect":","instrs":0error,"is_gc_str":","pkg":"falseerrors,"is_str":"},"timestamp":false1772066434008,"is_iface":}
+false26},"timestamp":,"stack_effect":17720664340080}
+,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434008}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066434008}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066434009}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066434009}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434010}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434011}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434012}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066434012}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066434013}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrNotFound","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066434014}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"Delta:8@0,Tag:4@8,Tag_1:4@12ErrNotFound","total_size":","instrs":1620,"pkg":","stack_effect":"},"timestamp":01772066434014,"is_gc_str":}
+false,"is_str":false,"is_iface":true},"timestamp":1772066434014}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066434015{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066434015}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066434015}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"itemsDelta:8@0,Tag:4@8,Tag_1:4@12ErrTimeout","total_size":","instrs":16239,"pkg":","stack_effect":"},"timestamp":81772066434016,"is_gc_str":}
+false,"is_str":false,"is_iface":false},"timestamp":1772066434016}
+","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066434016}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066434016}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrTimeout","instrs":18,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066434016}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434017}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066434017}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066434018}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"greeting","instrs":9,"stack_effect":0,"is_gc_str":{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"trueitems,"is_str":","instrs":false239,"is_iface":,"stack_effect":false8},"timestamp":,"is_gc_str":1772066434018false}
+,"is_str":false,"is_iface":false},"timestamp":1772066434018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066434019}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8A:8@0,B:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720664340201772066434020}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"Name:4@0,Name_1:4@4,Val:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":Name:4@0,Name_1:4@4,Val:8@8p","total_size":1616","instrs":,"pkg":","pkg":""},"timestamp":"},"timestamp":1772066434020177206643402011}
+}
+,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434020}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"Name:4@0,Name_1:4@4,Val:8@8e","total_size":","instrs":1657,"pkg":","stack_effect":"},"timestamp":21772066434021,"is_gc_str":}
+false,"is_str":false,"is_iface":false},"timestamp":1772066434021}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434021}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066434081}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":""},"timestamp":N:8@01772066434083","total_size":}
+8,"pkg":""},"timestamp":1772066434083}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"8d,"pkg":"a","iface_name":""},"timestamp":","iface_name":"DoerAdder","pkg":""},"timestamp":17720664340841772066434084","pkg":"}
+"},"timestamp":1772066434084}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"s","iface_name":"Stringer","pkg":""},"timestamp":1772066434084}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434120}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434121}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434132}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066434133}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066434136}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434142}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434143}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434143}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066434144}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066434145}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066434145}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066434145}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434146}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066434146}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066434146}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066434147}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066434147}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrA","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066434147}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrA","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066434147}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066434148}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066434148}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrB","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066434148}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrB","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066434149}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066434149}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066434149}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrC","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066434150}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrC","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066434150}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066434163}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066434166}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8X:8@0,Y:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720664341741772066434174}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772066434175W:8@0,H:8@8}
+","total_size":16,"pkg":""},"timestamp":1772066434175}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772066434186}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066434187}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066434187}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8Name:4@0,Name_1:4@4,Age:8@8,"pkg":"","total_size":"},"timestamp":161772066434187{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":","pkg":"Name:4@0,Name_1:4@4,Age:8@8}
+","total_size":"},"timestamp":161772066434187}
+,"pkg":""},"timestamp":1772066434187}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066434187}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066434187}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066434188}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066434188}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066434188}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066434190}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066583666}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4s:4@0,s_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17720665837081772066583708}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4msg:4@0,msg_1:4@4s:4@0,s_1:4@4","total_size":","total_size":8,"pkg":"8","total_size":,"pkg":"8errors,"pkg":""},"timestamp":errors1772066583708"},"timestamp":}
+1772066583708}
+errors"},"timestamp":1772066583708}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583709}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4s:4@0,s_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17720665837091772066583709}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17720665837121772066583712}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"errs:4@0,s_1:4@4","iface_name":"error","total_size":","pkg":"8errors1772066583712"},"timestamp":,"pkg":"1772066583712}
+}
+errors"},"timestamp":1772066583712}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"umsg:4@0,msg_1:4@4","sym_says":","total_size":false{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":","old_says":utrue","sym_says":,"old_tag":"false__interface,"old_says":","pkg":"errorstrue"},"timestamp":17720665837138}
+,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583713}
+,"pkg":"errors"},"timestamp":1772066583713}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"uu","sym_says":","sym_says":falsefalse,"old_says":,"old_says":truetrue,"old_tag":"__interface,"old_tag":"","pkg":"__interfaceerrors","pkg":""},"timestamp":1772066583713errors}
+"},"timestamp":1772066583713}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583714}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"","sym_says":ufalse","sym_says":,"old_says":falsetrue,"old_says":,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583714}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"trueu,"old_tag":"","sym_says":__interfacefalse","pkg":","old_says":errorstrue"},"timestamp":,"old_tag":"1772066583714__interface}
+","pkg":"errors"},"timestamp":1772066583714}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583715}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":""},"timestamp":u1772066583715","sym_says":}
+false,"old_says":true,"old_tag":"__interface","pkg":"errors{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":""},"timestamp":target1772066583715","iface_name":"}
+error","pkg":"errors"},"timestamp":1772066583715}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583715}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"erru","iface_name":"","sym_says":errorfalse","pkg":","old_says":errorstrue"},"timestamp":,"old_tag":"1772066583716__interface}
+","pkg":"errors"},"timestamp":1772066583716}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583716}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"targeterr","iface_name":"","iface_name":"errorerror","pkg":"","pkg":"errorserrors"},"timestamp":"},"timestamp":17720665837161772066583716}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583716}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"utarget","sym_says":","iface_name":"falseerror,"old_says":","pkg":"trueerrors,"old_tag":""},"timestamp":__interface1772066583717","pkg":"}
+errors"},"timestamp":1772066583717}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583717}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"uerr","sym_says":","iface_name":"falseerror,"old_says":","pkg":"trueerrors"},"timestamp":1772066583717}
+,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583717}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583717}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583718}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583718}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583718}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066583719}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583720}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"falseu,"is_iface":","sym_says":falsefalse},"timestamp":,"old_says":1772066583722true}
+,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583722}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066583724}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupportederrors.ErrUnsupported","instrs":","instrs":2626,"stack_effect":,"stack_effect":00,"is_gc_str":false,"is_str":,"is_gc_str":falsefalse,"is_iface":,"is_str":falsefalse},"timestamp":,"is_iface":1772066583730false}
+},"timestamp":1772066583730}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583732}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583734}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"e","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583745}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":15,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583746}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583811}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583812}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583813}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583814}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583814}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583815}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583815}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583815}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583816}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583816}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583816}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583817}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583817}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583818}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583818}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583818}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583819}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrNotFound","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583819}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrNotFound","instrs":20,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583820}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583821}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583821}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrTimeout","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583823}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"nums","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583824}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"nums","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583824}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrTimeout","instrs":18,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583827}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066583829}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066583829}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":","total_size":16,"pkg":"16"},"timestamp":,"pkg":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"1772066583829greeting"},"timestamp":","instrs":17720665838299}
+,"stack_effect":0,"is_gc_str":true,"is_str":false,"is_iface":false},"timestamp":1772066583829}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066583829}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066583830}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066583830{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"}
+items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583830{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066583830}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066583830}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"pfalse","instrs":},"timestamp":111772066583830,"stack_effect":}
+0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583831}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583831}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066583831}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583832}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066583833}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066583834}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583835}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066583913}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066583914}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"a","iface_name":"Adder","pkg":""},"timestamp":1772066583914}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"S:4@0,S_1:4@4d","total_size":","iface_name":"8Doer,"pkg":"","pkg":""},"timestamp":"},"timestamp":17720665839171772066583917}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":""},"timestamp":1772066583918}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"s","iface_name":"Stringer","pkg":""},"timestamp":1772066583919}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583953}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583960}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583966}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066583972}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583973}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583974}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583975}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583975}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583976}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583978}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066583980}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066583981}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583981}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066583982}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066583983}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583983}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583984}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrA","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583984}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrA","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583985}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583985}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583985}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrB","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583985}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrB","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583986}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066583986}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066583989}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrC","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066583990}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrC","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066583994}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772066584035}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066584036}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772066584037}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8X:8@0,Y:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":1772066584038}
+N:8@0","total_size":8,"pkg":""},"timestamp":1772066584037{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066584038}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066584039}
+1772066584038}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066584039}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":X:8@0,Y:8@88","total_size":,"pkg":"16"},"timestamp":,"pkg":"1772066584039}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066584040}
+"},"timestamp":1772066584039}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066584040}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066584041}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066584059}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8Name:4@0,Name_1:4@4,Age:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720665840591772066584059}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066584061}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"16Delta:8@0,Tag:4@8,Tag_1:4@12,"pkg":"","total_size":","total_size":16"},"timestamp":,"pkg":"1772066695747"},"timestamp":161772066695747,"pkg":"}
+}
+"},"timestamp":1772066695747}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12Delta:8@0,Tag:4@8,Tag_1:4@12Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":161772066695748,"pkg":"1772066695748}
+}
+"},"timestamp":1772066695748}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"itemsitemsitems","instrs":","instrs":","instrs":239239,"stack_effect":239,"stack_effect":8,"stack_effect":8,"is_gc_str":,"is_gc_str":falsefalse,"is_str":,"is_str":falsefalse,"is_iface":,"is_iface":8falsefalse},"timestamp":,"is_gc_str":},"timestamp":17720666957491772066695749}
+}
+false,"is_str":false,"is_iface":false},"timestamp":1772066695749}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0","total_size":8,"pkg":""},"timestamp":1772066794237}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0","total_size":8,"pkg":""},"timestamp":1772066794238}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":35,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066794238}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066997550}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997592}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997593}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997595}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997595}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997595}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997598}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"errorss:4@0,s_1:4@4"},"timestamp":","total_size":17720669975998}
+,"pkg":"errors"},"timestamp":1772066997599}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":msg:4@0,msg_1:4@48","total_size":,"pkg":"8errors,"pkg":""},"timestamp":errors1772066997600"},"timestamp":}
+1772066997600}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"errs:4@0,s_1:4@4","total_size":8","iface_name":","pkg":"error","pkg":"errors"},"timestamp":1772066997603}
+errors{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":""},"timestamp":err1772066997603","iface_name":"}
+error","pkg":"errors"},"timestamp":1772066997604}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"falseu{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","sym_says":,"old_says":falsemsg:4@0,msg_1:4@4,"old_says":truetrue","total_size":,"old_tag":"8,"pkg":"__interface,"old_tag":"","pkg":"__interfaceerrorserrors"},"timestamp":","pkg":"1772066997605errors}
+"},"timestamp":"},"timestamp":17720669976051772066997604}
+}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":","old_tag":"u__interface{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"","pkg":"err","iface_name":"","sym_says":errorsfalse"},"timestamp":,"old_says":1772066997605true}
+,"old_tag":"error__interface","pkg":"","pkg":"errorserrors"},"timestamp":"},"timestamp":17720669976051772066997605}
+}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997606}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"uu","sym_says":","sym_says":falsefalse,"old_says":,"old_says":truetrue,"old_tag":","old_tag":"__interface__interface","pkg":"","pkg":"errorserrors"},"timestamp":"},"timestamp":17720669976061772066997606}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997609}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997609}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997610}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997611}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997612}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997613}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997618}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997618}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997619}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997619}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997619}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997619}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"uu","sym_says":","sym_says":errfalsefalse,"old_says":","iface_name":"trueerror,"old_tag":"","pkg":"__interfaceerrors,"old_says":","pkg":"trueerrors"},"timestamp":"},"timestamp":17720669976191772066997619}
+}
+,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997619}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997620}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":","old_tag":"u__interface","sym_says":","pkg":"falseerrors,"old_says":"},"timestamp":true1772066997620,"old_tag":"}
+__interface","pkg":"errors"},"timestamp":1772066997620}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997621}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997621}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","instrs":","pkg":"26errors,"stack_effect":"},"timestamp":01772066997621,"is_gc_str":}
+false,"is_str":false,"is_iface":false},"timestamp":1772066997621}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066997622}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":""},"timestamp":errors1772066997623","method":"}
+New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997623}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997623}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997623}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":""},"timestamp":1772066997624}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"e","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997624}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997625}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":15,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997625}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997640}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997641}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997644}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997645}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997645}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997646}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997647}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997647}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997648}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997649}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997649}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997650}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997651}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997651}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997652}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066997653}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997653}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrNotFound","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997654}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrNotFound","instrs":20,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997655}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066997655}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997656}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrTimeout","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997656}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrTimeout","instrs":18,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997657}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"nums","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997689}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"nums","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997690}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066997691}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066997691}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"greeting","instrs":9,"stack_effect":0,"is_gc_str":true,"is_str":false,"is_iface":false},"timestamp":1772066997692}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066997692}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17720669976921772066997692{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+Delta:8@0","total_size":8,"pkg":""},"timestamp":1772066997693}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772066997693}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0","total_size":8,"pkg":""},"timestamp":1772066997693}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16}
+,"pkg":""},"timestamp":1772066997694}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772066997694}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997694{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"}
+p","instrs":11,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997694}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":35,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"falseDelta:8@0,Tag:4@8,Tag_1:4@12},"timestamp":","total_size":177206699769416}
+,"pkg":""},"timestamp":1772066997695}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"items","instrs":239,"stack_effect":8,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997695}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"itemsName:4@0,Name_1:4@4,Val:8@8","instrs":","total_size":23916,"stack_effect":,"pkg":"8"},"timestamp":,"is_gc_str":1772066997695false}
+,"is_str":false,"is_iface":false},"timestamp":1772066997695}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066997695}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772066997696}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997696}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"e","instrs":57,"stack_effect":2,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997696}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":dN:8@0","iface_name":"","total_size":Doer8","pkg":"8"},"timestamp":,"pkg":","pkg":"1772066997755"},"timestamp":}
+1772066997755"},"timestamp":}
+1772066997755}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0S:4@0,S_1:4@4","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17720669977551772066997755}
+}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"sa","iface_name":"","iface_name":"StringerAdder","pkg":"","pkg":""},"timestamp":"},"timestamp":17720669977561772066997756}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997789}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997790}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997797}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772066997798}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997803}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997804}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997809}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997810}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997812}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997812}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"err","iface_name":"error","pkg":"errors"},"timestamp":1772066997813}
+{"hypothesisId":"B","location":"mod.rs:define_var","message":"defining interface var","data":{"var_name":"target","iface_name":"error","pkg":"errors"},"timestamp":1772066997813}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997814}
+{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{"name":"u","sym_says":false,"old_says":true,"old_tag":"__interface","pkg":"errors"},"timestamp":1772066997814}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"errors.ErrUnsupported","instrs":26,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":false},"timestamp":1772066997815}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066997817}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997817}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrA","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997818}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrA","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997818}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066997818}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997819}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrB","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997819}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrB","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997820}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772066997820}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(11)","current_pkg":""},"timestamp":1772066997821}
+{"hypothesisId":"A","location":"emit.rs:global_var_init","message":"iface/string global init","data":{"var":"ErrC","expr_results":1,"is_iface":true,"is_string":false},"timestamp":1772066997821}
+{"hypothesisId":"STACK","location":"emit.rs:global_var_init","message":"stack effect","data":{"var":"ErrC","instrs":12,"stack_effect":0,"is_gc_str":false,"is_str":false,"is_iface":true},"timestamp":1772066997822}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066997842}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066997843}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066997861}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772066997862}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772066997864}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772066997864}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":N:8@0","total_size":Name:4@0,Name_1:4@4,Age:8@8","total_size":168","total_size":,"pkg":"168,"pkg":""},"timestamp":"},"timestamp":1772066997872,"pkg":","pkg":"}
+1772066997872"},"timestamp":}
+1772066997872}
+"},"timestamp":1772066997872}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772066997873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066997873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772066997873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772066997874}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772066997875}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"0In:4@0,"method":"","total_size":Inc8"},"timestamp":,"pkg":"1772066997875"},"timestamp":}
+1772066997875}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772066997876}

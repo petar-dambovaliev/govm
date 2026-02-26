@@ -257,16 +257,6 @@ impl WasmCompiler {
         } else {
             false
         };
-        // #region agent log
-        if sym_says != old_says {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                let old_tag = locals.get_var_struct_type(name).unwrap_or("(none)");
-                let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"interfaces.rs:is_interface_var","message":"MISMATCH sym_table vs old","data":{{"name":"{}","sym_says":{},"old_says":{},"old_tag":"{}","pkg":"{}"}},"timestamp":{}}}"#,
-                    name, sym_says, old_says, old_tag, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-            }
-        }
-        // #endregion
         sym_says || old_says
     }
 
