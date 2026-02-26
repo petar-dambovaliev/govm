@@ -1137,9 +1137,9 @@ impl WasmCompiler {
         }
 
         // Try vtable-based dispatch if itab is populated
-        let method_index = self.find_method_index_in_iface(method_name);
-        if self.itab_base > 0 && self.max_iface_methods > 0 && method_index.is_some() {
-            let method_idx = method_index.unwrap();
+        let iface_info = self.find_iface_method_info(method_name);
+        if self.itab_base > 0 && self.max_iface_methods > 0 && iface_info.is_some() {
+            let (iface_id, method_idx) = iface_info.unwrap();
 
             // Build the function type for call_indirect
             let mut param_types: Vec<ValType> = vec![ValType::I32]; // receiver
@@ -1160,9 +1160,6 @@ impl WasmCompiler {
 
             let max_ifaces = self.next_iface_id;
             let entry_size = self.max_iface_methods * 4;
-
-            // Find which interface this method belongs to
-            let iface_id = self.find_iface_id_for_method(method_name);
 
             out.push(Instruction::I32Const(self.itab_base as i32));
             out.push(Instruction::LocalGet(tid_local));
@@ -1253,23 +1250,17 @@ impl WasmCompiler {
         Ok(())
     }
 
-    fn find_method_index_in_iface(&self, method_name: &str) -> Option<u32> {
-        for (_, methods) in &self.iface_defs {
+    /// Returns `(iface_id, method_index)` for the first interface that contains
+    /// `method_name`, using a single HashMap traversal to avoid inconsistency.
+    fn find_iface_method_info(&self, method_name: &str) -> Option<(u32, u32)> {
+        for (iface_name, methods) in &self.iface_defs {
             for (i, m) in methods.iter().enumerate() {
                 if m == method_name {
-                    return Some(i as u32);
+                    let iface_id = self.iface_ids.get(iface_name).copied().unwrap_or(0);
+                    return Some((iface_id, i as u32));
                 }
             }
         }
         None
-    }
-
-    fn find_iface_id_for_method(&self, method_name: &str) -> u32 {
-        for (iface_name, methods) in &self.iface_defs {
-            if methods.iter().any(|m| m == method_name) {
-                return self.iface_ids.get(iface_name).copied().unwrap_or(0);
-            }
-        }
-        0
     }
 }

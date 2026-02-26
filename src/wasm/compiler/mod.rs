@@ -540,6 +540,8 @@ pub struct WasmCompiler {
 
     // Runtime type descriptor table
     type_cmp_funcs: HashMap<String, u32>,
+    /// Cached WASM type index for the comparison function signature (i32, i32) -> i32.
+    cmp_type_idx: Option<u32>,
     data_offset: u32,
     rt_streq_func_idx: Option<u32>,
     rt_strcmp_func_idx: Option<u32>,
@@ -687,6 +689,7 @@ impl WasmCompiler {
             next_anon_iface_id: 0,
 
             type_cmp_funcs: HashMap::new(),
+            cmp_type_idx: None,
             data_offset: 0,
             rt_streq_func_idx: None,
             rt_strcmp_func_idx: None,

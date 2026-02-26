@@ -492,7 +492,7 @@ impl WasmCompiler {
                 func_body.push(Instruction::LocalGet(fb));
                 func_body.push(Instruction::I32Const(sf.total_size as i32));
                 func_body.push(Instruction::I32Add);
-                func_body.push(Instruction::I32Const(Self::HEAP_BASE));
+                func_body.push(Instruction::I32Const(Self::TYPE_DESC_BASE));
                 func_body.push(Instruction::I32GeU);
                 func_body.push(Instruction::If(BlockType::Empty));
                 func_body.push(Instruction::Call(self.oom_func_idx));

@@ -150,7 +150,8 @@ impl WasmCompiler {
 
     pub(crate) const HEAP_BASE: i32 = 65536;
     pub(crate) const STACK_BASE: i32 = 1024;
-    pub(crate) const TYPE_DESC_BASE: i32 = 2048;
+    // Placed at 32768 to avoid overlap with the stack region [STACK_BASE, TYPE_DESC_BASE).
+    pub(crate) const TYPE_DESC_BASE: i32 = 32768;
     pub(crate) const TYPE_DESC_ENTRY_SIZE: i32 = 12;
 
     pub(crate) fn emit_heap_globals(&mut self) {
@@ -823,7 +824,6 @@ impl WasmCompiler {
 
         self.code_buffer.push((func_idx, func));
         self.rt_streq_func_idx = Some(func_idx);
-        self.needs_func_table = true;
 
         self.functions.push(FuncInfo {
             wasm_func_idx: func_idx,
@@ -959,7 +959,6 @@ impl WasmCompiler {
 
         self.code_buffer.push((func_idx, func));
         self.rt_strcmp_func_idx = Some(func_idx);
-        self.needs_func_table = true;
 
         self.functions.push(FuncInfo {
             wasm_func_idx: func_idx,
@@ -981,20 +980,40 @@ impl WasmCompiler {
         });
     }
 
+    /// Returns the cached type index for the (i32, i32) -> i32 comparison
+    /// signature, creating it on first call.
+    pub(crate) fn get_or_create_cmp_type_idx(&mut self) -> u32 {
+        if let Some(idx) = self.cmp_type_idx {
+            return idx;
+        }
+        let idx = self.next_type_idx;
+        self.type_section.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
+        self.next_type_idx += 1;
+        self.cmp_type_idx = Some(idx);
+        idx
+    }
+
     /// Phase 3: Emit per-type comparison functions and register in function table.
     pub(crate) fn emit_type_cmp_functions(&mut self) {
         let type_names: Vec<(String, u32)> = self.type_registry.iter()
             .map(|(name, &id)| (name.clone(), id))
             .collect();
 
-        // Signature: (ptr_a: i32, ptr_b: i32) -> i32
-        let cmp_type_idx = self.next_type_idx;
-        self.type_section.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
-        self.next_type_idx += 1;
+        let cmp_type_idx = self.get_or_create_cmp_type_idx();
 
         for (type_name, _type_id) in &type_names {
             if self.type_cmp_funcs.contains_key(type_name) {
                 continue;
+            }
+
+            // Skip types containing non-comparable fields (slices, maps).
+            if let Some(sdef) = self.struct_defs.get(type_name) {
+                let has_noncomparable = sdef.fields.iter().any(|f| {
+                    matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map"))
+                });
+                if has_noncomparable {
+                    continue;
+                }
             }
 
             let func_idx = self.next_func_idx;
@@ -1107,45 +1126,78 @@ impl WasmCompiler {
             return;
         }
 
-        // Compare field by field. For each field, load from ptr_a and ptr_b and compare.
-        // If any field differs, return 0. If all match, return 1.
-        // Uses a "result" local at index 2.
-        // We add one local for the result.
-        // Since Function::new was called with vec![], we can't easily add locals here.
-        // Instead, use a single-expression approach: AND all field comparisons.
+        // AND all field comparisons on the stack.
         let mut first = true;
+        let mut skip_next = false;
         for field in &sdef.fields {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+
             let offset = field.offset as u64;
-            match field.wasm_type {
-                WasmType::I64 => {
+
+            if field.go_type_tag.as_deref() == Some("__string") {
+                // String field: (ptr, len) pair at offset and offset+4.
+                // Call __rt_streq(ptr_a, len_a, ptr_b, len_b).
+                if let Some(streq_idx) = self.rt_streq_func_idx {
                     func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::I64Eq);
-                }
-                WasmType::F64 => {
+                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                    func.instruction(&Instruction::F64Eq);
-                }
-                WasmType::F32 => {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::F32Eq);
-                }
-                _ => {
+                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::Call(streq_idx));
+                } else {
+                    // Fallback: compare both ptr and len words
                     func.instruction(&Instruction::LocalGet(0));
                     func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::LocalGet(1));
                     func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::I32Eq);
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::I32Eq);
+                    func.instruction(&Instruction::I32And);
+                }
+                skip_next = true;
+            } else {
+                match field.wasm_type {
+                    WasmType::I64 => {
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
+                        func.instruction(&Instruction::I64Eq);
+                    }
+                    WasmType::F64 => {
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
+                        func.instruction(&Instruction::F64Eq);
+                    }
+                    WasmType::F32 => {
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::F32Eq);
+                    }
+                    _ => {
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::I32Eq);
+                    }
                 }
             }
+
             if !first {
                 func.instruction(&Instruction::I32And);
             }
@@ -1222,16 +1274,7 @@ impl WasmCompiler {
         self.function_section.function(type_idx);
         self.next_func_idx += 1;
 
-        // Signature for the comparison functions: (i32, i32) -> i32
-        let cmp_type_idx = self.functions.iter()
-            .find(|f| f.name.starts_with("__rt_cmp_"))
-            .map(|f| f.type_idx)
-            .unwrap_or_else(|| {
-                let idx = self.next_type_idx;
-                self.type_section.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
-                self.next_type_idx += 1;
-                idx
-            });
+        let cmp_type_idx = self.get_or_create_cmp_type_idx();
 
         // params: 0=tid, 1=ptr_a, 2=ptr_b; locals: 3=desc_ptr, 4=cmp_func_idx
         let mut func = Function::new(vec![(1, ValType::I32), (1, ValType::I32)]);
