@@ -1854,11 +1854,14 @@ impl WasmCompiler {
             module.section(&self.element_section);
         }
 
-        module.section(&self.code_section);
-
         if !self.data_section.is_empty() {
             let data_count = wasm_encoder::DataCountSection { count: self.data_section.len() };
             module.section(&data_count);
+        }
+
+        module.section(&self.code_section);
+
+        if !self.data_section.is_empty() {
             module.section(&self.data_section);
         }
 

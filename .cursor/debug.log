@@ -6846,3 +6846,666 @@ X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123485677}
 {"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123485683}
 {"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123485683}
 {"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123485684}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902474}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902476}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4s:4@0,s_1:4@4","total_size":","total_size":88,"pkg":"errors"},"timestamp":1772123902476}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902477}
+,"pkg":"errors"},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772123902476msg:4@0,msg_1:4@4}
+","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8msg:4@0,msg_1:4@4,"pkg":"","total_size":errors8"},"timestamp":1772123902479}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902479}
+,"pkg":"errors"},"timestamp":1772123902479}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902481}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902483}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902484}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123902486}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902487}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902488}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902489}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902491}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902491}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123902492}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902492}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902493}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902494}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902495}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902693}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"16Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":,"pkg":"","total_size":16{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":","pkg":"16msg:4@0,msg_1:4@4"},"timestamp":","total_size":17721239026958}
+,"pkg":","pkg":"errors"},"timestamp":"},"timestamp":1772123902695}
+delta:8@0,cutoff:4@8,cutoff_1:4@12","total_size":16,"pkg":""},"timestamp":1772123902695}
+Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772123902695}
+"},"timestamp":1772123902695}
+1772123902695}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772123902698}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772123902699}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12delta:8@0,cutoff:4@8,cutoff_1:4@12","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17721239027001772123902700}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772123902701}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Delta:8@0,Tag:4@8,Tag_1:4@12","total_size":16,"pkg":""},"timestamp":1772123902703}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902705}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772123902708}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772123902708}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123902709}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Val:8@8","total_size":16,"pkg":""},"timestamp":1772123902709}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123902713}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902714}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123902715}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123902722}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123902882}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123902886}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":""},"timestamp":1772123902890}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"S:4@0,S_1:4@4","total_size":8,"pkg":""},"timestamp":1772123902890}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123903044}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123903045}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123903046}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772123903047}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123903054}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123903054}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123903064}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123903070}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772123903075}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772123903080}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123903258}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123903258}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123903277}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123903278}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0W:8@0,H:8@8","total_size":","total_size":816,"pkg":","pkg":""},"timestamp":"},"timestamp":17721239032811772123903281}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123903281}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8In:4@0","total_size":Name:4@0,Name_1:4@4,Age:8@816","total_size":,"pkg":"16"},"timestamp":,"pkg":"1772123903281","total_size":}
+"},"timestamp":81772123903281,"pkg":"}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":""},"timestamp":1772123903281a:8@0,b:8@8,c:8@16}
+","total_size":24,"pkg":""},"timestamp":1772123903281}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772123903282}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123903282}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772123903282}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"a:8@0,b:8@8,c:8@16","total_size":24,"pkg":""},"timestamp":1772123903282}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772123903283}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772123903283}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772123903283}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772123903283}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772123903284}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936254}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936256}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":,"expr":"1call:Ident(Ident { pos: 126, name: 'mutate' }),"expr":"","pkg":"call:Ident(Ident { pos: 89, name: 'copy' })"},"timestamp":","pkg":"1772123936349"},"timestamp":}
+1772123936349}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"V:8@0","total_size":8,"pkg":""},"timestamp":1772123936581}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0,N:8@8","total_size":16,"pkg":""},"timestamp":1772123936582}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"V:8@0","total_size":8,"pkg":""},"timestamp":1772123936583}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0,N:8@8","total_size":16,"pkg":""},"timestamp":1772123936583}
+{"hypothesisId":"I","location":"expressions.rs:compile_ident","message":"memory-backed var access","data":{"name":"x","offset":0,"vt":"I64","struct_type":"(none)","pkg":""},"timestamp":1772123936627}
+{"hypothesisId":"I","location":"expressions.rs:compile_ident","message":"memory-backed var access","data":{"name":"x","offset":0,"vt":"I64","struct_type":"(none)","pkg":""},"timestamp":1772123936643}
+{"hypothesisId":"I","location":"expressions.rs:compile_ident","message":"memory-backed var access","data":{"name":"x","offset":0,"vt":"I64","struct_type":"(none)","pkg":""},"timestamp":1772123936644}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936644}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936645}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936645}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936646}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8X:8@0,Y:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17721239367971772123936797}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936798}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936798}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8,C:8@16","total_size":24,"pkg":""},"timestamp":1772123936799}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8,C:8@16","total_size":24,"pkg":""},"timestamp":1772123936800}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936802}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772123936803}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936804}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936804}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936807}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772123936807}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 162, name: 'mutate' })","pkg":""},"timestamp":1772123936808}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"I:8@0,F:8@8,B:4@16","total_size":24,"pkg":""},"timestamp":1772123936808}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772123936809}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936811}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123936811}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936811}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"I:8@0,F:8@8,B:4@16","total_size":24,"pkg":""},"timestamp":1772123936812}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Value:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772123936812}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936812}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772123936813}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772123936814}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772123936813}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936815}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772123936815}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Value:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772123936816}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772123936816}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0","total_size":8,"pkg":""},"timestamp":1772123936817}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772123936817}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772123954239}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"inner:4@0","total_size":8,"pkg":""},"timestamp":1772123954239}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772123954240}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"inner:4@0","total_size":8,"pkg":""},"timestamp":1772123954240}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"a:8@0,b:8@8","total_size":16,"pkg":""},"timestamp":1772123954246}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"a:8@0,b:8@8","total_size":16,"pkg":""},"timestamp":1772123954247}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"n:8@0{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:8@0X:8@0,Y:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":","total_size":X:8@0,Y:8@8","total_size":","total_size":168X:8@0,Y:8@8,Z:8@16,"pkg":"8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"16,"pkg":"","total_size":,"pkg":"total:8@0,count:8@8Total:8@024","total_size":"},"timestamp":8"},"timestamp":1772124004539","total_size":"},"timestamp":,"pkg":"1772124004539,"pkg":"}
+}
+161772124004539,"pkg":","pkg":""},"timestamp":"},"timestamp":"},"timestamp":17721240045391772124004539}
+}
+"},"timestamp":1772124004539}
+}
+1772124004539}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:8@0","total_size":8,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772124004541}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"total:8@0,count:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":X:8@0,Y:8@816","total_size":,"pkg":"16Total:8@0"},"timestamp":","total_size":17721240045418}
+,"pkg":""},"timestamp":1772124004541{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124004541}
+,"pkg":""},"timestamp":1772124004541}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"n:8@0","total_size":8,"pkg":""},"timestamp":1772124004542}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124004542}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124004790}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124004792}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"items:4@0","total_size":8,"pkg":""},"timestamp":1772124005171}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"items:4@0","total_size":8,"pkg":""},"timestamp":1772124005172}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124005222}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124005223}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 118, name: 'add' })","pkg":""},"timestamp":1772124005226}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 129, name: 'add' })","pkg":""},"timestamp":1772124005226}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124005470}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124005471}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124005521}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124005524}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Count:4@0","total_size":8,"pkg":""},"timestamp":1772124005826}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Log:4@0","total_size":8,"pkg":""},"timestamp":1772124005827}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Count:4@0","total_size":8,"pkg":""},"timestamp":1772124005827}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Log:4@0","total_size":8,"pkg":""},"timestamp":1772124005828}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:4@0","total_size":8,"pkg":""},"timestamp":1772124005873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:4@0","total_size":8,"pkg":""},"timestamp":1772124005883}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:4@0","total_size":8,"pkg":""},"timestamp":1772124005885}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:4@0","total_size":8,"pkg":""},"timestamp":1772124005886}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124005940}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124005940}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Settings:4@0","total_size":8,"pkg":""},"timestamp":1772124005953}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Settings:4@0","total_size":8,"pkg":""},"timestamp":1772124005953}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"name:8@0","total_size":8,"pkg":""},"timestamp":1772124006022}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"name:8@0","total_size":8,"pkg":""},"timestamp":1772124006030}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124006031}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772124006032}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124006032}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772124006033}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124006080}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124006081}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124006083}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"code:8@0","total_size":","total_size":08,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240060831772124006083}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"code:8@0","total_size":8,"pkg":""},"timestamp":1772124006084}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006094}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006094}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006097}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006097}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006143}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006144}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006145s:4@0,s_1:4@4}
+","total_size":8,"pkg":"errors"},"timestamp":1772124006145}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8msg:4@0,msg_1:4@4,"pkg":"","total_size":8errors,"pkg":""},"timestamp":errors1772124006145"},"timestamp":}
+1772124006145}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006146}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006146}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006146}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006146}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4,inner:4@8,inner_1:4@12","total_size":16,"pkg":""},"timestamp":1772124006147}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":177212400614717721240061478}
+}
+,"pkg":"errors"},"timestamp":1772124006147}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Is","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(17)","current_pkg":""},"timestamp":1772124006148}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006148}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":msg:4@0,msg_1:4@48","total_size":,"pkg":"errors8"},"timestamp":1772124006148,"pkg":"}
+errors"},"timestamp":1772124006148}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006149}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006149}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006149}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errorserrors"},"timestamp":","method":"1772124006149Is}
+","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(17)","current_pkg":""},"timestamp":1772124006149}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006149}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006150}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006150}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006150}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006151}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006151}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006152}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006156{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Join","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(15)","current_pkg":""},"timestamp":1772124006156}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8msg:4@0,msg_1:4@4,"pkg":"","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"8s:4@0,s_1:4@4","total_size":errors8,"pkg":","pkg":"8errors,"pkg":""},"timestamp":errors1772124006157"},"timestamp":}
+1772124006157}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4msg:4@0,msg_1:4@4","total_size":","total_size":"},"timestamp":81772124006156,"pkg":"}
+errors8"},"timestamp":,"pkg":"1772124006157errors}
+"},"timestamp":errors1772124006157"},"timestamp":}
+1772124006156}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006157}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006157}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006158}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006158}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Join","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(15)","current_pkg":""},"timestamp":1772124006158}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Join","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(15)","current_pkg":""},"timestamp":1772124006158}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006159{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4,inner:4@8,inner_1:4@12}
+","total_size":16,"pkg":""},"timestamp":1772124006159}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006159}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4,inner:4@8,inner_1:4@12","total_size":16,"pkg":""},"timestamp":1772124006159}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4s:4@0,s_1:4@4","total_size":","total_size":88,"pkg":","pkg":"errorserrors"},"timestamp":"},"timestamp":17721240061591772124006159}
+}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006160}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Unwrap","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(16)","current_pkg":""},"timestamp":1772124006160}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006160}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006160}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006160}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006161}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006161}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006161}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Is","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(17)","current_pkg":""},"timestamp":1772124006161}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006162}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124006162}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006162}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4,inner:4@8,inner_1:4@12","total_size":16,"pkg":""},"timestamp":1772124006163}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(13)","current_pkg":""},"timestamp":1772124006164}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"Unwrap","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(16)","current_pkg":""},"timestamp":1772124006165}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124006316}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124006317}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124006358}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124006359}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124006386}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772124006386}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772124006387}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124006388}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:4@0","total_size":8,"pkg":""},"timestamp":1772124006674}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"First:4@0,Second:4@4","total_size":8,"pkg":""},"timestamp":1772124006674}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:4@0First:4@0,Second:4@4","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240066751772124006675}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"First:4@0,Second:4@4","total_size":8,"pkg":""},"timestamp":1772124006675}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"First:4@0,Second:4@4","total_size":8,"pkg":""},"timestamp":1772124006676}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:8@0","total_size":8,"pkg":""},"timestamp":1772124007142}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"v:8@0","total_size":8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":","pkg":"","total_size":0,"pkg":""},"timestamp":1772124007143}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124007143}
+"},"timestamp":1772124007143}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:8@0","total_size":8,"pkg":""},"timestamp":1772124007144}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"v:8@0","total_size":8,"pkg":""},"timestamp":1772124007145}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"name:8@0,age:8@8","total_size":16,"pkg":""},"timestamp":1772124007147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"name:8@0,age:8@8","total_size":16,"pkg":""},"timestamp":1772124007147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"data:8@0","total_size":8,"pkg":""},"timestamp":1772124007147}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"data:8@0","total_size":8,"pkg":""},"timestamp":1772124007148}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Side:8@0c:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072131772124007213}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"r:8@0{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":","total_size":8,"pkg":""},"timestamp":1772124007213}
+0,"pkg":""},"timestamp":1772124007213}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"c:8@0Side:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072141772124007214}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:8@0","total_size":8,"pkg":""},"timestamp":1772124007214}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124007214}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"r:8@0","total_size":8,"pkg":""},"timestamp":1772124007214}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:8@0","total_size":8,"pkg":""},"timestamp":1772124007215}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124007221}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124007221}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"v:8@0x:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072711772124007271}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0","total_size":8,"pkg":""},"timestamp":1772124007271}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:8@0","total_size":8,"pkg":""},"timestamp":1772124007272{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+x:8@0","total_size":8,"pkg":""},"timestamp":1772124007272}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"v:8@0s:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072741772124007274}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0","total_size":8,"pkg":""},"timestamp":1772124007274}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":","total_size":00,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072751772124007275}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16,"pkg":""},"timestamp":1772124007275}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":","total_size":00,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072751772124007275}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8X:8@0,Y:8@8","total_size":","total_size":1616,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240072751772124007275}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124007276}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"n:8@0","total_size":8,"pkg":""},"timestamp":1772124007674}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"n:8@0","total_size":8,"pkg":""},"timestamp":1772124007676}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124007797}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124007798}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124007799}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124007800}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124007800}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124007801}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124007960}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124007961}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124007980}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124007981}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124007982}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124007983}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Width:8@0,Height:8@8","total_size":16,"pkg":""},"timestamp":1772124007983}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Width:8@0,Height:8@8","total_size":16,"pkg":""},"timestamp":1772124007984}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Side:8@0Width:8@0,Height:8@8","total_size":","total_size":816,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240080201772124008020}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Side:8@0Width:8@0,Height:8@8","total_size":","total_size":816,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240080201772124008020}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124008021}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124008021}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124008055}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124008056}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124008057}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124008058}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:8@0","total_size":8,"pkg":""},"timestamp":1772124008091}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:8@0","total_size":8,"pkg":""},"timestamp":1772124008092}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"base:8@0","total_size":8,"pkg":""},"timestamp":1772124010651}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"base:8@0","total_size":8,"pkg":""},"timestamp":1772124010653}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010727}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010728}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010882}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010883}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,In:4@8","total_size":16,"pkg":""},"timestamp":1772124010883}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010884}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010886}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,In:4@8","total_size":16,"pkg":""},"timestamp":1772124010886}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010917}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124010918}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124010955}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772124010957}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124010961}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"In:4@0","total_size":8,"pkg":""},"timestamp":1772124010967}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124011018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124011018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:4@0,X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011018}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:4@0,X:8@0","total_size":8,"pkg":""},"timestamp":1772124011019}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"B:4@0,A:4@0,X:8@0,Y:8@8B:4@0,A:4@0,X:8@0","total_size":","total_size":168,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240110191772124011019}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011020}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011020}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124011020}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:4@0,X:8@0","total_size":8,"pkg":""},"timestamp":1772124011020}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:4@0,X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011021}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011021}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"B:4@0,A:4@0,X:8@0A:4@0,B:8@8","total_size":","total_size":816,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240110211772124011021}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011022}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"B:4@0,A:4@0,X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011022}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0","total_size":8,"pkg":""},"timestamp":1772124011022}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011022}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:4@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124011023}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011024}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8Val:8@0","total_size":","total_size":168,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240110781772124011078}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011078}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124011079}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124011079}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124011080}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011152}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011153}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 59, name: 'recover' })","pkg":""},"timestamp":1772124011283}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011284}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011285}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0","total_size":8,"pkg":""},"timestamp":1772124011365}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0","total_size":8,"pkg":""},"timestamp":1772124011365}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124011367}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8W:8@0,H:8@8","total_size":","total_size":val:8@01616,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240113681772124011368}
+}
+","total_size":8,"pkg":""},"timestamp":1772124011368}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:8@0,H:8@8","total_size":16{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8X:8@0,Y:8@8","total_size":","total_size":,"pkg":"1616,"pkg":""},"timestamp":,"pkg":""},"timestamp":17721240113681772124011368}
+}
+"},"timestamp":1772124011368}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011369}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011418}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011419}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011420}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124011422}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124011424}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Base:4@8,Val:8@8","total_size":16,"pkg":""},"timestamp":1772124011425}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124011431}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Base:4@8,Val:8@8","total_size":16,"pkg":""},"timestamp":1772124011433}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011435}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":16,"pkg":""},"timestamp":1772124011437}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011437}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":16,"pkg":""},"timestamp":1772124011443}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":Val:8@08","total_size":,"pkg":"8"},"timestamp":,"pkg":"1772124011492"},"timestamp":}
+1772124011492}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":16Base:4@0,Val:8@0,Extra:8@8,"pkg":"","total_size":"},"timestamp":161772124011493,"pkg":"}
+"},"timestamp":1772124011493}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0Val:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240114931772124011493}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"16Base:4@0,Val:8@0,Extra:8@8,"pkg":"","total_size":"},"timestamp":161772124011494,"pkg":"}
+"},"timestamp":1772124011494}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011518}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":16,"pkg":""},"timestamp":1772124011519}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124011520}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Prefix:8@0,Inner:4@8,X:8@8","total_size":16,"pkg":""},"timestamp":1772124011521}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Data:4@0","total_size":8,"pkg":""},"timestamp":1772124011633}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Data:4@0","total_size":8,"pkg":""},"timestamp":1772124011634}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Items:4@0","total_size":8,"pkg":""},"timestamp":1772124011654}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Items:4@0","total_size":8,"pkg":""},"timestamp":1772124011656}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 59, name: 'recover' })","pkg":""},"timestamp":1772124011738}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 78, name: 'recover' })","pkg":""},"timestamp":1772124011740}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 61, name: 'recover' })","pkg":""},"timestamp":1772124011740}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 36, name: 'recover' })","pkg":""},"timestamp":1772124011744}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0,Next:4@8","total_size":16,"pkg":""},"timestamp":1772124011796}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0,Next:4@8","total_size":16,"pkg":""},"timestamp":1772124011796}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 216, name: 'doWork' })","pkg":""},"timestamp":1772124011855}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124011866}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124011869}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"count:8@0","total_size":8,"pkg":""},"timestamp":1772124011871}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"count:8@0","total_size":8,"pkg":""},"timestamp":1772124011872}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Increment","results":0,"method":"Increment"},"timestamp":1772124011872}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Increment","results":0,"method":"Increment"},"timestamp":1772124011877}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Increment","results":0,"method":"Increment"},"timestamp":1772124011877}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"value:8@0","total_size":8,"pkg":""},"timestamp":1772124011931}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"inner:4@0,name:8@8","total_size":16,"pkg":""},"timestamp":1772124011931}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"value:8@0","total_size":8,"pkg":""},"timestamp":1772124011932}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"inner:4@0,name:8@8","total_size":16,"pkg":""},"timestamp":1772124011934}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"id:8@0,value:8@8","total_size":16,"pkg":""},"timestamp":1772124011942}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"id:8@0,value:8@8","total_size":16,"pkg":""},"timestamp":1772124011945}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011983}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011984}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011984}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124011985}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"bark:8@0","total_size":8,"pkg":""},"timestamp":1772124012273}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"meow:8@0","total_size":8,"pkg":""},"timestamp":1772124012274}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"bark:8@0","total_size":8,"pkg":""},"timestamp":1772124012275}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"meow:8@0","total_size":8,"pkg":""},"timestamp":1772124012276}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012284}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012285}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"value:8@0","total_size":8,"pkg":""},"timestamp":1772124012344}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"value:8@0","total_size":8,"pkg":""},"timestamp":1772124012345}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8,C:8@16,D:8@24","total_size":32,"pkg":""},"timestamp":1772124012347}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8,C:8@16,D:8@24A:8@0,B:8@8","total_size":","total_size":3216,"pkg":","pkg":""},"timestamp":A:8@0,B:8@81772124012348","total_size":}
+"},"timestamp":161772124012348,"pkg":"}
+"},"timestamp":1772124012348}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124012348}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124012348}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124012590}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124012590}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Func:4@0,Func_1:4@4,Num:4@8,Num_1:4@12,Err:4@16,Err_1:4@20","total_size":24,"pkg":"strconv"},"timestamp":1772124012602}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"d:4@0,nd:8@8,dp:8@16,neg:4@24,trunc:4@28","total_size":32,"pkg":"strconv"},"timestamp":1772124012603}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"delta:8@0,cutoff:4@8,cutoff_1:4@12","total_size":16,"pkg":"strconv"},"timestamp":1772124012603}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"mantbits:8@0,expbits:8@8,bias:8@16","total_size":24,"pkg":"strconv"},"timestamp":1772124012604}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"d:4@0,nd:8@8,dp:8@16","total_size":24,"pkg":"strconv"},"timestamp":1772124012605}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:8@0","total_size":8,"pkg":""},"timestamp":1772124012778}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Total:8@0","total_size":8,"pkg":""},"timestamp":1772124012783}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":X:8@0,Y:8@816","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":","pkg":"16"},"timestamp":X:8@0,Y:8@8,"pkg":"","total_size":"},"timestamp":17721240127851772124012785}
+}
+16,"pkg":""},"timestamp":1772124012785}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8X:8@0,Y:8@8","total_size":","total_size":1616X:8@0,Y:8@8,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240127851772124012785}
+}
+","total_size":16,"pkg":""},"timestamp":1772124012785}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"s:4@0,s_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124012803}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"msg:4@0,msg_1:4@4","total_size":8,"pkg":"errors"},"timestamp":1772124012805}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Func:4@0,Func_1:4@4,Num:4@8,Num_1:4@12,Err:4@16,Err_1:4@20","total_size":24,"pkg":"strconv"},"timestamp":1772124012829}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"d:4@0,nd:8@8,dp:8@16,neg:4@24,trunc:4@28","total_size":32,"pkg":"strconv"},"timestamp":1772124012830}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"delta:8@0,cutoff:4@8,cutoff_1:4@12","total_size":16,"pkg":"strconv"},"timestamp":1772124012830}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"mantbits:8@0,expbits:8@8,bias:8@16","total_size":24,"pkg":"strconv"},"timestamp":1772124012831}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"d:4@0,nd:8@8,dp:8@16","total_size":24,"pkg":"strconv"},"timestamp":1772124012832}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8Name:4@0,Name_1:4@4,Age:8@8","total_size":","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1616,"pkg":","pkg":"","total_size":"},"timestamp":"},"timestamp":17721240128340}
+,"pkg":""},"timestamp":17721240128341772124012834}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012835}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8Name:4@0,Name_1:4@4,Age:8@8","total_size":","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1616Base:4@0,"pkg":"","total_size":"},"timestamp":Val:8@0,"pkg":"0"},"timestamp":","total_size":1772124012835,"pkg":"8"},"timestamp":}
+,"pkg":"1772124012835"},"timestamp":}
+1772124012835}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Inner:4@0,X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124012835}
+1772124012835}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772124012836}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012837}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124012837}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124012837}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Inner:4@0,X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124012837}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0","total_size":0,"pkg":""},"timestamp":1772124012837}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124012838}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012838}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Base:4@0,Val:8@0,Extra:8@8","total_size":16,"pkg":""},"timestamp":1772124012838}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124012838}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012838}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":248,"name":"floatBits","pkg":"strconv","param_count":2,"result_count":2},"timestamp":1772124012840}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012841}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012842}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012842}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012843}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":249,"name":"atof64exact","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012843}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":250,"name":"atof32exact","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012844}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":251,"name":"atofHex","pkg":"strconv","param_count":6,"result_count":2},"timestamp":1772124012845}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":252,"name":"atof32","pkg":"strconv","param_count":1,"result_count":3},"timestamp":1772124012847}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":253,"name":"atof64","pkg":"strconv","param_count":1,"result_count":3},"timestamp":1772124012850}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":254,"name":"ParseFloat","pkg":"strconv","param_count":2,"result_count":2},"timestamp":1772124012852}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":255,"name":"parseFloatPrefix","pkg":"strconv","param_count":2,"result_count":3},"timestamp":1772124012853}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":256,"name":"lower","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012854}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":257,"name":"Error","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012855}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":258,"name":"Unwrap","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012856}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":259,"name":"cloneString","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012857}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":260,"name":"syntaxError","pkg":"strconv","param_count":2,"result_count":1},"timestamp":1772124012858}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":261,"name":"rangeError","pkg":"strconv","param_count":2,"result_count":1},"timestamp":1772124012859}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":262,"name":"baseError","pkg":"strconv","param_count":3,"result_count":1},"timestamp":1772124012859}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(217)","current_pkg":"strconv"},"timestamp":1772124012860}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":263,"name":"bitSizeError","pkg":"strconv","param_count":3,"result_count":1},"timestamp":1772124012861}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(217)","current_pkg":"strconv"},"timestamp":1772124012862}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":264,"name":"ParseUint","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012863}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":265,"name":"ParseInt","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012866}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":266,"name":"Atoi","pkg":"strconv","param_count":1,"result_count":2},"timestamp":1772124012868}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":267,"name":"underscoreOK","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012870}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":268,"name":"index","pkg":"strconv","param_count":2,"result_count":1},"timestamp":1772124012871}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":269,"name":"String","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012872}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":270,"name":"digitZero","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012873}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":271,"name":"trim","pkg":"strconv","param_count":1,"result_count":0},"timestamp":1772124012874}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":272,"name":"Assign","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012875}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":273,"name":"rightShift","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012876}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":274,"name":"prefixIsLessThan","pkg":"strconv","param_count":2,"result_count":1},"timestamp":1772124012878}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":275,"name":"leftShift","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012878}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":276,"name":"Shift","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012879}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":277,"name":"shouldRoundUp","pkg":"strconv","param_count":2,"result_count":1},"timestamp":1772124012880}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":278,"name":"Round","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012881}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.RoundUp","results":0,"method":"RoundUp"},"timestamp":1772124012882}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.RoundDown","results":0,"method":"RoundDown"},"timestamp":1772124012882}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":279,"name":"RoundDown","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012883}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":280,"name":"RoundUp","pkg":"strconv","param_count":2,"result_count":0},"timestamp":1772124012884}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":281,"name":"RoundedInteger","pkg":"strconv","param_count":1,"result_count":1},"timestamp":1772124012885}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":282,"name":"eiselLemire64","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012886}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":283,"name":"eiselLemire32","pkg":"strconv","param_count":3,"result_count":2},"timestamp":1772124012887}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":284,"name":"FormatFloat","pkg":"strconv","param_count":4,"result_count":1},"timestamp":1772124012887}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":285,"name":"AppendFloat","pkg":"strconv","param_count":5,"result_count":1},"timestamp":1772124012887}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":286,"name":"genericFtoa","pkg":"strconv","param_count":5,"result_count":1},"timestamp":1772124012888}
+{"hypothesisId":"H","location":"functions.rs:stack_frame","message":"stack frame info","data":{"func":"genericFtoa","total_size":8,"frame_locals":"bits:0:8","escaping":"val|digs|flt|neg|mant|digits|fmt|dst|buf|float32info|float64info|shortest|exp|prec|s","decimal_struct_keys":"strconv.decimalSlice|strconv.decimal"},"timestamp":1772124012888}
+{"hypothesisId":"G","location":"functions.rs:compile_func_decl","message":"locals dump","data":{"func":"genericFtoa","func_idx":286,"param_count":5,"locals_count":78,"locals":"5:__frame_base:I32|6:bits:I64|7:flt:I32|8:__switch_tag:I64|9:__addr_val_4:I32|10:__addr_ptr_5:I32|11:__addr_val_6:I32|12:__addr_ptr_7:I32|13:__panic_ptr_8:I32|14:__panic_len_9:I32|15:__g2l_sr_10:Ref(RefType { nullable: true, heap_type: Concrete(1) })|16:__g2l_sa_11:Ref(RefType { nullable: true, heap_type: Concrete(0) })|17:__g2l_sl_12:I32|18:__g2l_dp_13:I32|19:__g2l_i_14:I32|20:neg:I32|21:exp:I64|22:mant:I64|23:__switch_tag:I64|24:s:Ref(RefType { nullable: true, heap_type: Concrete(1) })|25:__g2l_sr_20:Ref(RefType { nullable: true, heap_type: Concrete(1) })|26:__g2l_sa_21:Ref(RefType { nullable: true, heap_type: Concrete(0) })|27:__g2l_sl_22:I32|28:__g2l_dp_23:I32|29:__g2l_i_24:I32|30:__appstr_slen:I32|31:__appstr_sptr:I32|32:__appstr_dhdr:I32|33:__appstr_dlen:I32|34:__appstr_dcap:I32|35:__appstr_nlen:I32|36:__appstr_ncap:I32|37:__appstr_cp1:I32|38:__appstr_dbl:I32|39:__appstr_abytes:I32|40:__appstr_ndata:I32|41:__appstr_ddptr:I32|42:__appstr_idx:I32|43:__ca_tmp_38:I64|44:__ca_tmp_39:I64|45:digs:I32|46:ok:I32|47:shortest:I32|48:buf:I32|49:__slice_base_44:I32|50:__slice_len_45:I32|51:__slice_cap_46:I32|52:__slice_lo_47:I32|53:__slice_hi_48:I32|54:__slx_nhdr_49:I32|55:__sel_rhs_50:I32|56:__sel_addr_51:I32|57:__switch_tag:I32|58:__mm_a_53:I64|59:__mm_b_54:I64|60:__mm_a_55:I64|61:__mm_b_56:I64|62:digits:I64|63:__switch_tag:I32|64:buf:I32|65:__slice_base_60:I32|66:__slice_len_61:I32|67:__slice_cap_62:I32|68:__slice_lo_63:I32|69:__slice_hi_64:I32|70:__slx_nhdr_65:I32|71:__sel_rhs_66:I32|72:__sel_addr_67:I32|73:__slice_base_68:I32|74:__slice_len_69:I32|75:__slice_cap_70:I32|76:__slice_lo_71:I32|77:__slice_hi_72:I32|78:__slx_nhdr_73:I32|79:__sel_rhs_74:I32|80:__sel_addr_75:I32|81:__copy_src_76:I32|82:__copy_dst_77:I32"},"timestamp":1772124012889}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":287,"name":"bigFtoa","pkg":"strconv","param_count":7,"result_count":1},"timestamp":1772124012890}
+{"hypothesisId":"H","location":"functions.rs:stack_frame","message":"stack frame info","data":{"func":"bigFtoa","total_size":0,"frame_locals":"","escaping":"fmt|exp|shortest|mant|nd|decimal|flt|d|neg|prec|dp|dst|digs","decimal_struct_keys":"strconv.decimalSlice|strconv.decimal"},"timestamp":1772124012891}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Assign","results":0,"method":"Assign"},"timestamp":1772124012892}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012892}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Round","results":0,"method":"Round"},"timestamp":1772124012893}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Round","results":0,"method":"Round"},"timestamp":1772124012894}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Round","results":0,"method":"Round"},"timestamp":1772124012894}
+{"hypothesisId":"G","location":"functions.rs:compile_func_decl","message":"locals dump","data":{"func":"bigFtoa","func_idx":287,"param_count":7,"locals_count":24,"locals":"7:d:I32|8:__new_ptr_1:I32|9:digs:I32|10:shortest:I32|11:__comp_ptr:I32|12:__slice_base_5:I32|13:__slice_len_6:I32|14:__slice_cap_7:I32|15:__slice_lo_8:I32|16:__slice_hi_9:I32|17:__slx_nhdr_10:I32|18:__switch_tag:I32|19:__mm_a_12:I64|20:__mm_b_13:I64|21:__switch_tag:I32|22:__comp_ptr:I32|23:__slice_base_16:I32|24:__slice_len_17:I32|25:__slice_cap_18:I32|26:__slice_lo_19:I32|27:__slice_hi_20:I32|28:__slx_nhdr_21:I32|29:__copy_src_22:I32|30:__copy_dst_23:I32"},"timestamp":1772124012895}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":288,"name":"formatDigits","pkg":"strconv","param_count":6,"result_count":1},"timestamp":1772124012895}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":289,"name":"roundShortest","pkg":"strconv","param_count":4,"result_count":0},"timestamp":1772124012896}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Assign","results":0,"method":"Assign"},"timestamp":1772124012896}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012896}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Assign","results":0,"method":"Assign"},"timestamp":1772124012897}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.Shift","results":0,"method":"Shift"},"timestamp":1772124012898}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"X:8@0,Y:8@8strconv.decimal.Round","total_size":","results":160,"pkg":","method":""},"timestamp":Round1772124012899"},"timestamp":}
+1772124012899}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"X:8@0,Y:8@8strconv.decimal.RoundDown","total_size":","results":160,"pkg":","method":""},"timestamp":RoundDown1772124012899"},"timestamp":}
+1772124012899}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012899}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0,Count:8@8","total_size":16,"pkg":""},"timestamp":1772124012899}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124012900}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"strconv.decimal.RoundUp","results":0,"method":"RoundUp"},"timestamp":1772124012900}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Value:8@0,Count:8@8","total_size":16,"pkg":""},"timestamp":1772124012900}
+{"hypothesisId":"A","location":"functions.rs:compile_func_decl","message":"compiling function","data":{"func_idx":290,"name":"fmtE","pkg":"strconv","param_count":5,"result_count":1},"timestamp":1772124012900}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":W:4@0,H:4@4{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":Val:8@08","total_size":,"pkg":"X:8@0,Y:8@8,Z:8@16816,"pkg":""},"timestamp":"},"timestamp":17721240129041772124012904}
+}
+","total_size":24,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240129041772124012904}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"W:4@0,H:4@4","total_size":8,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772124012904Val:8@0}
+","total_size":8,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772124012904X:8@0,Y:8@8}
+","total_size":16,"pkg":""},"timestamp":1772124012904}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124012904}
+{"hypothesisId":"A","location":"calls.rs:panic_recovery","message":"emitting ref.null for Ref return type","data":{"heap_type":"Concrete(1)","pkg":"strconv"},"timestamp":1772124012915}
+{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{"count":1,"expr":"call:Ident(Ident { pos: 1094, name: 'copy' })","pkg":"strconv"},"timestamp":1772124012924}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772124012933}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(217)","current_pkg":"strconv"},"timestamp":1772124012933}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"errors.New","results":1,"method":"New"},"timestamp":1772124012933}
+{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{"pkg":"errors","method":"New","is_inlined":false,"in_compiled_pkgs":true,"found_fn_idx":"Some(217)","current_pkg":"strconv"},"timestamp":1772124012934}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8X:8@0,Y:8@8","total_size":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":Limit:8@016","total_size":,"pkg":"8"},"timestamp":,"pkg":"1772124013790"},"timestamp":}
+177212401379016}
+,"pkg":""},"timestamp":1772124013790}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Limit:8@0","total_size":8,"pkg":""},"timestamp":1772124013790}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":A:8@0,B:8@816","total_size":,"pkg":"16"},"timestamp":,"pkg":"1772124013791"},"timestamp":}
+1772124013791}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Point.SetX","results":0,"method":"SetX"},"timestamp":1772124013798}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"I:8@0,F:8@8,B:4@16{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":Val:8@024X:8@0,Y:8@8,"pkg":"","total_size":"},"timestamp":1772124013816","total_size":}
+816,"pkg":""},"timestamp":,"pkg":"1772124013816}
+"},"timestamp":1772124013816}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"I:8@0,F:8@8,B:4@16","total_size":24,"pkg":""},"timestamp":1772124013817}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Val:8@0","total_size":8,"pkg":""},"timestamp":1772124013817}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013817}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013818}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124013818}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013819}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"A:8@0,B:8@8","total_size":16,"pkg":""},"timestamp":1772124013820}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124013821}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0","total_size":8,"pkg":""},"timestamp":1772124013823}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013832}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013832{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"}
+Width:8@0,Height:8@8","total_size":16,"pkg":""},"timestamp":1772124013832}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Width:8@0,Height:8@8","total_size":16,"pkg":""},"timestamp":1772124013833}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013850}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124013851}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":1772124013872}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Data:4@0","total_size":8,"pkg":""},"timestamp":1772124013872}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Name:4@0,Name_1:4@4,Age:8@8","total_size":16,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772124013872Data:4@0}
+","total_size":8,"pkg":""},"timestamp":1772124013872}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Data:4@0","total_size":8,"pkg":""},"timestamp":1772124013873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Data:4@0","total_size":8,"pkg":""},"timestamp":1772124013873}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124013874}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8,Z:8@16","total_size":24,"pkg":""},"timestamp":1772124013874}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772124014240}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0","total_size":8,"pkg":""},"timestamp":1772124014240}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"1772124014292speed:8@0}
+","total_size":8,"pkg":""},"timestamp":1772124014292}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":1772124014292}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0L:8@0","total_size":","total_size":88,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240142931772124014293}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":1772124014294}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"speed:8@0","total_size":8,"pkg":""},"timestamp":1772124014294}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":1772124014295}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"w:8@0,h:8@8","total_size":16,"pkg":""},"timestamp":1772124014297}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":1772124014300}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"L:8@0","total_size":8,"pkg":""},"timestamp":1772124014301}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"w:8@0,h:8@8","total_size":16,"pkg":""},"timestamp":1772124014304}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014350}
+Radius:8@0","total_size":8,"pkg":""},"timestamp":1772124014350}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014350}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Radius:8@0","total_size":8,"pkg":""},"timestamp":1772124014350}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014354}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014355}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014356}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"","total_size":0,"pkg":""},"timestamp":1772124014357}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124014566}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"X:8@0,Y:8@8","total_size":16,"pkg":""},"timestamp":1772124014566}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"R16:4@0,R32:4@4,LatinOffset:8@8","total_size":16,"pkg":"unicode"},"timestamp":1772124014807}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Stride:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124014808}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Stride:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124014808}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Delta:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124014808}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"From:4@0,To:4@4","total_size":8,"pkg":"unicode"},"timestamp":1772124014809}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"R16:4@0,R32:4@4,LatinOffset:8@8","total_size":16,"pkg":"unicode"},"timestamp":1772124015103}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Stride:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124015103}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Stride:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124015104}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"Lo:4@0,Hi:4@4,Delta:4@8","total_size":16,"pkg":"unicode"},"timestamp":1772124015104}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"From:4@0,To:4@4","total_size":8,"pkg":"unicode"},"timestamp":1772124015105}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0Width:8@0,Height:8@8","total_size":","total_size":168,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240217381772124021738}
+}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"N:8@0Width:8@0,Height:8@8","total_size":","total_size":816,"pkg":","pkg":""},"timestamp":"},"timestamp":17721240217391772124021739}
+}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772124021740}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.Inc","results":0,"method":"Inc"},"timestamp":1772124021743}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124021823}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"val:8@0","total_size":8,"pkg":""},"timestamp":1772124021824}
+{"hypothesisId":"D","location":"expressions.rs:expression_result_count","message":"resolved via qualified name","data":{"qualified":"Counter.DoNothing","results":0,"method":"DoNothing"},"timestamp":1772124021825}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124021882}
+{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{"fields":"x:8@0,y:8@8","total_size":16,"pkg":""},"timestamp":1772124021882}
