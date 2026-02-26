@@ -248,20 +248,24 @@ impl WasmCompiler {
             next_local += 1;
         }
 
-        let local_temp_i64 = next_local;
-        locals_spec.push((1, ValType::I64));
-        next_local += 1;
-
-        let local_temp_i64_2 = next_local;
-        locals_spec.push((1, ValType::I64));
-        next_local += 1;
-
         let time_gc_idx = self.gc_struct_types.get("time.Time").copied();
-        let local_time_ref = next_local;
-        if time_gc_idx.is_some() {
+        let (local_temp_i64, local_temp_i64_2, local_time_ref) = if time_gc_idx.is_some() {
+            let t1 = next_local;
+            locals_spec.push((1, ValType::I64));
+            next_local += 1;
+
+            let t2 = next_local;
+            locals_spec.push((1, ValType::I64));
+            next_local += 1;
+
+            let tr = next_local;
             locals_spec.push((1, Self::gc_ref_val_type(time_gc_idx.unwrap())));
             next_local += 1;
-        }
+
+            (t1, t2, tr)
+        } else {
+            (0, 0, 0)
+        };
 
         let _ = next_local;
 
