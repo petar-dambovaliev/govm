@@ -748,18 +748,29 @@ impl WasmCompiler {
             })
     }
 
+    /// Returns the cached type index for the (i32, i32, i32, i32) -> i32 string
+    /// comparison signature, creating it on first call.
+    fn get_or_create_str_cmp_type_idx(&mut self) -> u32 {
+        if let Some(idx) = self.str_cmp_type_idx {
+            return idx;
+        }
+        let idx = self.next_type_idx;
+        self.type_section.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        );
+        self.next_type_idx += 1;
+        self.str_cmp_type_idx = Some(idx);
+        idx
+    }
+
     /// Phase 2: Emit __rt_streq(ptr1, len1, ptr2, len2) -> i32
     pub(crate) fn emit_rt_streq(&mut self) {
         if self.rt_streq_func_idx.is_some() {
             return;
         }
 
-        let type_idx = self.next_type_idx;
-        self.type_section.ty().function(
-            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
-            vec![ValType::I32],
-        );
-        self.next_type_idx += 1;
+        let type_idx = self.get_or_create_str_cmp_type_idx();
 
         let func_idx = self.next_func_idx;
         self.function_section.function(type_idx);
@@ -851,12 +862,7 @@ impl WasmCompiler {
             return;
         }
 
-        let type_idx = self.next_type_idx;
-        self.type_section.ty().function(
-            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
-            vec![ValType::I32],
-        );
-        self.next_type_idx += 1;
+        let type_idx = self.get_or_create_str_cmp_type_idx();
 
         let func_idx = self.next_func_idx;
         self.function_section.function(type_idx);
@@ -1139,7 +1145,6 @@ impl WasmCompiler {
 
             if field.go_type_tag.as_deref() == Some("__string") {
                 // String field: (ptr, len) pair at offset and offset+4.
-                // Call __rt_streq(ptr_a, len_a, ptr_b, len_b).
                 if let Some(streq_idx) = self.rt_streq_func_idx {
                     func.instruction(&Instruction::LocalGet(0));
                     func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
@@ -1151,7 +1156,6 @@ impl WasmCompiler {
                     func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::Call(streq_idx));
                 } else {
-                    // Fallback: compare both ptr and len words
                     func.instruction(&Instruction::LocalGet(0));
                     func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     func.instruction(&Instruction::LocalGet(1));
@@ -1164,6 +1168,21 @@ impl WasmCompiler {
                     func.instruction(&Instruction::I32Eq);
                     func.instruction(&Instruction::I32And);
                 }
+                skip_next = true;
+            } else if field.go_type_tag.as_deref() == Some("__interface") {
+                // Interface field: (data_ptr, type_id) pair at offset and offset+4.
+                // type_id_a == type_id_b AND data_ptr_a == data_ptr_b
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::I32Eq);
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                func.instruction(&Instruction::I32Eq);
+                func.instruction(&Instruction::I32And);
                 skip_next = true;
             } else {
                 match field.wasm_type {
@@ -1380,6 +1399,11 @@ impl WasmCompiler {
         } else {
             (Self::TYPE_DESC_BASE as u32 + max_type_id * Self::TYPE_DESC_ENTRY_SIZE as u32 + 7) & !7
         };
+
+        if itab_base as usize + table_size > Self::HEAP_BASE as usize {
+            // Itab would overflow into the heap region; skip vtable-based dispatch.
+            return;
+        }
         self.itab_base = itab_base;
 
         let mut data = vec![0u8; table_size];
@@ -1431,13 +1455,4 @@ impl WasmCompiler {
         }
     }
 
-    pub(crate) fn get_iface_id(&mut self, iface_name: &str) -> u32 {
-        if let Some(&id) = self.iface_ids.get(iface_name) {
-            return id;
-        }
-        let id = self.next_iface_id;
-        self.next_iface_id += 1;
-        self.iface_ids.insert(iface_name.to_string(), id);
-        id
-    }
 }

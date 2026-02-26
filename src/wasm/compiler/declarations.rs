@@ -1038,17 +1038,6 @@ impl WasmCompiler {
             f.field_index = i as u32;
         }
 
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                let fields_str: String = result_fields.iter().map(|fd| format!("{}:{}@{}", fd.name, fd.wasm_type.byte_size(), fd.offset)).collect::<Vec<_>>().join(",");
-                let _ = writeln!(f, r#"{{"hypothesisId":"F","location":"declarations.rs:compute_struct_def","message":"struct layout","data":{{"fields":"{}","total_size":{},"pkg":"{}"}},"timestamp":{}}}"#,
-                    fields_str, total_size, self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-            }
-        }
-        // #endregion
-
         StructDef {
             fields: result_fields,
             total_size,
