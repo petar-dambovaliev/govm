@@ -1280,5 +1280,5 @@ func F() int {
 "#;
     let (mut s, inst) = compile_and_instantiate(src);
     let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
-    assert_eq!(f.call(&mut s, ()).unwrap(), 150, "sum of [5]byte{10,20,30,40,50} should be 150");
+    assert_eq!(f.call(&mut s, ()).unwrap(), 150, "sum of [5]byte{{10,20,30,40,50}} should be 150");
 }
