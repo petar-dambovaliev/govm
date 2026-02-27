@@ -775,3 +775,144 @@ func F() int {
     let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
     assert_eq!(f.call(&mut s, ()).unwrap(), 6, "string array elements must not overlap");
 }
+
+// =============================================================================
+// Host runtime function tests
+// =============================================================================
+
+#[test]
+fn test_host_rt_streq() {
+    let src = r#"package main
+func F() int {
+    a := "hello"
+    b := "hello"
+    c := "world"
+    r := 0
+    if a == b { r += 1 }
+    if a != c { r += 10 }
+    if "" == "" { r += 100 }
+    return r
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 111);
+}
+
+#[test]
+fn test_host_rt_strcmp() {
+    let src = r#"package main
+func F() int {
+    r := 0
+    if "abc" < "abd" { r += 1 }
+    if "xyz" > "abc" { r += 10 }
+    if "abc" <= "abc" { r += 100 }
+    if "abc" >= "abc" { r += 1000 }
+    return r
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 1111);
+}
+
+#[test]
+fn test_host_rt_str_concat() {
+    let src = r#"package main
+func F() int {
+    a := "hello" + " " + "world"
+    return len(a)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 11);
+}
+
+#[test]
+fn test_host_rt_str_concat_empty() {
+    let src = r#"package main
+func F() int {
+    a := "" + ""
+    b := "x" + ""
+    c := "" + "y"
+    return len(a) + len(b) + len(c)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 2);
+}
+
+#[test]
+fn test_host_rt_i64_to_str() {
+    let src = r#"package main
+func F() int {
+    x := 42
+    s := "" + string(rune(48 + x%10))
+    return len(s)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 1);
+}
+
+#[test]
+fn test_host_rt_alloc() {
+    let src = r#"package main
+func F() int {
+    a := "first"
+    b := "second"
+    c := "third"
+    return len(a) + len(b) + len(c)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 16);
+}
+
+#[test]
+fn test_host_struct_eq() {
+    let src = r#"package main
+type Point struct {
+    X int
+    Y int
+}
+func F() int {
+    a := Point{X: 1, Y: 2}
+    b := Point{X: 1, Y: 2}
+    c := Point{X: 3, Y: 4}
+    r := 0
+    if a == b { r += 1 }
+    if a != c { r += 10 }
+    return r
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 11);
+}
+
+#[test]
+fn test_host_struct_string_field_eq() {
+    let src = r#"package main
+type Person struct {
+    Name string
+    Age  int
+}
+func F() int {
+    a := Person{Name: "Alice", Age: 30}
+    b := Person{Name: "Alice", Age: 30}
+    c := Person{Name: "Bob", Age: 30}
+    r := 0
+    if a == b { r += 1 }
+    if a != c { r += 10 }
+    return r
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 11);
+}
