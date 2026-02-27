@@ -916,3 +916,178 @@ func F() int {
     let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
     assert_eq!(f.call(&mut s, ()).unwrap(), 11);
 }
+
+// =============================================================================
+// Regression: nil map operations after memory allocation
+// =============================================================================
+
+#[test]
+fn test_nil_map_range_after_alloc() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 10)
+    s[0] = 999
+    var m map[string]int
+    count := 0
+    for range m {
+        count = count + 1
+    }
+    return count
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "range over nil map should iterate 0 times");
+}
+
+#[test]
+fn test_nil_map_get_after_alloc() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 10)
+    s[0] = 999
+    var m map[string]int
+    return m["key"]
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "reading nil map should return zero value");
+}
+
+#[test]
+fn test_nil_map_get_ok_returns_false() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 10)
+    s[0] = 999
+    var m map[string]int
+    v, ok := m["key"]
+    r := v
+    if ok {
+        r = r + 1000
+    }
+    return r
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "nil map comma-ok should return (0, false)");
+}
+
+#[test]
+fn test_nil_map_delete_after_alloc() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 10)
+    s[0] = 999
+    var m map[int]int
+    delete(m, 1)
+    return 42
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 42, "delete on nil map should be a no-op");
+}
+
+// =============================================================================
+// Regression: copy() with nil slices
+// =============================================================================
+
+#[test]
+fn test_copy_nil_slices_returns_zero() {
+    let src = r#"package main
+
+func F() int {
+    var dst []int
+    var src []int
+    return copy(dst, src)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "copy(nil, nil) should return 0");
+}
+
+#[test]
+fn test_copy_nil_dst_returns_zero() {
+    let src = r#"package main
+
+func F() int {
+    var dst []int
+    src := []int{1, 2, 3}
+    return copy(dst, src)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "copy(nil, src) should return 0");
+}
+
+// =============================================================================
+// Regression: large shift counts
+// =============================================================================
+
+#[test]
+fn test_shift_left_large_count() {
+    let src = r#"package main
+
+func F() int {
+    x := 1
+    shift := 100
+    return x << shift
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "1 << 100 should be 0 for int");
+}
+
+#[test]
+fn test_shift_right_large_count_positive() {
+    let src = r#"package main
+
+func F() int {
+    x := 12345
+    shift := 100
+    return x >> shift
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "positive >> 100 should be 0");
+}
+
+#[test]
+fn test_shift_right_large_count_negative() {
+    let src = r#"package main
+
+func F() int {
+    x := -1
+    shift := 100
+    return x >> shift
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), -1, "negative >> 100 should be -1 (sign-extended)");
+}
+
+#[test]
+fn test_shift_left_exactly_64() {
+    let src = r#"package main
+
+func F() int {
+    x := 1
+    return x << 64
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "1 << 64 should be 0 for int");
+}

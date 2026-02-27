@@ -1717,7 +1717,7 @@ impl WasmCompiler {
                     }
                 }
                 let is_unsigned = self.is_unsigned_expr(&op.x, locals) || self.is_unsigned_expr(y, locals);
-                self.emit_i64_op_signed(op.op, !is_unsigned, out)?;
+                self.emit_i64_op_signed(op.op, !is_unsigned, out, locals)?;
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int64 });
             }
 
@@ -1820,7 +1820,7 @@ impl WasmCompiler {
             if lhs_type == ValType::I32 && rhs_type == ValType::I32 {
                 self.compile_expression(&op.x, out, locals)?;
                 self.compile_expression(y, out, locals)?;
-                self.emit_i32_op_signed(op.op, !is_unsigned, out)?;
+                self.emit_i32_op_signed(op.op, !is_unsigned, out, locals)?;
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
             }
 
@@ -1835,7 +1835,7 @@ impl WasmCompiler {
                     let val = Self::parse_go_int(&lit.value).unwrap_or(0) as i32;
                     out.push(Instruction::I32Const(val));
                 }
-                self.emit_i32_op_signed(op.op, !is_unsigned, out)?;
+                self.emit_i32_op_signed(op.op, !is_unsigned, out, locals)?;
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
             }
 
@@ -1845,7 +1845,7 @@ impl WasmCompiler {
                     out.push(Instruction::I32Const(val));
                 }
                 self.compile_expression(y, out, locals)?;
-                self.emit_i32_op_signed(op.op, !is_unsigned, out)?;
+                self.emit_i32_op_signed(op.op, !is_unsigned, out, locals)?;
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int32 });
             }
 
@@ -1877,7 +1877,7 @@ impl WasmCompiler {
                 self.compile_expression(y, out, locals)?;
             }
 
-            self.emit_i64_op_signed(op.op, !is_unsigned, out)?;
+            self.emit_i64_op_signed(op.op, !is_unsigned, out, locals)?;
             return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Int64 });
         }
 
@@ -2132,6 +2132,7 @@ impl WasmCompiler {
         op: Operator,
         signed: bool,
         out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
         match op {
             Operator::Add => out.push(Instruction::I64Add),
@@ -2142,8 +2143,45 @@ impl WasmCompiler {
             Operator::And => out.push(Instruction::I64And),
             Operator::Or => out.push(Instruction::I64Or),
             Operator::Xor => out.push(Instruction::I64Xor),
-            Operator::Shl => out.push(Instruction::I64Shl),
-            Operator::Shr => out.push(if signed { Instruction::I64ShrS } else { Instruction::I64ShrU }),
+            Operator::Shl => {
+                // Go spec: shifts >= 64 produce 0. WASM masks count by 64, so we guard.
+                let cnt = locals.add_local(&format!("__shl64_{}", locals.locals.len()), ValType::I64);
+                out.push(Instruction::LocalTee(cnt));
+                out.push(Instruction::I64Shl);
+                out.push(Instruction::I64Const(0));
+                out.push(Instruction::LocalGet(cnt));
+                out.push(Instruction::I64Const(64));
+                out.push(Instruction::I64LtU);
+                out.push(Instruction::Select);
+            }
+            Operator::Shr => {
+                if signed {
+                    // Signed right shift: count >= 64 gives lhs >> 63 (0 or -1)
+                    let cnt = locals.add_local(&format!("__shr64_{}", locals.locals.len()), ValType::I64);
+                    let lhs = locals.add_local(&format!("__shr64_l_{}", locals.locals.len()), ValType::I64);
+                    out.push(Instruction::LocalSet(cnt));
+                    out.push(Instruction::LocalTee(lhs));
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I64ShrS);
+                    out.push(Instruction::LocalGet(lhs));
+                    out.push(Instruction::I64Const(63));
+                    out.push(Instruction::I64ShrS);
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I64Const(64));
+                    out.push(Instruction::I64LtU);
+                    out.push(Instruction::Select);
+                } else {
+                    // Unsigned right shift: count >= 64 gives 0
+                    let cnt = locals.add_local(&format!("__shru64_{}", locals.locals.len()), ValType::I64);
+                    out.push(Instruction::LocalTee(cnt));
+                    out.push(Instruction::I64ShrU);
+                    out.push(Instruction::I64Const(0));
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I64Const(64));
+                    out.push(Instruction::I64LtU);
+                    out.push(Instruction::Select);
+                }
+            }
             Operator::AndNot => {
                 out.push(Instruction::I64Const(-1));
                 out.push(Instruction::I64Xor);
@@ -2170,6 +2208,7 @@ impl WasmCompiler {
         op: Operator,
         signed: bool,
         out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
         match op {
             Operator::Add => out.push(Instruction::I32Add),
@@ -2180,8 +2219,45 @@ impl WasmCompiler {
             Operator::And => out.push(Instruction::I32And),
             Operator::Or => out.push(Instruction::I32Or),
             Operator::Xor => out.push(Instruction::I32Xor),
-            Operator::Shl => out.push(Instruction::I32Shl),
-            Operator::Shr => out.push(if signed { Instruction::I32ShrS } else { Instruction::I32ShrU }),
+            Operator::Shl => {
+                // Go spec: shifts >= 32 produce 0. WASM masks count by 32, so we guard.
+                let cnt = locals.add_local(&format!("__shl32_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalTee(cnt));
+                out.push(Instruction::I32Shl);
+                out.push(Instruction::I32Const(0));
+                out.push(Instruction::LocalGet(cnt));
+                out.push(Instruction::I32Const(32));
+                out.push(Instruction::I32LtU);
+                out.push(Instruction::Select);
+            }
+            Operator::Shr => {
+                if signed {
+                    // Signed right shift: count >= 32 gives lhs >> 31 (0 or -1)
+                    let cnt = locals.add_local(&format!("__shr32_{}", locals.locals.len()), ValType::I32);
+                    let lhs = locals.add_local(&format!("__shr32_l_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalSet(cnt));
+                    out.push(Instruction::LocalTee(lhs));
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I32ShrS);
+                    out.push(Instruction::LocalGet(lhs));
+                    out.push(Instruction::I32Const(31));
+                    out.push(Instruction::I32ShrS);
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I32Const(32));
+                    out.push(Instruction::I32LtU);
+                    out.push(Instruction::Select);
+                } else {
+                    // Unsigned right shift: count >= 32 gives 0
+                    let cnt = locals.add_local(&format!("__shru32_{}", locals.locals.len()), ValType::I32);
+                    out.push(Instruction::LocalTee(cnt));
+                    out.push(Instruction::I32ShrU);
+                    out.push(Instruction::I32Const(0));
+                    out.push(Instruction::LocalGet(cnt));
+                    out.push(Instruction::I32Const(32));
+                    out.push(Instruction::I32LtU);
+                    out.push(Instruction::Select);
+                }
+            }
             Operator::AndNot => {
                 out.push(Instruction::I32Const(-1));
                 out.push(Instruction::I32Xor);

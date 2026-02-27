@@ -248,6 +248,20 @@ impl WasmCompiler {
         );
         out.push(Instruction::LocalSet(src_hdr));
 
+        let n_local = locals.add_local(
+            &format!("__copy_n_{}", locals.locals.len()),
+            ValType::I32,
+        );
+
+        // Nil slice guard: if either header is nil, copy returns 0
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::LocalGet(src_hdr));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::I32Or);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Else);
+
         // Load dst len
         let dst_len = locals.add_local(
             &format!("__copy_dlen_{}", locals.locals.len()),
@@ -275,10 +289,6 @@ impl WasmCompiler {
         out.push(Instruction::LocalSet(src_len));
 
         // n = min(dst_len, src_len)
-        let n_local = locals.add_local(
-            &format!("__copy_n_{}", locals.locals.len()),
-            ValType::I32,
-        );
         out.push(Instruction::LocalGet(dst_len));
         out.push(Instruction::LocalGet(src_len));
         out.push(Instruction::LocalGet(dst_len));
@@ -308,7 +318,9 @@ impl WasmCompiler {
             src_mem: 0,
         });
 
-        // Push n as i64 (Go copy returns int)
+        out.push(Instruction::End); // end nil slice guard
+
+        // Push n as i64 (Go copy returns int); n_local is 0 if nil branch was taken
         out.push(Instruction::LocalGet(n_local));
         out.push(Instruction::I64ExtendI32S);
         Ok(())
@@ -682,7 +694,14 @@ impl WasmCompiler {
 
         let num_new_elems = (call.args.len() - 1) as i32;
 
-        // Compile and store each element to append
+        // Go spec: evaluate arguments left-to-right. Compile slice first, then elements.
+        self.compile_expression(&call.args[0], out, locals)?;
+        let hdr_local = locals.add_local(
+            &format!("__app_hdr_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::LocalSet(hdr_local));
+
         let mut elem_locals = Vec::with_capacity(num_new_elems as usize);
         for i in 1..call.args.len() {
             self.compile_expression(&call.args[i], out, locals)?;
@@ -708,14 +727,6 @@ impl WasmCompiler {
             out.push(Instruction::LocalSet(el));
             elem_locals.push(el);
         }
-
-        // Compile slice argument (header pointer)
-        self.compile_expression(&call.args[0], out, locals)?;
-        let hdr_local = locals.add_local(
-            &format!("__app_hdr_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::LocalSet(hdr_local));
 
         // Nil-slice guard: if hdr_local == 0, allocate a fresh 12-byte header
         out.push(Instruction::LocalGet(hdr_local));

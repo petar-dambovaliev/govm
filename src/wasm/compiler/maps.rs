@@ -27,6 +27,12 @@ impl WasmCompiler {
         let entry_local = locals.add_local("__rm_entry", ValType::I32);
         let slot_local = locals.add_local("__rm_slot", ValType::I32);
 
+        // Nil map guard: if map is nil, skip the entire loop (0 iterations)
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Else);
+
         // Load capacity and data_ptr from map header
         out.push(Instruction::LocalGet(map_local));
         out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
@@ -190,6 +196,8 @@ impl WasmCompiler {
         out.push(Instruction::End); // block
 
         self.loop_depth.pop();
+
+        out.push(Instruction::End); // end nil map guard
 
         Ok(())
     }
@@ -367,16 +375,8 @@ impl WasmCompiler {
             key_len_local = None;
         }
 
-        // Load map header
         let cap_local = locals.add_local(&format!("__mg_cap_{}", locals.locals.len()), ValType::I32);
         let data_local = locals.add_local(&format!("__mg_data_{}", locals.locals.len()), ValType::I32);
-        out.push(Instruction::LocalGet(map_local));
-        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(cap_local));
-        out.push(Instruction::LocalGet(map_local));
-        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(data_local));
-
         let i_local = locals.add_local(&format!("__mg_i_{}", locals.locals.len()), ValType::I32);
         let entry_local = locals.add_local(&format!("__mg_e_{}", locals.locals.len()), ValType::I32);
         let found_local = locals.add_local(&format!("__mg_found_{}", locals.locals.len()), ValType::I32);
@@ -390,6 +390,20 @@ impl WasmCompiler {
         } else {
             None
         };
+
+        // Nil map guard: skip lookup, result_local stays zero-initialized
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Else);
+
+        // Load map header
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(cap_local));
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(data_local));
 
         out.push(Instruction::I32Const(0));
         out.push(Instruction::LocalSet(i_local));
@@ -450,6 +464,8 @@ impl WasmCompiler {
         out.push(Instruction::End);
         out.push(Instruction::End);
 
+        out.push(Instruction::End); // end nil map guard
+
         out.push(Instruction::LocalGet(result_local));
         if mti.is_string_val {
             out.push(Instruction::LocalGet(result_len_local.unwrap()));
@@ -500,13 +516,6 @@ impl WasmCompiler {
 
         let cap_local = locals.add_local(&format!("__mgok_cap_{}", locals.locals.len()), ValType::I32);
         let data_local = locals.add_local(&format!("__mgok_data_{}", locals.locals.len()), ValType::I32);
-        out.push(Instruction::LocalGet(map_local));
-        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(cap_local));
-        out.push(Instruction::LocalGet(map_local));
-        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(data_local));
-
         let i_local = locals.add_local(&format!("__mgok_i_{}", locals.locals.len()), ValType::I32);
         let entry_local = locals.add_local(&format!("__mgok_e_{}", locals.locals.len()), ValType::I32);
 
@@ -526,9 +535,23 @@ impl WasmCompiler {
         let ok_local = locals.add_local(ok_var, ValType::I32);
 
         out.push(Instruction::I32Const(0));
-        out.push(Instruction::LocalSet(i_local));
-        out.push(Instruction::I32Const(0));
         out.push(Instruction::LocalSet(ok_local));
+
+        // Nil map guard: skip lookup, val_local stays zero, ok stays 0
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Else);
+
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(cap_local));
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+        out.push(Instruction::LocalSet(data_local));
+
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalSet(i_local));
 
         out.push(Instruction::Block(BlockType::Empty));
         out.push(Instruction::Loop(BlockType::Empty));
@@ -582,6 +605,8 @@ impl WasmCompiler {
         out.push(Instruction::Br(0));
         out.push(Instruction::End); // loop
         out.push(Instruction::End); // block
+
+        out.push(Instruction::End); // end nil map guard
 
         Ok(())
     }
@@ -862,6 +887,12 @@ impl WasmCompiler {
             key_len_local = None;
         }
 
+        // Nil map guard: delete on nil map is a no-op per Go spec
+        out.push(Instruction::LocalGet(map_local));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Else);
+
         let cap_local = locals.add_local(&format!("__md_cap_{}", locals.locals.len()), ValType::I32);
         let data_local = locals.add_local(&format!("__md_data_{}", locals.locals.len()), ValType::I32);
         out.push(Instruction::LocalGet(map_local));
@@ -922,6 +953,8 @@ impl WasmCompiler {
         out.push(Instruction::Br(0));
         out.push(Instruction::End); // loop
         out.push(Instruction::End); // block
+
+        out.push(Instruction::End); // end nil map guard
 
         Ok(())
     }
