@@ -1565,21 +1565,18 @@ impl WasmCompiler {
                             let rhs_data = locals.find(&rhs_id.name).ok_or_else(|| {
                                 Error::InternalError(format!("variable '{}' not found", rhs_id.name))
                             })?;
-                            // tid_a == tid_b AND __rt_eq(tid_a, data_a, data_b)
+                            // tid_a == tid_b AND data_a == data_b (pointer identity)
+                            // Note: __rt_eq is not used here because interface boxing
+                            // stores a pointer in a heap cell, and comparison functions
+                            // expect direct data pointers. Until boxing is reworked,
+                            // pointer identity is the correct semantic for interfaces.
                             out.push(Instruction::LocalGet(lhs_tid));
                             out.push(Instruction::LocalGet(rhs_tid));
                             out.push(Instruction::I32Eq);
                             out.push(Instruction::If(BlockType::Result(ValType::I32)));
-                            if let Some(rt_eq_idx) = self.rt_eq_func_idx {
-                                out.push(Instruction::LocalGet(lhs_tid));
-                                out.push(Instruction::LocalGet(lhs_data));
-                                out.push(Instruction::LocalGet(rhs_data));
-                                out.push(Instruction::Call(rt_eq_idx));
-                            } else {
-                                out.push(Instruction::LocalGet(lhs_data));
-                                out.push(Instruction::LocalGet(rhs_data));
-                                out.push(Instruction::I32Eq);
-                            }
+                            out.push(Instruction::LocalGet(lhs_data));
+                            out.push(Instruction::LocalGet(rhs_data));
+                            out.push(Instruction::I32Eq);
                             out.push(Instruction::Else);
                             out.push(Instruction::I32Const(0));
                             out.push(Instruction::End);
@@ -1598,21 +1595,14 @@ impl WasmCompiler {
                 if lhs_is_any_iface || rhs_is_any_iface {
                     let (lhs_data, lhs_tid) = self.compile_iface_expr_to_locals(&op.x, out, locals)?;
                     let (rhs_data, rhs_tid) = self.compile_iface_expr_to_locals(y, out, locals)?;
-                    // tid_a == tid_b AND __rt_eq(tid_a, data_a, data_b)
+                    // tid_a == tid_b AND data_a == data_b (pointer identity)
                     out.push(Instruction::LocalGet(lhs_tid));
                     out.push(Instruction::LocalGet(rhs_tid));
                     out.push(Instruction::I32Eq);
                     out.push(Instruction::If(BlockType::Result(ValType::I32)));
-                    if let Some(rt_eq_idx) = self.rt_eq_func_idx {
-                        out.push(Instruction::LocalGet(lhs_tid));
-                        out.push(Instruction::LocalGet(lhs_data));
-                        out.push(Instruction::LocalGet(rhs_data));
-                        out.push(Instruction::Call(rt_eq_idx));
-                    } else {
-                        out.push(Instruction::LocalGet(lhs_data));
-                        out.push(Instruction::LocalGet(rhs_data));
-                        out.push(Instruction::I32Eq);
-                    }
+                    out.push(Instruction::LocalGet(lhs_data));
+                    out.push(Instruction::LocalGet(rhs_data));
+                    out.push(Instruction::I32Eq);
                     out.push(Instruction::Else);
                     out.push(Instruction::I32Const(0));
                     out.push(Instruction::End);
