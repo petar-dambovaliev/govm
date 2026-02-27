@@ -305,7 +305,11 @@ impl WasmCompiler {
         match vt {
             ValType::I64 | ValType::I32 => {
                 if vt == ValType::I32 {
-                    out.push(Instruction::I64ExtendI32S);
+                    if self.is_unsigned_expr(expr, locals) {
+                        out.push(Instruction::I64ExtendI32U);
+                    } else {
+                        out.push(Instruction::I64ExtendI32S);
+                    }
                 }
                 self.emit_i64_to_string(out, locals)?;
             }

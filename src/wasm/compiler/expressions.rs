@@ -2744,7 +2744,8 @@ impl WasmCompiler {
                     if elem_vt == ValType::I64 {
                         let int_val = match cv {
                             ConstValue::I64(v) => v as i64,
-                            ConstValue::F64(v) => v as u64 as i64,
+                            ConstValue::F64(v) if is_unsigned_elem => v as u64 as i64,
+                            ConstValue::F64(v) => v as i64,
                             _ => {
                                 self.compile_expression(expr, out, locals)?;
                                 let val_vt = self.infer_val_type(expr, locals);
@@ -2922,8 +2923,11 @@ impl WasmCompiler {
                 let is_unsigned_elem = Self::is_unsigned_array_elem(&slice_type.typ);
                 if let Some(cv) = self.try_eval_const_expr(expr) {
                     match (elem_vt, &cv) {
-                        (ValType::I64, ConstValue::F64(v)) => {
+                        (ValType::I64, ConstValue::F64(v)) if is_unsigned_elem => {
                             out.push(Instruction::I64Const(*v as u64 as i64));
+                        }
+                        (ValType::I64, ConstValue::F64(v)) => {
+                            out.push(Instruction::I64Const(*v as i64));
                         }
                         (ValType::I64, ConstValue::I64(v)) => {
                             out.push(Instruction::I64Const(*v as i64));

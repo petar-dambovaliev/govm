@@ -1282,3 +1282,76 @@ func F() int {
     let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
     assert_eq!(f.call(&mut s, ()).unwrap(), 150, "sum of [5]byte{{10,20,30,40,50}} should be 150");
 }
+
+// =============================================================================
+// Regression: negative float constants in signed int64 array literals
+// =============================================================================
+
+#[test]
+fn test_negative_float_const_in_int64_array() {
+    let src = r#"package main
+
+func F() int {
+    arr := [3]int64{-1.0, -2.0, -3.0}
+    return int(arr[0] + arr[1] + arr[2])
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        -6,
+        "negative float constants in int64 array should be correctly converted"
+    );
+}
+
+// =============================================================================
+// Regression: negative float constants in signed int64 slice literals
+// =============================================================================
+
+#[test]
+fn test_negative_float_const_in_int64_slice() {
+    let src = r#"package main
+
+func F() int {
+    s := []int64{-1.0, -2.0, -3.0}
+    return int(s[0] + s[1] + s[2])
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        -6,
+        "negative float constants in int64 slice should be correctly converted"
+    );
+}
+
+// =============================================================================
+// Regression: println of unsigned uint32 must zero-extend, not sign-extend
+// =============================================================================
+
+#[test]
+fn test_println_uint32_high_bit() {
+    let src = r#"package main
+
+func F() int {
+    var x uint32 = 0x80000001
+    println(x)
+    return 0
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    f.call(&mut s, ()).unwrap();
+    let logs = &s.data().logs;
+    assert!(
+        !logs.is_empty(),
+        "println should produce at least one log entry"
+    );
+    let output = logs.last().unwrap().trim();
+    assert_eq!(
+        output, "2147483649",
+        "uint32(0x80000001) should print as 2147483649, not as a negative number"
+    );
+}
