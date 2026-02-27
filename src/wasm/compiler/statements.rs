@@ -2290,9 +2290,13 @@ impl WasmCompiler {
             locals.get_var_struct_type(&ident.name) == Some("__slice")
         } else if let ast::Expression::Selector(sel) = &range.expr {
             self.is_selector_slice_field(sel, locals)
-        } else if let ast::Expression::Call(_) = &range.expr {
-            let go_types = self.call_return_go_types(&range.expr, locals);
-            go_types.len() == 1 && go_types[0].starts_with("[]")
+        } else if let ast::Expression::Call(call) = &range.expr {
+            if matches!(call.func.as_ref(), ast::Expression::TypeSlice(_)) {
+                true
+            } else {
+                let go_types = self.call_return_go_types(&range.expr, locals);
+                go_types.len() == 1 && go_types[0].starts_with("[]")
+            }
         } else {
             false
         };
@@ -2668,6 +2672,12 @@ impl WasmCompiler {
                                 .get(&range_ident.name)
                                 .copied()
                                 .unwrap_or(ValType::I64)
+                        } else if let ast::Expression::Call(call) = &range.expr {
+                            if let ast::Expression::TypeSlice(slice_type) = call.func.as_ref() {
+                                self.infer_array_elem_vt(slice_type.typ.as_ref())
+                            } else {
+                                ValType::I64
+                            }
                         } else {
                             ValType::I64
                         };

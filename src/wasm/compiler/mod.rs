@@ -1461,6 +1461,7 @@ impl WasmCompiler {
         self.emit_host_imports();
         self.emit_native_imports(file)?;
         self.emit_reset_function();
+        self.emit_alloc_export();
         self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 

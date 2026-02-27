@@ -1045,9 +1045,9 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::Paren(p) => self.is_unsigned_expr(&p.expr, locals),
-            ast::Expression::Operation(op) if op.y.is_some() => {
+            ast::Expression::Operation(op) => {
                 self.is_unsigned_expr(&op.x, locals)
-                    || self.is_unsigned_expr(op.y.as_ref().unwrap(), locals)
+                    || op.y.as_ref().map_or(false, |y| self.is_unsigned_expr(y, locals))
             }
             _ => false,
         }

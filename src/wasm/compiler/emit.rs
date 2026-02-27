@@ -478,6 +478,46 @@ impl WasmCompiler {
         });
     }
 
+    pub(crate) fn emit_alloc_export(&mut self) {
+        let alloc_idx = match self.alloc_func_idx_stored {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let type_idx = self.next_type_idx;
+        self.type_section
+            .ty()
+            .function(vec![ValType::I32], vec![ValType::I32]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.function_section.function(type_idx);
+        self.next_func_idx += 1;
+
+        let mut func = Function::new(vec![]);
+        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::Call(alloc_idx));
+        func.instruction(&Instruction::End);
+
+        self.code_buffer.push((func_idx, func));
+        self.export_section
+            .export("alloc", ExportKind::Func, func_idx);
+
+        self.functions.push(FuncInfo {
+            wasm_func_idx: func_idx,
+            type_idx,
+            name: "__wasm_alloc".to_string(),
+            params: vec![("size".to_string(), WasmType::I32)],
+            results: vec![WasmType::I32],
+            result_go_types: vec![],
+            is_exported: true,
+            recv_type: None,
+            is_variadic: false,
+            variadic_elem_vt: None,
+            iface_param_indices: vec![],
+        });
+    }
+
     pub(crate) fn emit_gc_string_bridge_function(&mut self) {
         let go_string_idx = match self.gc_builtin_types.go_string {
             Some(idx) => idx,

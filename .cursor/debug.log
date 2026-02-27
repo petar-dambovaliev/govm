@@ -1,0 +1,11 @@
+{"id":"alloc_emit","timestamp":1772211230315,"location":"emit.rs:emit_alloc_export","message":"emitting alloc export wrapper","data":{"alloc_idx":9,"func_idx":15},"hypothesisId":"A"}
+{"id":"diag_intsize","location":"strconv_test","message":"DiagIntSize","data":{"intSize":64},"hypothesisId":"H4"}
+{"id":"diag_nilerr","location":"strconv_test","message":"DiagNilError","data":{"result":0},"hypothesisId":"H5"}
+{"id":"diag_len","location":"strconv_test","message":"DiagLen","data":{"len":2},"hypothesisId":"H1"}
+{"id":"diag_idx0","location":"strconv_test","message":"DiagIndex0","data":{"byte_val":52},"hypothesisId":"H2"}
+{"id":"diag_byteconv","location":"strconv_test","message":"DiagByteConv","data":{"byte_val":52},"hypothesisId":"H3"}
+{"id":"diag_bytesub","location":"strconv_test","message":"DiagByteSub","data":{"result":4},"hypothesisId":"H8"}
+{"id":"diag_rangebytes","location":"strconv_test","message":"DiagRangeBytes","data":{"sum":102},"hypothesisId":"H7"}
+{"id":"diag_fastatoi","location":"strconv_test","message":"DiagFastAtoi","data":{"result":42},"hypothesisId":"H6"}
+{"id":"diag_atoi","location":"strconv_test","message":"TestAtoi result","data":{"result":42},"hypothesisId":"all"}
+{"id":"alloc_emit","timestamp":1772211254075,"location":"emit.rs:emit_alloc_export","message":"emitting alloc export wrapper","data":{"alloc_idx":9,"func_idx":15},"hypothesisId":"A"}
