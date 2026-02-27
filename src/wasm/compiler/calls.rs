@@ -114,16 +114,6 @@ impl WasmCompiler {
                                 ValType::F32 => out.push(Instruction::F32Const(0.0_f32.into())),
                                 ValType::F64 => out.push(Instruction::F64Const(0.0_f64.into())),
                                 ValType::Ref(ref_type) => {
-                                    // #region agent log
-                                    {
-                                        use std::io::Write;
-                                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                                            let _ = writeln!(f, r#"{{"hypothesisId":"A","location":"calls.rs:panic_recovery","message":"emitting ref.null for Ref return type","data":{{"heap_type":"{:?}","pkg":"{}"}},"timestamp":{}}}"#,
-                                                ref_type.heap_type, self.current_package.as_deref().unwrap_or(""),
-                                                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-                                        }
-                                    }
-                                    // #endregion
                                     out.push(Instruction::RefNull(ref_type.heap_type));
                                 }
                                 _ => out.push(Instruction::I32Const(0)),
@@ -1956,19 +1946,6 @@ impl WasmCompiler {
 
                     // Check compiled stdlib functions before hardcoded intrinsics
                     let is_inlined = Self::INLINED_NATIVE_FUNCTIONS.contains(&sel.sel.name.as_str());
-                    // #region agent log
-                    if sel.sel.name == "New" || pkg_ident.name == "errors" {
-                        use std::io::Write;
-                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                            let in_compiled = self.compiled_packages.contains(pkg_ident.name.as_str());
-                            let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
-                            let found_fn = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()).map(|f| f.wasm_func_idx);
-                            let _ = writeln!(f, r#"{{"hypothesisId":"CALL","location":"calls.rs:selector","message":"selector call trace","data":{{"pkg":"{}","method":"{}","is_inlined":{},"in_compiled_pkgs":{},"found_fn_idx":"{:?}","current_pkg":"{}"}},"timestamp":{}}}"#,
-                                pkg_ident.name, sel.sel.name, is_inlined, in_compiled, found_fn, self.current_package.as_deref().unwrap_or(""),
-                                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-                        }
-                    }
-                    // #endregion
                     if !is_inlined && self.compiled_packages.contains(pkg_ident.name.as_str()) {
                         let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()).cloned() {

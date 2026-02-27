@@ -1020,9 +1020,10 @@ impl WasmCompiler {
 
     /// Phase 3: Emit per-type comparison functions and register in function table.
     pub(crate) fn emit_type_cmp_functions(&mut self) {
-        let type_names: Vec<(String, u32)> = self.type_registry.iter()
+        let mut type_names: Vec<(String, u32)> = self.type_registry.iter()
             .map(|(name, &id)| (name.clone(), id))
             .collect();
+        type_names.sort_by(|a, b| a.0.cmp(&b.0));
 
         let cmp_type_idx = self.get_or_create_cmp_type_idx();
 
@@ -1203,6 +1204,31 @@ impl WasmCompiler {
                 func.instruction(&Instruction::I32Eq);
                 func.instruction(&Instruction::I32And);
                 skip_next = true;
+            } else if let Some(ref tag) = field.go_type_tag {
+                if self.struct_defs.contains_key(tag.as_str()) {
+                    if let (Some(rt_eq_idx), Some(&nested_type_id)) =
+                        (self.rt_eq_func_idx, self.type_registry.get(tag.as_str()))
+                    {
+                        func.instruction(&Instruction::I32Const(nested_type_id as i32));
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::Call(rt_eq_idx));
+                    } else {
+                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::LocalGet(1));
+                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                        func.instruction(&Instruction::I32Eq);
+                    }
+                } else {
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
+                    func.instruction(&Instruction::I32Eq);
+                }
             } else {
                 match field.wasm_type {
                     WasmType::I64 => {
@@ -1256,7 +1282,13 @@ impl WasmCompiler {
         }
         let mut data = vec![0u8; table_size];
 
-        for (type_name, &type_id) in &self.type_registry {
+        let mut type_entries: Vec<(String, u32)> = self.type_registry.iter()
+            .map(|(n, &id)| (n.clone(), id))
+            .collect();
+        type_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (type_name, type_id) in &type_entries {
+            let type_id = *type_id;
             let entry_offset = type_id as usize * Self::TYPE_DESC_ENTRY_SIZE as usize;
             if entry_offset + 12 > data.len() {
                 continue;
@@ -1281,7 +1313,8 @@ impl WasmCompiler {
     }
 
     fn type_byte_size(&self, type_name: &str) -> usize {
-        match type_name {
+        let resolved = self.resolve_type_name(type_name);
+        match resolved {
             "int" | "int64" | "uint" | "uint64" | "float64" => 8,
             "float32" => 4,
             "int32" | "uint32" | "rune" | "uintptr" => 4,
@@ -1290,6 +1323,8 @@ impl WasmCompiler {
             "string" => 8, // ptr + len
             _ => {
                 if let Some(sdef) = self.struct_defs.get(type_name) {
+                    sdef.total_size as usize
+                } else if let Some(sdef) = self.struct_defs.get(resolved) {
                     sdef.total_size as usize
                 } else {
                     4
@@ -1387,7 +1422,8 @@ impl WasmCompiler {
     /// so that vtable dispatch code can be emitted during Phase 3.
     /// Must be called after prescan when `iface_defs` and `type_registry` are populated.
     pub(crate) fn precompute_itab_layout(&mut self) {
-        let iface_names: Vec<String> = self.iface_defs.keys().cloned().collect();
+        let mut iface_names: Vec<String> = self.iface_defs.keys().cloned().collect();
+        iface_names.sort();
         for name in &iface_names {
             if !self.iface_ids.contains_key(name) {
                 let id = self.next_iface_id;
@@ -1441,15 +1477,21 @@ impl WasmCompiler {
 
         let mut data = vec![0u8; table_size];
 
-        let type_entries: Vec<(String, u32)> = self.type_registry.iter()
+        let mut type_entries: Vec<(String, u32)> = self.type_registry.iter()
             .map(|(n, &id)| (n.clone(), id))
             .collect();
+        type_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut iface_entries: Vec<(String, u32)> = self.iface_ids.iter()
+            .map(|(n, &id)| (n.clone(), id))
+            .collect();
+        iface_entries.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (type_name, type_id) in &type_entries {
             if *type_id >= max_type_id {
                 continue;
             }
-            for (iface_name, &iface_id) in &self.iface_ids {
+            for (iface_name, iface_id) in &iface_entries {
                 let methods = match self.iface_defs.get(iface_name) {
                     Some(m) => m.clone(),
                     None => continue,
@@ -1468,14 +1510,14 @@ impl WasmCompiler {
                 }
 
                 if all_found && !method_indices.is_empty() {
-                    let base_offset = (*type_id as usize * max_iface_id as usize + iface_id as usize) * entry_size;
+                    let base_offset = (*type_id as usize * max_iface_id as usize + *iface_id as usize) * entry_size;
                     for (i, &func_idx) in method_indices.iter().enumerate() {
                         let off = base_offset + i * 4;
                         if off + 4 <= data.len() {
                             data[off..off + 4].copy_from_slice(&func_idx.to_le_bytes());
                         }
                     }
-                    self.itab_entries.push((*type_id, iface_id, method_indices));
+                    self.itab_entries.push((*type_id, *iface_id, method_indices));
                 }
             }
         }

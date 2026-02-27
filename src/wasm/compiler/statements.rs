@@ -43,19 +43,6 @@ impl WasmCompiler {
                 }
                 self.compile_expression(&expr_stmt.expr, out, locals)?;
                 let wasm_types = self.expression_result_count(&expr_stmt.expr, Some(locals));
-                // #region agent log
-                if wasm_types > 0 {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/petardambovaliev/GolandProjects/govm/.cursor/debug.log") {
-                        let expr_desc = match &expr_stmt.expr {
-                            ast::Expression::Call(c) => format!("call:{:?}", c.func),
-                            other => format!("{:?}", other),
-                        };
-                        let _ = writeln!(f, r#"{{"hypothesisId":"E","location":"statements.rs:ExprStmt","message":"dropping values","data":{{"count":{},"expr":"{}","pkg":"{}"}},"timestamp":{}}}"#,
-                            wasm_types, expr_desc.replace('"', "'").chars().take(200).collect::<String>(), self.current_package.as_deref().unwrap_or(""), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-                    }
-                }
-                // #endregion
                 for _ in 0..wasm_types {
                     out.push(Instruction::Drop);
                 }

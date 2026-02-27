@@ -1107,7 +1107,7 @@ impl WasmCompiler {
                 if !f.name.ends_with(&format!(".{}", method_name)) {
                     return None;
                 }
-                let type_id = self.type_registry.get(type_name).copied().unwrap_or(0);
+                let type_id = self.type_registry.get(type_name).copied()?;
                 let result_types: Vec<ValType> = f.results.iter().map(|r| r.to_val_type()).collect();
                 Some((type_id, f.wasm_func_idx, result_types, f.result_go_types.clone()))
             })
@@ -1249,13 +1249,16 @@ impl WasmCompiler {
     }
 
     /// Returns `(iface_id, method_index)` for the first interface that contains
-    /// `method_name`, using a single HashMap traversal to avoid inconsistency.
+    /// `method_name`, using sorted iteration for deterministic results.
     fn find_iface_method_info(&self, method_name: &str) -> Option<(u32, u32)> {
-        for (iface_name, methods) in &self.iface_defs {
+        let mut sorted_ifaces: Vec<(&String, &Vec<String>)> = self.iface_defs.iter().collect();
+        sorted_ifaces.sort_by_key(|(name, _)| *name);
+        for (iface_name, methods) in sorted_ifaces {
             for (i, m) in methods.iter().enumerate() {
                 if m == method_name {
-                    let iface_id = self.iface_ids.get(iface_name).copied().unwrap_or(0);
-                    return Some((iface_id, i as u32));
+                    if let Some(&iface_id) = self.iface_ids.get(iface_name) {
+                        return Some((iface_id, i as u32));
+                    }
                 }
             }
         }
