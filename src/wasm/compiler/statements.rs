@@ -136,9 +136,7 @@ impl WasmCompiler {
 
                 let func_idx =
                     if let ast::Expression::Ident(ident) = defer.call.func.as_ref() {
-                        self.functions
-                            .iter()
-                            .find(|f| f.name == ident.name)
+                        self.find_func_in_pkg(&ident.name)
                             .map(|f| f.wasm_func_idx)
                     } else if let ast::Expression::Selector(sel) =
                         defer.call.func.as_ref()
@@ -2639,16 +2637,20 @@ impl WasmCompiler {
                             out.push(Instruction::LocalSet(value_local));
                         }
                     } else {
-                        let elem_vt = if let ast::Expression::Ident(range_ident) = &range.expr {
-                            if let Some(&(arr_evtype, _, ..)) = locals.array_info.get(&range_ident.name) {
-                                arr_evtype
-                            } else {
-                                locals
-                                    .slice_elem_types
-                                    .get(&range_ident.name)
-                                    .copied()
-                                    .unwrap_or(ValType::I64)
-                            }
+                        let arr_info_opt = if let ast::Expression::Ident(range_ident) = &range.expr {
+                            locals.array_info.get(&range_ident.name).copied()
+                        } else {
+                            None
+                        };
+
+                        let elem_vt = if let Some((arr_evtype, _, ..)) = arr_info_opt {
+                            arr_evtype
+                        } else if let ast::Expression::Ident(range_ident) = &range.expr {
+                            locals
+                                .slice_elem_types
+                                .get(&range_ident.name)
+                                .copied()
+                                .unwrap_or(ValType::I64)
                         } else {
                             ValType::I64
                         };
@@ -2665,9 +2667,13 @@ impl WasmCompiler {
                             })
                         };
 
-                        let (elem_size, align) = match elem_vt {
-                            ValType::I32 | ValType::F32 => (4i32, 2u32),
-                            _ => (8i32, 3u32),
+                        let (elem_size, align) = if let Some((_, _, go_es, go_ea)) = arr_info_opt {
+                            (go_es, go_ea)
+                        } else {
+                            match elem_vt {
+                                ValType::I32 | ValType::F32 => (4i32, 2u32),
+                                _ => (8i32, 3u32),
+                            }
                         };
 
                         out.push(Instruction::LocalGet(base_ptr_local));
@@ -2675,28 +2681,7 @@ impl WasmCompiler {
                         out.push(Instruction::I32Const(elem_size));
                         out.push(Instruction::I32Mul);
                         out.push(Instruction::I32Add);
-                        match elem_vt {
-                            ValType::I32 => out.push(Instruction::I32Load(MemArg {
-                                offset: 0,
-                                align,
-                                memory_index: 0,
-                            })),
-                            ValType::F32 => out.push(Instruction::F32Load(MemArg {
-                                offset: 0,
-                                align,
-                                memory_index: 0,
-                            })),
-                            ValType::F64 => out.push(Instruction::F64Load(MemArg {
-                                offset: 0,
-                                align,
-                                memory_index: 0,
-                            })),
-                            _ => out.push(Instruction::I64Load(MemArg {
-                                offset: 0,
-                                align,
-                                memory_index: 0,
-                            })),
-                        }
+                        Self::emit_go_typed_load(elem_size, align, 0, elem_vt, out);
                         out.push(Instruction::LocalSet(value_local));
                     }
                 }

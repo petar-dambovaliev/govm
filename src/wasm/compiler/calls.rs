@@ -46,6 +46,8 @@ impl WasmCompiler {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             out.push(Instruction::F64ReinterpretI64);
+                        } else {
+                            return Err(Error::InternalError("Float64frombits requires 1 argument".to_string()));
                         }
                         return Ok(GoType::Float64);
                     }
@@ -53,6 +55,8 @@ impl WasmCompiler {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
                             out.push(Instruction::I64ReinterpretF64);
+                        } else {
+                            return Err(Error::InternalError("Float64bits requires 1 argument".to_string()));
                         }
                         return Ok(GoType::Uint64);
                     }
@@ -64,6 +68,8 @@ impl WasmCompiler {
                                 out.push(Instruction::I32WrapI64);
                             }
                             out.push(Instruction::F32ReinterpretI32);
+                        } else {
+                            return Err(Error::InternalError("Float32frombits requires 1 argument".to_string()));
                         }
                         return Ok(GoType::Float32);
                     }
@@ -75,6 +81,8 @@ impl WasmCompiler {
                                 out.push(Instruction::F32DemoteF64);
                             }
                             out.push(Instruction::I32ReinterpretF32);
+                        } else {
+                            return Err(Error::InternalError("Float32bits requires 1 argument".to_string()));
                         }
                         return Ok(GoType::Int32);
                     }
@@ -972,36 +980,38 @@ impl WasmCompiler {
                     "real" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
-                            let is_64 = self.is_complex64_expr(arg, locals);
-                            let gc_idx = if is_64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
+                            let is_c64 = self.is_complex64_expr(arg, locals);
+                            let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
                             if let Some(gc_idx) = gc_idx {
                                 out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 0 });
                             } else {
-                                let align = if is_64 { 2u32 } else { 3u32 };
-                                if is_64 {
+                                let align = if is_c64 { 2u32 } else { 3u32 };
+                                if is_c64 {
                                     out.push(Instruction::F32Load(MemArg { offset: 0, align, memory_index: 0 }));
                                 } else {
                                     out.push(Instruction::F64Load(MemArg { offset: 0, align, memory_index: 0 }));
                                 }
                             }
+                            return Ok(if is_c64 { GoType::Float32 } else { GoType::Float64 });
                         }
                         return Ok(GoType::Float64);
                     }
                     "imag" => {
                         if let Some(arg) = call.args.first() {
                             self.compile_expression(arg, out, locals)?;
-                            let is_64 = self.is_complex64_expr(arg, locals);
-                            let gc_idx = if is_64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
+                            let is_c64 = self.is_complex64_expr(arg, locals);
+                            let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
                             if let Some(gc_idx) = gc_idx {
                                 out.push(Instruction::StructGet { struct_type_index: gc_idx, field_index: 1 });
                             } else {
-                                let (imag_offset, align) = if is_64 { (4u64, 2u32) } else { (8u64, 3u32) };
-                                if is_64 {
+                                let (imag_offset, align) = if is_c64 { (4u64, 2u32) } else { (8u64, 3u32) };
+                                if is_c64 {
                                     out.push(Instruction::F32Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
                                 } else {
                                     out.push(Instruction::F64Load(MemArg { offset: imag_offset, align, memory_index: 0 }));
                                 }
                             }
+                            return Ok(if is_c64 { GoType::Float32 } else { GoType::Float64 });
                         }
                         return Ok(GoType::Float64);
                     }
@@ -2268,7 +2278,20 @@ impl WasmCompiler {
                                 ));
                             }
                             self.compile_expression(&call.args[0], out, locals)?;
-                            out.push(Instruction::F64Nearest);
+                            // Go's math.Round uses round-half-away-from-zero,
+                            // NOT IEEE 754 round-to-even (f64.nearest).
+                            // Implement as: copysign(floor(abs(x) + 0.5), x)
+                            let x_local = locals.add_local(
+                                &format!("__round_x_{}", locals.locals.len()),
+                                ValType::F64,
+                            );
+                            out.push(Instruction::LocalTee(x_local));
+                            out.push(Instruction::F64Abs);
+                            out.push(Instruction::F64Const(0.5_f64.into()));
+                            out.push(Instruction::F64Add);
+                            out.push(Instruction::F64Floor);
+                            out.push(Instruction::LocalGet(x_local));
+                            out.push(Instruction::F64Copysign);
                             return Ok(GoType::Float64);
                         }
                         ("math", "Float64frombits") => {

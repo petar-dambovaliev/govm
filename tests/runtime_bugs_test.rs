@@ -1091,3 +1091,194 @@ func F() int {
     let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
     assert_eq!(f.call(&mut s, ()).unwrap(), 0, "1 << 64 should be 0 for int");
 }
+
+// =============================================================================
+// Regression: math.Round must use round-half-away-from-zero, not banker's rounding
+// =============================================================================
+
+#[test]
+fn test_math_round_half_away_from_zero() {
+    let src = r#"package main
+
+import "math"
+
+func RoundHalf() float64      { return math.Round(0.5) }
+func RoundNegHalf() float64   { return math.Round(-0.5) }
+func RoundTwoHalf() float64   { return math.Round(2.5) }
+func RoundNormal() float64    { return math.Round(3.7) }
+func RoundNegNormal() float64 { return math.Round(-3.7) }
+func RoundZero() float64      { return math.Round(0.0) }
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+
+    let f1 = inst.get_typed_func::<(), f64>(&mut s, "RoundHalf").unwrap();
+    assert!((f1.call(&mut s, ()).unwrap() - 1.0).abs() < f64::EPSILON, "Round(0.5) should be 1.0");
+
+    let f2 = inst.get_typed_func::<(), f64>(&mut s, "RoundNegHalf").unwrap();
+    assert!((f2.call(&mut s, ()).unwrap() - (-1.0)).abs() < f64::EPSILON, "Round(-0.5) should be -1.0");
+
+    let f3 = inst.get_typed_func::<(), f64>(&mut s, "RoundTwoHalf").unwrap();
+    assert!((f3.call(&mut s, ()).unwrap() - 3.0).abs() < f64::EPSILON, "Round(2.5) should be 3.0");
+
+    let f4 = inst.get_typed_func::<(), f64>(&mut s, "RoundNormal").unwrap();
+    assert!((f4.call(&mut s, ()).unwrap() - 4.0).abs() < f64::EPSILON, "Round(3.7) should be 4.0");
+
+    let f5 = inst.get_typed_func::<(), f64>(&mut s, "RoundNegNormal").unwrap();
+    assert!((f5.call(&mut s, ()).unwrap() - (-4.0)).abs() < f64::EPSILON, "Round(-3.7) should be -4.0");
+
+    let f6 = inst.get_typed_func::<(), f64>(&mut s, "RoundZero").unwrap();
+    assert!((f6.call(&mut s, ()).unwrap()).abs() < f64::EPSILON, "Round(0.0) should be 0.0");
+}
+
+// =============================================================================
+// Regression: real()/imag() on complex128 must return correct float64 values
+// =============================================================================
+
+#[test]
+fn test_real_imag_complex128_type() {
+    let src = r#"package main
+
+func RealPart() float64 {
+    c := complex(3.0, 4.0)
+    r := real(c)
+    return r + 1.0
+}
+
+func ImagPart() float64 {
+    c := complex(3.0, 4.0)
+    i := imag(c)
+    return i + 1.0
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+
+    let f1 = inst.get_typed_func::<(), f64>(&mut s, "RealPart").unwrap();
+    assert!((f1.call(&mut s, ()).unwrap() - 4.0).abs() < f64::EPSILON, "real(complex128) + 1.0 should be 4.0");
+
+    let f2 = inst.get_typed_func::<(), f64>(&mut s, "ImagPart").unwrap();
+    assert!((f2.call(&mut s, ()).unwrap() - 5.0).abs() < f64::EPSILON, "imag(complex128) + 1.0 should be 5.0");
+}
+
+// =============================================================================
+// Regression: append() must not mutate the original slice header
+// =============================================================================
+
+#[test]
+fn test_append_does_not_mutate_original() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 2, 10)
+    s[0] = 10
+    s[1] = 20
+    origLen := len(s)
+    _ = append(s, 30)
+    return origLen*100 + len(s)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    let result = f.call(&mut s, ()).unwrap();
+    assert_eq!(result, 202, "append must not mutate original slice: origLen=2, len(s) after append should still be 2, got {}", result);
+}
+
+// =============================================================================
+// Regression: len(nil_map) must return 0, not read from address 0
+// =============================================================================
+
+#[test]
+fn test_len_nil_map() {
+    let src = r#"package main
+
+func F() int {
+    var m map[string]int
+    return len(m)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "len(nil map) should be 0");
+}
+
+// =============================================================================
+// Regression: Float64frombits/Float64bits/Float32frombits/Float32bits
+// with valid arguments must work correctly
+// =============================================================================
+
+#[test]
+fn test_float_bits_roundtrip() {
+    let src = r#"package main
+
+import "math"
+
+func RoundtripF64() float64 {
+    bits := math.Float64bits(3.14)
+    return math.Float64frombits(bits)
+}
+
+func RoundtripF32() int {
+    bits := math.Float32bits(2.5)
+    f := math.Float32frombits(bits)
+    if f == 2.5 {
+        return 1
+    }
+    return 0
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+
+    let f1 = inst.get_typed_func::<(), f64>(&mut s, "RoundtripF64").unwrap();
+    assert!((f1.call(&mut s, ()).unwrap() - 3.14).abs() < f64::EPSILON, "Float64bits/Float64frombits roundtrip");
+
+    let f2 = inst.get_typed_func::<(), i64>(&mut s, "RoundtripF32").unwrap();
+    assert_eq!(f2.call(&mut s, ()).unwrap(), 1, "Float32bits/Float32frombits roundtrip");
+}
+
+// =============================================================================
+// Regression: defer must resolve functions using package-qualified name lookup
+// =============================================================================
+
+#[test]
+fn test_defer_basic_function() {
+    let src = r#"package main
+
+var result int
+
+func cleanup() {
+    result = 42
+}
+
+func F() int {
+    result = 0
+    defer cleanup()
+    result = 10
+    return result
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    let val = f.call(&mut s, ()).unwrap();
+    assert_eq!(val, 10, "deferred function should run but return value was already set");
+}
+
+// =============================================================================
+// Regression: range over [N]byte must use 1-byte stride, not 4-byte stride
+// =============================================================================
+
+#[test]
+fn test_range_byte_array_correct_stride() {
+    let src = r#"package main
+
+func F() int {
+    arr := [5]byte{10, 20, 30, 40, 50}
+    sum := 0
+    for _, v := range arr {
+        sum += int(v)
+    }
+    return sum
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 150, "sum of [5]byte{10,20,30,40,50} should be 150");
+}

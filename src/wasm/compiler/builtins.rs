@@ -45,11 +45,22 @@ impl WasmCompiler {
             }
             if !done && locals.get_var_struct_type(&ident.name) == Some("__map") {
                 self.compile_expression(arg, out, locals)?;
+                let map_ptr = locals.add_local(
+                    &format!("__len_map_{}", locals.locals.len()),
+                    ValType::I32,
+                );
+                out.push(Instruction::LocalTee(map_ptr));
+                out.push(Instruction::I32Eqz);
+                out.push(Instruction::If(BlockType::Result(ValType::I32)));
+                out.push(Instruction::I32Const(0));
+                out.push(Instruction::Else);
+                out.push(Instruction::LocalGet(map_ptr));
                 out.push(Instruction::I32Load(MemArg {
                     offset: 0,
                     align: 2,
                     memory_index: 0,
                 }));
+                out.push(Instruction::End);
                 done = true;
             }
             if !done {
@@ -739,12 +750,26 @@ impl WasmCompiler {
         }
         out.push(Instruction::End);
 
+        // Allocate a NEW result header so the original slice is not mutated
+        let result_hdr = locals.add_local(
+            &format!("__app_res_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        out.push(Instruction::LocalSet(result_hdr));
+        // Copy original header into result: data_ptr, len, cap
+        out.push(Instruction::LocalGet(result_hdr));
+        out.push(Instruction::LocalGet(hdr_local));
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+
         // Load current len
         let old_len = locals.add_local(
             &format!("__app_len_{}", locals.locals.len()),
             ValType::I32,
         );
-        out.push(Instruction::LocalGet(hdr_local));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg {
             offset: 4,
             align: 2,
@@ -767,7 +792,7 @@ impl WasmCompiler {
             &format!("__app_cap_{}", locals.locals.len()),
             ValType::I32,
         );
-        out.push(Instruction::LocalGet(hdr_local));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg {
             offset: 8,
             align: 2,
@@ -856,7 +881,7 @@ impl WasmCompiler {
 
             // Copy old data: memory.copy(new_data, old_data_ptr, old_len * elem_size)
             out.push(Instruction::LocalGet(new_data));
-            out.push(Instruction::LocalGet(hdr_local));
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::I32Load(MemArg {
                 offset: 0,
                 align: 2,
@@ -870,8 +895,8 @@ impl WasmCompiler {
                 src_mem: 0,
             });
 
-            // Update header: data_ptr = new_data
-            out.push(Instruction::LocalGet(hdr_local));
+            // Update result header: data_ptr = new_data
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_data));
             out.push(Instruction::I32Store(MemArg {
                 offset: 0,
@@ -879,8 +904,8 @@ impl WasmCompiler {
                 memory_index: 0,
             }));
 
-            // Update header: cap = new_cap
-            out.push(Instruction::LocalGet(hdr_local));
+            // Update result header: cap = new_cap
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_cap));
             out.push(Instruction::I32Store(MemArg {
                 offset: 8,
@@ -890,12 +915,12 @@ impl WasmCompiler {
         }
         out.push(Instruction::End);
 
-        // Load data_ptr from header
+        // Load data_ptr from result header
         let data_ptr = locals.add_local(
             &format!("__app_dptr_{}", locals.locals.len()),
             ValType::I32,
         );
-        out.push(Instruction::LocalGet(hdr_local));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg {
             offset: 0,
             align: 2,
@@ -942,8 +967,8 @@ impl WasmCompiler {
             }
         }
 
-        // Update header: len = new_len
-        out.push(Instruction::LocalGet(hdr_local));
+        // Update result header: len = new_len
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::LocalGet(new_len));
         out.push(Instruction::I32Store(MemArg {
             offset: 4,
@@ -951,8 +976,8 @@ impl WasmCompiler {
             memory_index: 0,
         }));
 
-        // Push header pointer as result
-        out.push(Instruction::LocalGet(hdr_local));
+        // Push result header pointer
+        out.push(Instruction::LocalGet(result_hdr));
         Ok(())
     }
 
@@ -1010,13 +1035,23 @@ impl WasmCompiler {
         }
         out.push(Instruction::End);
 
+        // Allocate a NEW result header so the original slice is not mutated
+        let result_hdr = locals.add_local("__appsprd_res", ValType::I32);
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        out.push(Instruction::LocalSet(result_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+
         // Load dst len and cap
         let dst_len = locals.add_local("__appsprd_dlen", ValType::I32);
         let dst_cap = locals.add_local("__appsprd_dcap", ValType::I32);
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_len));
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_cap));
 
@@ -1089,18 +1124,18 @@ impl WasmCompiler {
 
             // Copy old data
             out.push(Instruction::LocalGet(new_data));
-            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
             out.push(Instruction::LocalGet(dst_len));
             out.push(Instruction::I32Const(elem_size));
             out.push(Instruction::I32Mul);
             out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
 
-            // Update header
-            out.push(Instruction::LocalGet(dst_hdr));
+            // Update result header
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_data));
             out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_cap));
             out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
         }
@@ -1108,7 +1143,7 @@ impl WasmCompiler {
 
         // Bulk copy: memory.copy(dst_data + dst_len*elem_size, src_data, src_len*elem_size)
         let dst_data = locals.add_local("__appsprd_ddptr", ValType::I32);
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_data));
 
@@ -1123,12 +1158,12 @@ impl WasmCompiler {
         out.push(Instruction::I32Mul);
         out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
 
-        // Update header: len = new_len
-        out.push(Instruction::LocalGet(dst_hdr));
+        // Update result header: len = new_len
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::LocalGet(new_len));
         out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
 
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         Ok(())
     }
 
@@ -1168,13 +1203,23 @@ impl WasmCompiler {
         }
         out.push(Instruction::End);
 
+        // Allocate a NEW result header so the original slice is not mutated
+        let result_hdr = locals.add_local("__appstr_res", ValType::I32);
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        out.push(Instruction::LocalSet(result_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Const(12));
+        out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
+
         // Load dst len and cap
         let dst_len = locals.add_local("__appstr_dlen", ValType::I32);
         let dst_cap = locals.add_local("__appstr_dcap", ValType::I32);
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_len));
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_cap));
 
@@ -1242,18 +1287,18 @@ impl WasmCompiler {
 
             // Copy old data
             out.push(Instruction::LocalGet(new_data));
-            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
             out.push(Instruction::LocalGet(dst_len));
             out.push(Instruction::I32Const(elem_size));
             out.push(Instruction::I32Mul);
             out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
 
-            // Update header
-            out.push(Instruction::LocalGet(dst_hdr));
+            // Update result header
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_data));
             out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-            out.push(Instruction::LocalGet(dst_hdr));
+            out.push(Instruction::LocalGet(result_hdr));
             out.push(Instruction::LocalGet(new_cap));
             out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
         }
@@ -1261,7 +1306,7 @@ impl WasmCompiler {
 
         // Copy bytes from string into I32 slots: loop over each byte
         let dst_data = locals.add_local("__appstr_ddptr", ValType::I32);
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
         out.push(Instruction::LocalSet(dst_data));
 
@@ -1302,12 +1347,12 @@ impl WasmCompiler {
         out.push(Instruction::End); // loop
         out.push(Instruction::End); // block
 
-        // Update header: len = new_len
-        out.push(Instruction::LocalGet(dst_hdr));
+        // Update result header: len = new_len
+        out.push(Instruction::LocalGet(result_hdr));
         out.push(Instruction::LocalGet(new_len));
         out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
 
-        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::LocalGet(result_hdr));
         Ok(())
     }
 }

@@ -9,6 +9,14 @@ impl WasmCompiler {
         }
     }
 
+    pub(crate) fn emit_go_typed_load(elem_size: i32, align: u32, offset: u64, vt: ValType, out: &mut Vec<Instruction<'static>>) {
+        match elem_size {
+            1 => out.push(Instruction::I32Load8U(MemArg { offset, align, memory_index: 0 })),
+            2 => out.push(Instruction::I32Load16U(MemArg { offset, align, memory_index: 0 })),
+            _ => Self::emit_typed_load(vt, offset, align, out),
+        }
+    }
+
     pub(crate) fn emit_typed_store(vt: ValType, offset: u64, align: u32, out: &mut Vec<Instruction<'static>>) {
         match vt {
             ValType::I32 => out.push(Instruction::I32Store(MemArg {
