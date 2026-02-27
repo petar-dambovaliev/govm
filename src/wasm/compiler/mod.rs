@@ -1,7 +1,7 @@
 use crate::parser::ast;
 use crate::parser::token::{Keyword, LitKind, Operator};
 use crate::symbols::{DefineType, Error, Qualifier, SymbolTable};
-use crate::wasm::types::WasmType;
+use crate::wasm::types::{WasmType, TypeCompareInfo, CmpField, CmpFieldKind};
 use crate::wasm::udf::{
     AggregateDescriptor, FieldDescriptor, FunctionDescriptor, Manifest, OutputDescriptor,
     TableDescriptor,
@@ -18,6 +18,7 @@ use wasm_encoder::{
 pub struct CompileResult {
     pub wasm_bytes: Vec<u8>,
     pub manifest: Manifest,
+    pub type_layouts: Vec<TypeCompareInfo>,
 }
 
 #[allow(dead_code)]
@@ -540,10 +541,6 @@ pub struct WasmCompiler {
     next_anon_iface_id: u32,
 
     // Runtime type descriptor table
-    type_cmp_funcs: HashMap<String, u32>,
-    /// Cached WASM type index for the comparison function signature (i32, i32) -> i32.
-    cmp_type_idx: Option<u32>,
-    /// Cached WASM type index for the string comparison signature (i32, i32, i32, i32) -> i32.
     data_offset: u32,
     rt_streq_func_idx: Option<u32>,
     rt_strcmp_func_idx: Option<u32>,
@@ -700,8 +697,6 @@ impl WasmCompiler {
             iface_method_sigs: HashMap::new(),
             next_anon_iface_id: 0,
 
-            type_cmp_funcs: HashMap::new(),
-            cmp_type_idx: None,
             data_offset: 0,
             rt_streq_func_idx: None,
             rt_strcmp_func_idx: None,
@@ -1469,8 +1464,6 @@ impl WasmCompiler {
         self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 
-        self.emit_rt_eq();
-
         // Phase 1: Prescan all types (stdlib + user) and forward-declare all functions.
         for imp in &file.imports {
             let path = imp.path.value.trim_matches('"');
@@ -1507,9 +1500,6 @@ impl WasmCompiler {
             self.compile_declaration(decl)?;
         }
 
-        // Emit per-type comparison functions (after all types are known)
-        self.emit_type_cmp_functions();
-
         // Emit itab after all functions are declared
         self.emit_itab_table();
 
@@ -1522,9 +1512,12 @@ impl WasmCompiler {
         self.build_manifest(file)?;
         self.emit_udf_wrappers(file)?;
 
+        let type_layouts = self.build_type_layouts();
+
         Ok(CompileResult {
             wasm_bytes: self.build_module(),
             manifest: self.manifest.clone(),
+            type_layouts,
         })
     }
 
@@ -1888,4 +1881,75 @@ impl WasmCompiler {
         module.finish()
     }
 
+    fn build_type_layouts(&self) -> Vec<TypeCompareInfo> {
+        let max_id = self.next_type_id as usize;
+        let mut layouts = vec![
+            TypeCompareInfo { size: 0, comparable: false, fields: vec![] };
+            max_id
+        ];
+
+        for (type_name, &type_id) in &self.type_registry {
+            let id = type_id as usize;
+            if id >= max_id {
+                continue;
+            }
+            let resolved = self.resolve_type_name(type_name).to_string();
+            let (size, comparable, fields) = match resolved.as_str() {
+                "int" | "int64" | "uint" | "uint64" => (8, true, vec![CmpField { offset: 0, kind: CmpFieldKind::I64 }]),
+                "float64" => (8, true, vec![CmpField { offset: 0, kind: CmpFieldKind::F64 }]),
+                "float32" => (4, true, vec![CmpField { offset: 0, kind: CmpFieldKind::F32 }]),
+                "int32" | "uint32" | "rune" | "uintptr" => (4, true, vec![CmpField { offset: 0, kind: CmpFieldKind::I32 }]),
+                "int16" | "uint16" => (2, true, vec![CmpField { offset: 0, kind: CmpFieldKind::I16 }]),
+                "int8" | "uint8" | "byte" | "bool" => (1, true, vec![CmpField { offset: 0, kind: CmpFieldKind::I8 }]),
+                "string" => (8, true, vec![CmpField { offset: 0, kind: CmpFieldKind::String }]),
+                _ => {
+                    if let Some(sdef) = self.struct_defs.get(type_name).or_else(|| self.struct_defs.get(resolved.as_str())) {
+                        let has_noncomparable = sdef.fields.iter().any(|f| {
+                            matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map"))
+                        });
+                        if has_noncomparable {
+                            (sdef.total_size, false, vec![])
+                        } else {
+                            let mut fields = Vec::new();
+                            let mut skip_next = false;
+                            for field in &sdef.fields {
+                                if skip_next {
+                                    skip_next = false;
+                                    continue;
+                                }
+                                let offset = field.offset;
+                                if field.go_type_tag.as_deref() == Some("__string") {
+                                    fields.push(CmpField { offset, kind: CmpFieldKind::String });
+                                    skip_next = true;
+                                } else if field.go_type_tag.as_deref() == Some("__interface") {
+                                    fields.push(CmpField { offset, kind: CmpFieldKind::Interface });
+                                    skip_next = true;
+                                } else if let Some(ref tag) = field.go_type_tag {
+                                    if let Some(&nested_tid) = self.type_registry.get(tag.as_str()) {
+                                        fields.push(CmpField { offset, kind: CmpFieldKind::Struct(nested_tid) });
+                                    } else {
+                                        fields.push(CmpField { offset, kind: CmpFieldKind::I32 });
+                                    }
+                                } else {
+                                    let kind = match field.wasm_type {
+                                        WasmType::I64 => CmpFieldKind::I64,
+                                        WasmType::F64 => CmpFieldKind::F64,
+                                        WasmType::F32 => CmpFieldKind::F32,
+                                        _ => CmpFieldKind::I32,
+                                    };
+                                    fields.push(CmpField { offset, kind });
+                                }
+                            }
+                            (sdef.total_size, true, fields)
+                        }
+                    } else {
+                        (4, false, vec![])
+                    }
+                }
+            };
+            layouts[id] = TypeCompareInfo { size, comparable, fields };
+        }
+
+        layouts
+    }
 }

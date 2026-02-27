@@ -1,3 +1,4 @@
+use crate::wasm::types::{TypeCompareInfo, CmpFieldKind};
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 pub struct UdfRuntime {
@@ -14,6 +15,7 @@ pub struct HostState {
     pub config: std::collections::HashMap<String, String>,
     pub logs: Vec<String>,
     pub monotonic_epoch: std::time::Instant,
+    pub type_layouts: Vec<TypeCompareInfo>,
 }
 
 impl HostState {
@@ -29,7 +31,13 @@ impl HostState {
             config: std::collections::HashMap::new(),
             logs: Vec::new(),
             monotonic_epoch: std::time::Instant::now(),
+            type_layouts: Vec::new(),
         }
+    }
+
+    pub fn with_type_layouts(mut self, layouts: Vec<TypeCompareInfo>) -> Self {
+        self.type_layouts = layouts;
+        self
     }
 
     pub fn with_query_metadata(
@@ -94,19 +102,33 @@ fn validate_write(
     Ok(())
 }
 
+fn get_heap_ptr_global(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+) -> Result<wasmtime::Global, wasmtime::Error> {
+    caller
+        .get_export("heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| wasmtime::Error::msg("missing heap_ptr global export"))
+}
+
+fn get_memory(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+) -> Result<wasmtime::Memory, wasmtime::Error> {
+    caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| wasmtime::Error::msg("missing memory export"))
+}
+
 fn host_alloc(
     caller: &mut wasmtime::Caller<'_, HostState>,
     size: i32,
 ) -> Result<i32, wasmtime::Error> {
     let aligned = (size + 7) & !7;
 
-    let heap_ptr_global = caller
-        .get_export("heap_ptr")
-        .and_then(|e| e.into_global())
-        .ok_or_else(|| wasmtime::Error::msg("missing heap_ptr global export"))?;
-
-    let old_ptr = heap_ptr_global
-        .get(caller)
+    let g = get_heap_ptr_global(caller)?;
+    let old_ptr = g
+        .get(&mut *caller)
         .i32()
         .ok_or_else(|| wasmtime::Error::msg("heap_ptr is not i32"))?;
 
@@ -114,27 +136,19 @@ fn host_alloc(
         .checked_add(aligned)
         .ok_or_else(|| wasmtime::Error::msg("out of memory: heap pointer overflow"))?;
 
-    let memory = caller
-        .get_export("memory")
-        .and_then(|e| e.into_memory())
-        .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
-
-    let mem_bytes = memory.data_size(caller) as i32;
+    let memory = get_memory(caller)?;
+    let mem_bytes = memory.data_size(&*caller) as i32;
     if new_ptr > mem_bytes {
         let pages_needed = ((new_ptr - mem_bytes) as u32 + 65535) >> 16;
         memory
-            .grow(caller, pages_needed as u64)
+            .grow(&mut *caller, pages_needed as u64)
             .map_err(|_| {
                 wasmtime::Error::msg("out of memory: WASM linear memory could not be grown")
             })?;
     }
 
-    let heap_ptr_global = caller
-        .get_export("heap_ptr")
-        .and_then(|e| e.into_global())
-        .ok_or_else(|| wasmtime::Error::msg("missing heap_ptr global export"))?;
-    heap_ptr_global
-        .set(caller, wasmtime::Val::I32(new_ptr))
+    let g = get_heap_ptr_global(caller)?;
+    g.set(&mut *caller, wasmtime::Val::I32(new_ptr))
         .map_err(|e| wasmtime::Error::msg(format!("failed to update heap_ptr: {}", e)))?;
 
     Ok(old_ptr)
@@ -149,13 +163,88 @@ fn host_write_string(
         return Ok((0, 0));
     }
     let ptr = host_alloc(caller, len)?;
-    let memory = caller
-        .get_export("memory")
-        .and_then(|e| e.into_memory())
-        .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
-    validate_write(&memory, caller, ptr, s.len())?;
-    memory.data_mut(caller)[ptr as usize..ptr as usize + s.len()].copy_from_slice(s);
+    let memory = get_memory(caller)?;
+    validate_write(&memory, &*caller, ptr, s.len())?;
+    memory.data_mut(&mut *caller)[ptr as usize..ptr as usize + s.len()].copy_from_slice(s);
     Ok((ptr, len))
+}
+
+fn host_compare_fields(
+    data: &[u8],
+    layouts: &[TypeCompareInfo],
+    info: &TypeCompareInfo,
+    ptr_a: i32,
+    ptr_b: i32,
+) -> Result<i32, wasmtime::Error> {
+    for field in &info.fields {
+        let oa = ptr_a as usize + field.offset as usize;
+        let ob = ptr_b as usize + field.offset as usize;
+        let eq = match field.kind {
+            CmpFieldKind::I8 => {
+                data.get(oa).copied() == data.get(ob).copied()
+            }
+            CmpFieldKind::I16 => {
+                oa + 2 <= data.len() && ob + 2 <= data.len()
+                    && data[oa..oa + 2] == data[ob..ob + 2]
+            }
+            CmpFieldKind::I32 | CmpFieldKind::F32 => {
+                oa + 4 <= data.len() && ob + 4 <= data.len()
+                    && data[oa..oa + 4] == data[ob..ob + 4]
+            }
+            CmpFieldKind::I64 | CmpFieldKind::F64 => {
+                oa + 8 <= data.len() && ob + 8 <= data.len()
+                    && data[oa..oa + 8] == data[ob..ob + 8]
+            }
+            CmpFieldKind::String => {
+                if oa + 8 > data.len() || ob + 8 > data.len() {
+                    return Err(wasmtime::Error::msg("rt_eq: out of bounds reading string field"));
+                }
+                let ptr1 = u32::from_le_bytes(data[oa..oa + 4].try_into().unwrap()) as usize;
+                let len1 = u32::from_le_bytes(data[oa + 4..oa + 8].try_into().unwrap()) as usize;
+                let ptr2 = u32::from_le_bytes(data[ob..ob + 4].try_into().unwrap()) as usize;
+                let len2 = u32::from_le_bytes(data[ob + 4..ob + 8].try_into().unwrap()) as usize;
+                if len1 != len2 {
+                    false
+                } else if len1 == 0 {
+                    true
+                } else if ptr1 + len1 > data.len() || ptr2 + len2 > data.len() {
+                    return Err(wasmtime::Error::msg("rt_eq: out of bounds reading string data"));
+                } else {
+                    data[ptr1..ptr1 + len1] == data[ptr2..ptr2 + len2]
+                }
+            }
+            CmpFieldKind::Interface => {
+                if oa + 8 > data.len() || ob + 8 > data.len() {
+                    return Err(wasmtime::Error::msg("rt_eq: out of bounds reading interface field"));
+                }
+                data[oa..oa + 8] == data[ob..ob + 8]
+            }
+            CmpFieldKind::Struct(nested_tid) => {
+                let nested_tid = nested_tid as usize;
+                if nested_tid >= layouts.len() {
+                    return Ok(0);
+                }
+                let nested_info = &layouts[nested_tid];
+                if !nested_info.comparable {
+                    return Ok(0);
+                }
+                if oa + 4 > data.len() || ob + 4 > data.len() {
+                    return Err(wasmtime::Error::msg("rt_eq: out of bounds reading nested struct pointer"));
+                }
+                let nested_a = u32::from_le_bytes(data[oa..oa + 4].try_into().unwrap()) as i32;
+                let nested_b = u32::from_le_bytes(data[ob..ob + 4].try_into().unwrap()) as i32;
+                if nested_a == nested_b {
+                    true
+                } else {
+                    host_compare_fields(data, layouts, nested_info, nested_a, nested_b)? == 1
+                }
+            }
+        };
+        if !eq {
+            return Ok(0);
+        }
+    }
+    Ok(1)
 }
 
 impl UdfRuntime {
@@ -425,6 +514,28 @@ impl UdfRuntime {
                 buf[len1 as usize..].copy_from_slice(&data[ptr2 as usize..(ptr2 + len2) as usize]);
 
                 host_write_string(&mut caller, &buf)
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_eq",
+            |mut caller: wasmtime::Caller<'_, HostState>,
+             tid: i32, ptr_a: i32, ptr_b: i32| -> Result<i32, wasmtime::Error> {
+                if ptr_a == ptr_b {
+                    return Ok(1);
+                }
+                let layouts = caller.data().type_layouts.clone();
+                let tid = tid as usize;
+                if tid >= layouts.len() {
+                    return Ok(0);
+                }
+                let info = &layouts[tid];
+                if !info.comparable {
+                    return Ok(0);
+                }
+                let memory = get_memory(&mut caller)?;
+                host_compare_fields(memory.data(&caller), &layouts, info, ptr_a, ptr_b)
             },
         )?;
 

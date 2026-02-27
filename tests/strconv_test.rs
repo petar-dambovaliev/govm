@@ -87,7 +87,7 @@ func TestFormatBool(b bool) string {
     let runtime = UdfRuntime::new().expect("runtime init failed");
     let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
 
-    let state = HostState::new();
+    let state = HostState::new().with_type_layouts(result.type_layouts);
     let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
     let instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
 

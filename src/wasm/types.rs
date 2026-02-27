@@ -115,6 +115,32 @@ fn align_to(offset: u32, alignment: u32) -> u32 {
     (offset + alignment - 1) & !(alignment - 1)
 }
 
+#[derive(Debug, Clone)]
+pub enum CmpFieldKind {
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    String,
+    Interface,
+    Struct(u32),
+}
+
+#[derive(Debug, Clone)]
+pub struct CmpField {
+    pub offset: u32,
+    pub kind: CmpFieldKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeCompareInfo {
+    pub size: u32,
+    pub comparable: bool,
+    pub fields: Vec<CmpField>,
+}
+
 pub fn compute_struct_layout(fields: &[(String, DefineType)]) -> StructLayout {
     let mut field_layouts = Vec::with_capacity(fields.len());
     let mut offset: u32 = 0;

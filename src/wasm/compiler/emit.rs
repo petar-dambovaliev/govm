@@ -271,6 +271,11 @@ impl WasmCompiler {
                 &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
                 &[ValType::I32, ValType::I32],
             ),
+            (
+                "rt_eq",
+                &[ValType::I32, ValType::I32, ValType::I32],
+                &[ValType::I32],
+            ),
         ];
 
         for (name, params, results) in pairs {
@@ -289,6 +294,7 @@ impl WasmCompiler {
                 "rt_i64_to_str" => self.rt_i64_to_str_func_idx = Some(self.next_func_idx),
                 "rt_f64_to_str" => self.rt_f64_to_str_func_idx = Some(self.next_func_idx),
                 "rt_str_concat" => self.rt_str_concat_func_idx = Some(self.next_func_idx),
+                "rt_eq" => self.rt_eq_func_idx = Some(self.next_func_idx),
                 _ => {}
             }
 
@@ -684,18 +690,6 @@ impl WasmCompiler {
     }
 
 
-    /// Returns the cached type index for the (i32, i32) -> i32 comparison
-    /// signature, creating it on first call.
-    pub(crate) fn get_or_create_cmp_type_idx(&mut self) -> u32 {
-        if let Some(idx) = self.cmp_type_idx {
-            return idx;
-        }
-        let idx = self.next_type_idx;
-        self.type_section.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
-        self.next_type_idx += 1;
-        self.cmp_type_idx = Some(idx);
-        idx
-    }
 
     /// Returns a cached type index for a `call_indirect` signature, creating it
     /// in the type section on first use of that particular (params, results) pair.
@@ -716,256 +710,7 @@ impl WasmCompiler {
         idx
     }
 
-    /// Phase 3: Emit per-type comparison functions and register in function table.
-    pub(crate) fn emit_type_cmp_functions(&mut self) {
-        let mut type_names: Vec<(String, u32)> = self.type_registry.iter()
-            .map(|(name, &id)| (name.clone(), id))
-            .collect();
-        type_names.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let cmp_type_idx = self.get_or_create_cmp_type_idx();
-
-        for (type_name, _type_id) in &type_names {
-            if self.type_cmp_funcs.contains_key(type_name) {
-                continue;
-            }
-
-            // Skip types containing non-comparable fields (slices, maps).
-            if let Some(sdef) = self.struct_defs.get(type_name) {
-                let has_noncomparable = sdef.fields.iter().any(|f| {
-                    matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map"))
-                });
-                if has_noncomparable {
-                    continue;
-                }
-            }
-
-            let func_idx = self.next_func_idx;
-            self.function_section.function(cmp_type_idx);
-            self.next_func_idx += 1;
-
-            let mut func = Function::new(vec![]);
-
-            let resolved = self.resolve_type_name(type_name).to_string();
-            self.emit_type_cmp_body(&resolved, type_name, &mut func);
-
-            func.instruction(&Instruction::End);
-
-            self.code_buffer.push((func_idx, func));
-            self.type_cmp_funcs.insert(type_name.clone(), func_idx);
-
-            self.functions.push(FuncInfo {
-                wasm_func_idx: func_idx,
-                type_idx: cmp_type_idx,
-                name: format!("__rt_cmp_{}", type_name),
-                params: vec![
-                    ("ptr_a".to_string(), WasmType::I32),
-                    ("ptr_b".to_string(), WasmType::I32),
-                ],
-                results: vec![WasmType::I32],
-                result_go_types: vec![],
-                is_exported: false,
-                recv_type: None,
-                is_variadic: false,
-                variadic_elem_vt: None,
-                iface_param_indices: vec![],
-            });
-        }
-    }
-
-    fn emit_type_cmp_body(&self, resolved: &str, type_name: &str, func: &mut Function) {
-        match resolved {
-            "int" | "int64" | "uint" | "uint64" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                func.instruction(&Instruction::I64Eq);
-            }
-            "float64" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
-                func.instruction(&Instruction::F64Eq);
-            }
-            "float32" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::F32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::F32Eq);
-            }
-            "int32" | "uint32" | "rune" | "uintptr" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::I32Eq);
-            }
-            "int16" | "uint16" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I32Load16U(MemArg { offset: 0, align: 1, memory_index: 0 }));
-                func.instruction(&Instruction::I32Eq);
-            }
-            "int8" | "uint8" | "byte" | "bool" => {
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-                func.instruction(&Instruction::I32Eq);
-            }
-            "string" => {
-                if let Some(streq_idx) = self.rt_streq_func_idx {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::Call(streq_idx));
-                } else {
-                    func.instruction(&Instruction::I32Const(0));
-                }
-            }
-            _ => {
-                if let Some(sdef) = self.struct_defs.get(type_name).cloned() {
-                    self.emit_struct_cmp_func_body(&sdef, func);
-                } else {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Eq);
-                }
-            }
-        }
-    }
-
-    fn emit_struct_cmp_func_body(&self, sdef: &StructDef, func: &mut Function) {
-        if sdef.fields.is_empty() {
-            func.instruction(&Instruction::I32Const(1));
-            return;
-        }
-
-        // AND all field comparisons on the stack.
-        let mut first = true;
-        let mut skip_next = false;
-        for field in &sdef.fields {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
-
-            let offset = field.offset as u64;
-
-            if field.go_type_tag.as_deref() == Some("__string") {
-                // String field: (ptr, len) pair at offset and offset+4.
-                if let Some(streq_idx) = self.rt_streq_func_idx {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::Call(streq_idx));
-                } else {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                    func.instruction(&Instruction::I32And);
-                }
-                skip_next = true;
-            } else if field.go_type_tag.as_deref() == Some("__interface") {
-                // Interface field: (data_ptr, type_id) pair at offset and offset+4.
-                // type_id_a == type_id_b AND data_ptr_a == data_ptr_b
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I32Load(MemArg { offset: offset + 4, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::I32Eq);
-                func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::LocalGet(1));
-                func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                func.instruction(&Instruction::I32Eq);
-                func.instruction(&Instruction::I32And);
-                skip_next = true;
-            } else if let Some(ref tag) = field.go_type_tag {
-                if self.struct_defs.contains_key(tag.as_str()) {
-                    if let (Some(rt_eq_idx), Some(&nested_type_id)) =
-                        (self.rt_eq_func_idx, self.type_registry.get(tag.as_str()))
-                    {
-                        func.instruction(&Instruction::I32Const(nested_type_id as i32));
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::Call(rt_eq_idx));
-                    } else {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::I32Eq);
-                    }
-                } else {
-                    func.instruction(&Instruction::LocalGet(0));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::LocalGet(1));
-                    func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                    func.instruction(&Instruction::I32Eq);
-                }
-            } else {
-                match field.wasm_type {
-                    WasmType::I64 => {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                        func.instruction(&Instruction::I64Eq);
-                    }
-                    WasmType::F64 => {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::F64Load(MemArg { offset, align: 3, memory_index: 0 }));
-                        func.instruction(&Instruction::F64Eq);
-                    }
-                    WasmType::F32 => {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::F32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::F32Eq);
-                    }
-                    _ => {
-                        func.instruction(&Instruction::LocalGet(0));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::LocalGet(1));
-                        func.instruction(&Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
-                        func.instruction(&Instruction::I32Eq);
-                    }
-                }
-            }
-
-            if !first {
-                func.instruction(&Instruction::I32And);
-            }
-            first = false;
-        }
-    }
 
     /// Phase 1: Emit the type descriptor table into the data section.
     pub(crate) fn emit_type_descriptor_table(&mut self) {
@@ -993,8 +738,11 @@ impl WasmCompiler {
             }
 
             let size = self.type_byte_size(type_name);
-            let cmp_func_idx = self.type_cmp_funcs.get(type_name).copied().unwrap_or(0);
-            let flags: u32 = if self.type_cmp_funcs.contains_key(type_name) { 1 } else { 0 };
+            let cmp_func_idx: u32 = 0;
+            let comparable = !self.struct_defs.get(type_name).map_or(false, |sdef| {
+                sdef.fields.iter().any(|f| matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map")))
+            });
+            let flags: u32 = if comparable { 1 } else { 0 };
 
             data[entry_offset..entry_offset + 4].copy_from_slice(&(size as u32).to_le_bytes());
             data[entry_offset + 4..entry_offset + 8].copy_from_slice(&cmp_func_idx.to_le_bytes());
@@ -1029,91 +777,6 @@ impl WasmCompiler {
                 }
             }
         }
-    }
-
-    /// Phase 4: Emit __rt_eq(tid, ptr_a, ptr_b) -> i32
-    pub(crate) fn emit_rt_eq(&mut self) {
-        if self.rt_eq_func_idx.is_some() {
-            return;
-        }
-
-        let type_idx = self.next_type_idx;
-        self.type_section.ty().function(
-            vec![ValType::I32, ValType::I32, ValType::I32],
-            vec![ValType::I32],
-        );
-        self.next_type_idx += 1;
-
-        let func_idx = self.next_func_idx;
-        self.function_section.function(type_idx);
-        self.next_func_idx += 1;
-
-        let cmp_type_idx = self.get_or_create_cmp_type_idx();
-
-        // params: 0=tid, 1=ptr_a, 2=ptr_b; locals: 3=desc_ptr, 4=cmp_func_idx
-        let mut func = Function::new(vec![(1, ValType::I32), (1, ValType::I32)]);
-
-        // Fast path: if ptr_a == ptr_b, return 1
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(2));
-        func.instruction(&Instruction::I32Eq);
-        func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::Else);
-
-        // desc_ptr = TYPE_DESC_BASE + tid * 12
-        func.instruction(&Instruction::I32Const(Self::TYPE_DESC_BASE));
-        func.instruction(&Instruction::LocalGet(0));
-        func.instruction(&Instruction::I32Const(Self::TYPE_DESC_ENTRY_SIZE));
-        func.instruction(&Instruction::I32Mul);
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::LocalSet(3));
-
-        // Check flags (offset 8): if flags == 0 the type is not comparable
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
-        func.instruction(&Instruction::I32Eqz);
-        func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::Else);
-
-        // cmp_func_idx = i32.load(desc_ptr + 4)
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-        func.instruction(&Instruction::LocalSet(4));
-
-        // call_indirect(cmp_func_idx, ptr_a, ptr_b)
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(2));
-        func.instruction(&Instruction::LocalGet(4));
-        func.instruction(&Instruction::CallIndirect { type_index: cmp_type_idx, table_index: 0 });
-
-        func.instruction(&Instruction::End); // inner if/else
-        func.instruction(&Instruction::End); // outer if/else
-
-        func.instruction(&Instruction::End);
-
-        self.code_buffer.push((func_idx, func));
-        self.rt_eq_func_idx = Some(func_idx);
-        self.needs_func_table = true;
-
-        self.functions.push(FuncInfo {
-            wasm_func_idx: func_idx,
-            type_idx,
-            name: "__rt_eq".to_string(),
-            params: vec![
-                ("tid".to_string(), WasmType::I32),
-                ("ptr_a".to_string(), WasmType::I32),
-                ("ptr_b".to_string(), WasmType::I32),
-            ],
-            results: vec![WasmType::I32],
-            result_go_types: vec![],
-            is_exported: false,
-            recv_type: None,
-            is_variadic: false,
-            variadic_elem_vt: None,
-            iface_param_indices: vec![],
-        });
     }
 
     /// Pre-compute the itab layout (interface IDs, dimensions, base address)
