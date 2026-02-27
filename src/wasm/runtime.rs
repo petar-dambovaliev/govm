@@ -94,6 +94,70 @@ fn validate_write(
     Ok(())
 }
 
+fn host_alloc(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    size: i32,
+) -> Result<i32, wasmtime::Error> {
+    let aligned = (size + 7) & !7;
+
+    let heap_ptr_global = caller
+        .get_export("heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| wasmtime::Error::msg("missing heap_ptr global export"))?;
+
+    let old_ptr = heap_ptr_global
+        .get(caller)
+        .i32()
+        .ok_or_else(|| wasmtime::Error::msg("heap_ptr is not i32"))?;
+
+    let new_ptr = old_ptr
+        .checked_add(aligned)
+        .ok_or_else(|| wasmtime::Error::msg("out of memory: heap pointer overflow"))?;
+
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+
+    let mem_bytes = memory.data_size(caller) as i32;
+    if new_ptr > mem_bytes {
+        let pages_needed = ((new_ptr - mem_bytes) as u32 + 65535) >> 16;
+        memory
+            .grow(caller, pages_needed as u64)
+            .map_err(|_| {
+                wasmtime::Error::msg("out of memory: WASM linear memory could not be grown")
+            })?;
+    }
+
+    let heap_ptr_global = caller
+        .get_export("heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| wasmtime::Error::msg("missing heap_ptr global export"))?;
+    heap_ptr_global
+        .set(caller, wasmtime::Val::I32(new_ptr))
+        .map_err(|e| wasmtime::Error::msg(format!("failed to update heap_ptr: {}", e)))?;
+
+    Ok(old_ptr)
+}
+
+fn host_write_string(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    s: &[u8],
+) -> Result<(i32, i32), wasmtime::Error> {
+    let len = s.len() as i32;
+    if len == 0 {
+        return Ok((0, 0));
+    }
+    let ptr = host_alloc(caller, len)?;
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+    validate_write(&memory, caller, ptr, s.len())?;
+    memory.data_mut(caller)[ptr as usize..ptr as usize + s.len()].copy_from_slice(s);
+    Ok((ptr, len))
+}
+
 impl UdfRuntime {
     pub fn new() -> Result<Self, wasmtime::Error> {
         let mut config = Config::new();
@@ -259,6 +323,108 @@ impl UdfRuntime {
             "monotonicNano",
             |caller: wasmtime::Caller<'_, HostState>| -> i64 {
                 caller.data().monotonic_epoch.elapsed().as_nanos() as i64
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_streq",
+            |mut caller: wasmtime::Caller<'_, HostState>,
+             ptr1: i32, len1: i32, ptr2: i32, len2: i32| -> Result<i32, wasmtime::Error> {
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+                validate_read(&memory, &caller, ptr1, len1)?;
+                validate_read(&memory, &caller, ptr2, len2)?;
+                let data = memory.data(&caller);
+                let s1 = &data[ptr1 as usize..(ptr1 + len1) as usize];
+                let s2 = &data[ptr2 as usize..(ptr2 + len2) as usize];
+                Ok(if s1 == s2 { 1 } else { 0 })
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_strcmp",
+            |mut caller: wasmtime::Caller<'_, HostState>,
+             ptr1: i32, len1: i32, ptr2: i32, len2: i32| -> Result<i32, wasmtime::Error> {
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+                validate_read(&memory, &caller, ptr1, len1)?;
+                validate_read(&memory, &caller, ptr2, len2)?;
+                let data = memory.data(&caller);
+                let s1 = &data[ptr1 as usize..(ptr1 + len1) as usize];
+                let s2 = &data[ptr2 as usize..(ptr2 + len2) as usize];
+                Ok(match s1.cmp(s2) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                })
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_alloc",
+            |mut caller: wasmtime::Caller<'_, HostState>, size: i32| -> Result<i32, wasmtime::Error> {
+                host_alloc(&mut caller, size)
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_i64_to_str",
+            |mut caller: wasmtime::Caller<'_, HostState>, val: i64| -> Result<(i32, i32), wasmtime::Error> {
+                let s = val.to_string();
+                host_write_string(&mut caller, s.as_bytes())
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_f64_to_str",
+            |mut caller: wasmtime::Caller<'_, HostState>, val: f64| -> Result<(i32, i32), wasmtime::Error> {
+                let s = if val.is_nan() {
+                    "NaN".to_string()
+                } else if val.is_infinite() {
+                    if val.is_sign_positive() { "+Inf".to_string() } else { "-Inf".to_string() }
+                } else {
+                    let formatted = format!("{}", val);
+                    if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
+                        format!("{}.0", formatted)
+                    } else {
+                        formatted
+                    }
+                };
+                host_write_string(&mut caller, s.as_bytes())
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "rt_str_concat",
+            |mut caller: wasmtime::Caller<'_, HostState>,
+             ptr1: i32, len1: i32, ptr2: i32, len2: i32| -> Result<(i32, i32), wasmtime::Error> {
+                let total = len1 as u32 + len2 as u32;
+                if total == 0 {
+                    return Ok((0, 0));
+                }
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+                validate_read(&memory, &caller, ptr1, len1)?;
+                validate_read(&memory, &caller, ptr2, len2)?;
+
+                let mut buf = vec![0u8; total as usize];
+                let data = memory.data(&caller);
+                buf[..len1 as usize].copy_from_slice(&data[ptr1 as usize..(ptr1 + len1) as usize]);
+                buf[len1 as usize..].copy_from_slice(&data[ptr2 as usize..(ptr2 + len2) as usize]);
+
+                host_write_string(&mut caller, &buf)
             },
         )?;
 

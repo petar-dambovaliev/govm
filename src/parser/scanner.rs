@@ -80,11 +80,11 @@ impl Scanner {
 
     pub(crate) fn line_info(&self, pos: usize) -> (usize, usize) {
         match self.lines.binary_search(&pos) {
-            Ok(index) => (index + 1, 0),
+            Ok(index) => (index + 2, 0),
             Err(0) => (1, pos),
             Err(index) => {
                 let start_at = self.lines[index - 1];
-                (index, pos - start_at)
+                (index + 1, pos - start_at)
             }
         }
     }
@@ -524,11 +524,7 @@ impl Scanner {
             self.scan_digits2(
                 numlit.len(),
                 &mut numlit,
-                if radix == 16 {
-                    is_hex_digit
-                } else {
-                    is_decimal_digit
-                },
+                is_decimal_digit,
             )
         }
 
@@ -722,6 +718,7 @@ mod tests {
         assert!(numeric("1.5e1_").is_err());
         assert!(numeric("1.5e+_1").is_err());
         assert!(numeric("0x1.5e-2").is_err());
+        assert!(numeric("0x1p2A").is_err());
 
         assert!(numeric("0i").is_ok());
         assert!(numeric("0.i").is_ok());
@@ -832,7 +829,7 @@ mod tests {
         };
 
         assert_eq!(scanner.line_info(5), (1, 5));
-        assert_eq!(scanner.line_info(20), (2, 0));
-        assert_eq!(scanner.line_info(50), (3, 20));
+        assert_eq!(scanner.line_info(20), (3, 0));
+        assert_eq!(scanner.line_info(50), (4, 20));
     }
 }

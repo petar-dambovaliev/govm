@@ -187,7 +187,13 @@ impl WasmCompiler {
                     out.push(Instruction::Drop); // ptr
                     out.push(Instruction::LocalGet(cap_tmp));
                 } else if result_count == 2 {
-                    out.push(Instruction::Drop); // len
+                    let cap_tmp = locals.add_local(
+                        &format!("__cap_tmp_{}", locals.locals.len()),
+                        ValType::I32,
+                    );
+                    out.push(Instruction::LocalSet(cap_tmp));
+                    out.push(Instruction::Drop); // ptr
+                    out.push(Instruction::LocalGet(cap_tmp));
                 }
             }
         }
@@ -488,6 +494,14 @@ impl WasmCompiler {
         }
         out.push(Instruction::LocalSet(cap_local));
 
+        // Validate len <= cap (Go spec: panic if len > cap)
+        out.push(Instruction::LocalGet(len_local));
+        out.push(Instruction::LocalGet(cap_local));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Unreachable);
+        out.push(Instruction::End);
+
         // Allocate header (12 bytes)
         out.push(Instruction::I32Const(HEADER_SIZE));
         out.push(Instruction::Call(self.alloc_func_idx()?));
@@ -498,15 +512,26 @@ impl WasmCompiler {
         out.push(Instruction::LocalSet(hdr_local));
 
         // Allocate data region (cap * elem_size bytes)
+        let data_sz = locals.add_local(
+            &format!("__make_dsz_{}", locals.locals.len()),
+            ValType::I32,
+        );
         out.push(Instruction::LocalGet(cap_local));
         out.push(Instruction::I32Const(elem_size));
         out.push(Instruction::I32Mul);
+        out.push(Instruction::LocalTee(data_sz));
         out.push(Instruction::Call(self.alloc_func_idx()?));
         let data_local = locals.add_local(
             &format!("__make_data_{}", locals.locals.len()),
             ValType::I32,
         );
         out.push(Instruction::LocalSet(data_local));
+
+        // Zero-fill data region
+        out.push(Instruction::LocalGet(data_local));
+        out.push(Instruction::I32Const(0));
+        out.push(Instruction::LocalGet(data_sz));
+        out.push(Instruction::MemoryFill(0));
 
         // Store data_ptr at header[0]
         out.push(Instruction::LocalGet(hdr_local));
@@ -935,20 +960,44 @@ impl WasmCompiler {
         let src_hdr = locals.add_local("__appsprd_shdr", ValType::I32);
         out.push(Instruction::LocalSet(src_hdr));
 
-        // Load source len and data pointer
+        // Nil-guard for src_hdr: if nil, src has zero elements
         let src_len = locals.add_local("__appsprd_slen", ValType::I32);
         let src_data = locals.add_local("__appsprd_sdata", ValType::I32);
         out.push(Instruction::LocalGet(src_hdr));
-        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(src_len));
-        out.push(Instruction::LocalGet(src_hdr));
-        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-        out.push(Instruction::LocalSet(src_data));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(src_len));
+            out.push(Instruction::I32Const(0));
+            out.push(Instruction::LocalSet(src_data));
+        }
+        out.push(Instruction::Else);
+        {
+            out.push(Instruction::LocalGet(src_hdr));
+            out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(src_len));
+            out.push(Instruction::LocalGet(src_hdr));
+            out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(Instruction::LocalSet(src_data));
+        }
+        out.push(Instruction::End);
 
         // Compile destination slice (first arg)
         self.compile_expression(&call.args[0], out, locals)?;
         let dst_hdr = locals.add_local("__appsprd_dhdr", ValType::I32);
         out.push(Instruction::LocalSet(dst_hdr));
+
+        // Nil-guard for dst_hdr: allocate fresh 12-byte header if nil
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            out.push(Instruction::I32Const(12));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(dst_hdr));
+        }
+        out.push(Instruction::End);
 
         // Load dst len and cap
         let dst_len = locals.add_local("__appsprd_dlen", ValType::I32);
@@ -1096,6 +1145,17 @@ impl WasmCompiler {
         self.compile_expression(&call.args[0], out, locals)?;
         let dst_hdr = locals.add_local("__appstr_dhdr", ValType::I32);
         out.push(Instruction::LocalSet(dst_hdr));
+
+        // Nil-guard for dst_hdr: allocate fresh 12-byte header if nil
+        out.push(Instruction::LocalGet(dst_hdr));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            out.push(Instruction::I32Const(12));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(dst_hdr));
+        }
+        out.push(Instruction::End);
 
         // Load dst len and cap
         let dst_len = locals.add_local("__appstr_dlen", ValType::I32);

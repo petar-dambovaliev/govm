@@ -499,6 +499,7 @@ pub struct WasmCompiler {
     panic_value_len_global: u32,
     map_iter_counter_global: u32,
     oom_func_idx: u32,
+    alloc_func_idx_stored: Option<u32>,
     wasm_imports: HashMap<String, u32>,
 
     functions: Vec<FuncInfo>,
@@ -543,11 +544,13 @@ pub struct WasmCompiler {
     /// Cached WASM type index for the comparison function signature (i32, i32) -> i32.
     cmp_type_idx: Option<u32>,
     /// Cached WASM type index for the string comparison signature (i32, i32, i32, i32) -> i32.
-    str_cmp_type_idx: Option<u32>,
     data_offset: u32,
     rt_streq_func_idx: Option<u32>,
     rt_strcmp_func_idx: Option<u32>,
     rt_eq_func_idx: Option<u32>,
+    rt_i64_to_str_func_idx: Option<u32>,
+    rt_f64_to_str_func_idx: Option<u32>,
+    rt_str_concat_func_idx: Option<u32>,
 
     /// Cache for `call_indirect` type indices, keyed by (params, results).
     call_indirect_type_cache: Vec<(Vec<ValType>, Vec<ValType>, u32)>,
@@ -661,6 +664,7 @@ impl WasmCompiler {
             panic_value_len_global: 0,
             map_iter_counter_global: 0,
             oom_func_idx: 0,
+            alloc_func_idx_stored: None,
             wasm_imports: HashMap::new(),
 
             functions: Vec::new(),
@@ -698,11 +702,13 @@ impl WasmCompiler {
 
             type_cmp_funcs: HashMap::new(),
             cmp_type_idx: None,
-            str_cmp_type_idx: None,
             data_offset: 0,
             rt_streq_func_idx: None,
             rt_strcmp_func_idx: None,
             rt_eq_func_idx: None,
+            rt_i64_to_str_func_idx: None,
+            rt_f64_to_str_func_idx: None,
+            rt_str_concat_func_idx: None,
 
             call_indirect_type_cache: Vec::new(),
 
@@ -1459,14 +1465,10 @@ impl WasmCompiler {
         self.emit_heap_globals();
         self.emit_host_imports();
         self.emit_native_imports(file)?;
-        self.emit_alloc_function();
         self.emit_reset_function();
         self.emit_gc_string_bridge_function();
         self.register_builtin_types();
 
-        // Emit runtime comparison functions (before code generation so indices are available)
-        self.emit_rt_streq();
-        self.emit_rt_strcmp();
         self.emit_rt_eq();
 
         // Phase 1: Prescan all types (stdlib + user) and forward-declare all functions.

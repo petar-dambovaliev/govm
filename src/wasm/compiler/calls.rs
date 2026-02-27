@@ -1225,7 +1225,79 @@ impl WasmCompiler {
                     }
                     "clear" => {
                         if let Some(arg) = call.args.first() {
-                            if let ast::Expression::Selector(_sel) = arg {
+                            if let ast::Expression::Selector(sel) = arg {
+                                if self.is_selector_map_field(sel, locals) {
+                                    if let Some(parent_type) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
+                                        if let Some(mti) = self.struct_field_map_types.get(&(parent_type, sel.sel.name.clone())).cloned() {
+                                            self.compile_expression(arg, out, locals)?;
+                                            let hdr_local = locals.add_local(
+                                                &format!("__clr_sel_hdr_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::LocalSet(hdr_local));
+                                            // nil check
+                                            out.push(Instruction::LocalGet(hdr_local));
+                                            out.push(Instruction::I32Const(0));
+                                            out.push(Instruction::I32Ne);
+                                            out.push(Instruction::If(BlockType::Empty));
+                                            // Zero count field (offset 0)
+                                            out.push(Instruction::LocalGet(hdr_local));
+                                            out.push(Instruction::I32Const(0));
+                                            out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                                            // Zero data entries
+                                            let entry_size = Self::map_entry_size(mti.key_size, mti.val_size);
+                                            let cap_tmp = locals.add_local(
+                                                &format!("__clr_cap_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::LocalGet(hdr_local));
+                                            out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                                            out.push(Instruction::LocalSet(cap_tmp));
+                                            let data_ptr_tmp = locals.add_local(
+                                                &format!("__clr_dptr_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::LocalGet(hdr_local));
+                                            out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+                                            out.push(Instruction::LocalSet(data_ptr_tmp));
+                                            let total_tmp = locals.add_local(
+                                                &format!("__clr_tot_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::LocalGet(cap_tmp));
+                                            out.push(Instruction::I32Const(entry_size as i32));
+                                            out.push(Instruction::I32Mul);
+                                            out.push(Instruction::LocalSet(total_tmp));
+                                            let loop_i = locals.add_local(
+                                                &format!("__clr_i_{}", locals.locals.len()),
+                                                ValType::I32,
+                                            );
+                                            out.push(Instruction::I32Const(0));
+                                            out.push(Instruction::LocalSet(loop_i));
+                                            out.push(Instruction::Block(BlockType::Empty));
+                                            out.push(Instruction::Loop(BlockType::Empty));
+                                            out.push(Instruction::LocalGet(loop_i));
+                                            out.push(Instruction::LocalGet(total_tmp));
+                                            out.push(Instruction::I32GeU);
+                                            out.push(Instruction::BrIf(1));
+                                            out.push(Instruction::LocalGet(data_ptr_tmp));
+                                            out.push(Instruction::LocalGet(loop_i));
+                                            out.push(Instruction::I32Add);
+                                            out.push(Instruction::I32Const(0));
+                                            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                            out.push(Instruction::LocalGet(loop_i));
+                                            out.push(Instruction::I32Const(1));
+                                            out.push(Instruction::I32Add);
+                                            out.push(Instruction::LocalSet(loop_i));
+                                            out.push(Instruction::Br(0));
+                                            out.push(Instruction::End); // loop
+                                            out.push(Instruction::End); // block
+                                            out.push(Instruction::End); // if
+                                            return Ok(GoType::Void);
+                                        }
+                                    }
+                                }
+
                                 self.compile_expression(arg, out, locals)?;
                                 let hdr_local = locals.add_local(
                                     &format!("__clr_sel_hdr_{}", locals.locals.len()),
@@ -1233,16 +1305,11 @@ impl WasmCompiler {
                                 );
                                 out.push(Instruction::LocalSet(hdr_local));
 
-                                let sel_expr = arg;
-                                let sel_elem_vt = if let ast::Expression::Selector(sel) = sel_expr {
-                                    if let ast::Expression::Ident(recv_id) = sel.x.as_ref() {
-                                        locals.slice_elem_types.get(&format!("{}.{}", recv_id.name, sel.sel.name))
-                                            .or_else(|| locals.slice_elem_types.get(&recv_id.name))
-                                            .copied()
-                                            .unwrap_or(ValType::I64)
-                                    } else {
-                                        ValType::I64
-                                    }
+                                let sel_elem_vt = if let ast::Expression::Ident(recv_id) = sel.x.as_ref() {
+                                    locals.slice_elem_types.get(&format!("{}.{}", recv_id.name, sel.sel.name))
+                                        .or_else(|| locals.slice_elem_types.get(&recv_id.name))
+                                        .copied()
+                                        .unwrap_or(ValType::I64)
                                 } else {
                                     ValType::I64
                                 };

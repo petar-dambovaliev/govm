@@ -858,6 +858,7 @@ impl WasmCompiler {
         let has_init = ts.init.is_some();
         if has_init {
             locals.push_scope();
+            self.symbols.enter_scope();
         }
 
         // Compile init statement if present
@@ -978,6 +979,7 @@ impl WasmCompiler {
         }
 
         if has_init {
+            self.symbols.leave_scope();
             locals.pop_scope();
         }
 

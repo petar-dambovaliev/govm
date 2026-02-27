@@ -1264,208 +1264,13 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let val = locals.add_local(&format!("__itos_v_{}", locals.locals.len()), ValType::I64);
-        let buf = locals.add_local(&format!("__itos_buf_{}", locals.locals.len()), ValType::I32);
-        let pos = locals.add_local(&format!("__itos_pos_{}", locals.locals.len()), ValType::I32);
-        let neg = locals.add_local(&format!("__itos_neg_{}", locals.locals.len()), ValType::I32);
-        let slen = locals.add_local(&format!("__itos_len_{}", locals.locals.len()), ValType::I32);
-        let final_ptr = locals.add_local(&format!("__itos_fp_{}", locals.locals.len()), ValType::I32);
+        let func_idx = self.rt_i64_to_str_func_idx.ok_or_else(|| {
+            Error::InternalError("rt_i64_to_str host import not registered".to_string())
+        })?;
+        out.push(Instruction::Call(func_idx));
 
-        out.push(Instruction::LocalSet(val));
-
-        // Allocate 24-byte temp buffer
-        out.push(Instruction::I32Const(24));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
-        out.push(Instruction::LocalSet(buf));
-
-        out.push(Instruction::I32Const(0));
-        out.push(Instruction::LocalSet(pos));
-        out.push(Instruction::I32Const(0));
-        out.push(Instruction::LocalSet(neg));
-
-        // Handle zero
-        out.push(Instruction::LocalGet(val));
-        out.push(Instruction::I64Eqz);
-        out.push(Instruction::If(BlockType::Empty));
-        {
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::I32Const(48)); // '0'
-            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::LocalSet(pos));
-        }
-        out.push(Instruction::Else);
-        {
-            // Handle negative
-            out.push(Instruction::LocalGet(val));
-            out.push(Instruction::I64Const(0));
-            out.push(Instruction::I64LtS);
-            out.push(Instruction::If(BlockType::Empty));
-            {
-                out.push(Instruction::I32Const(1));
-                out.push(Instruction::LocalSet(neg));
-                out.push(Instruction::I64Const(0));
-                out.push(Instruction::LocalGet(val));
-                out.push(Instruction::I64Sub);
-                out.push(Instruction::LocalSet(val));
-            }
-            out.push(Instruction::End);
-
-            // Extract digits in reverse
-            out.push(Instruction::Block(BlockType::Empty));
-            out.push(Instruction::Loop(BlockType::Empty));
-            out.push(Instruction::LocalGet(val));
-            out.push(Instruction::I64Eqz);
-            out.push(Instruction::BrIf(1));
-
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::LocalGet(pos));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalGet(val));
-            out.push(Instruction::I64Const(10));
-            out.push(Instruction::I64RemU);
-            out.push(Instruction::I32WrapI64);
-            out.push(Instruction::I32Const(48)); // '0'
-            out.push(Instruction::I32Add);
-            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-
-            out.push(Instruction::LocalGet(val));
-            out.push(Instruction::I64Const(10));
-            out.push(Instruction::I64DivU);
-            out.push(Instruction::LocalSet(val));
-
-            out.push(Instruction::LocalGet(pos));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalSet(pos));
-            out.push(Instruction::Br(0));
-            out.push(Instruction::End);
-            out.push(Instruction::End);
-
-            // Reverse the digits in buf[0..pos]
-            let lo = locals.add_local(&format!("__itos_lo_{}", locals.locals.len()), ValType::I32);
-            let hi = locals.add_local(&format!("__itos_hi_{}", locals.locals.len()), ValType::I32);
-            let tmp = locals.add_local(&format!("__itos_tmp_{}", locals.locals.len()), ValType::I32);
-
-            out.push(Instruction::I32Const(0));
-            out.push(Instruction::LocalSet(lo));
-            out.push(Instruction::LocalGet(pos));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::I32Sub);
-            out.push(Instruction::LocalSet(hi));
-
-            out.push(Instruction::Block(BlockType::Empty));
-            out.push(Instruction::Loop(BlockType::Empty));
-            out.push(Instruction::LocalGet(lo));
-            out.push(Instruction::LocalGet(hi));
-            out.push(Instruction::I32GeU);
-            out.push(Instruction::BrIf(1));
-
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::LocalGet(lo));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            out.push(Instruction::LocalSet(tmp));
-
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::LocalGet(lo));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::LocalGet(hi));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-
-            out.push(Instruction::LocalGet(buf));
-            out.push(Instruction::LocalGet(hi));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalGet(tmp));
-            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-
-            out.push(Instruction::LocalGet(lo));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalSet(lo));
-            out.push(Instruction::LocalGet(hi));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::I32Sub);
-            out.push(Instruction::LocalSet(hi));
-            out.push(Instruction::Br(0));
-            out.push(Instruction::End);
-            out.push(Instruction::End);
-        }
-        out.push(Instruction::End); // end if zero/nonzero
-
-        // Build final string: if negative, prepend '-'
-        out.push(Instruction::LocalGet(neg));
-        out.push(Instruction::LocalGet(pos));
-        out.push(Instruction::I32Add);
-        out.push(Instruction::LocalSet(slen));
-
-        out.push(Instruction::LocalGet(slen));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
-        out.push(Instruction::LocalSet(final_ptr));
-
-        out.push(Instruction::LocalGet(neg));
-        out.push(Instruction::If(BlockType::Empty));
-        {
-            out.push(Instruction::LocalGet(final_ptr));
-            out.push(Instruction::I32Const(45)); // '-'
-            out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        }
-        out.push(Instruction::End);
-
-        // Copy digits from buf to final_ptr+neg
-        out.push(Instruction::LocalGet(final_ptr));
-        out.push(Instruction::LocalGet(neg));
-        out.push(Instruction::I32Add);
-        out.push(Instruction::LocalGet(buf));
-        out.push(Instruction::LocalGet(pos));
-        out.push(Instruction::MemoryCopy { dst_mem: 0, src_mem: 0 });
-
-        // GC epilog: convert linear memory result to GC ByteArray + GoString
         if let Some(go_string_idx) = self.gc_builtin_types.go_string {
-            let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
-            let gc_arr = locals.add_local(&format!("__itos_gc_a_{}", locals.locals.len()),
-                Self::gc_ref_val_type(byte_array_idx));
-            let gc_i = locals.add_local(&format!("__itos_gc_i_{}", locals.locals.len()), ValType::I32);
-
-            out.push(Instruction::I32Const(0));
-            out.push(Instruction::LocalGet(slen));
-            out.push(Instruction::ArrayNew(byte_array_idx));
-            out.push(Instruction::LocalSet(gc_arr));
-
-            out.push(Instruction::I32Const(0));
-            out.push(Instruction::LocalSet(gc_i));
-            out.push(Instruction::Block(BlockType::Empty));
-            out.push(Instruction::Loop(BlockType::Empty));
-            out.push(Instruction::LocalGet(gc_i));
-            out.push(Instruction::LocalGet(slen));
-            out.push(Instruction::I32GeU);
-            out.push(Instruction::BrIf(1));
-
-            out.push(Instruction::LocalGet(gc_arr));
-            out.push(Instruction::LocalGet(gc_i));
-            out.push(Instruction::LocalGet(final_ptr));
-            out.push(Instruction::LocalGet(gc_i));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            out.push(Instruction::ArraySet(byte_array_idx));
-
-            out.push(Instruction::LocalGet(gc_i));
-            out.push(Instruction::I32Const(1));
-            out.push(Instruction::I32Add);
-            out.push(Instruction::LocalSet(gc_i));
-            out.push(Instruction::Br(0));
-            out.push(Instruction::End); // loop
-            out.push(Instruction::End); // block
-
-            out.push(Instruction::LocalGet(gc_arr));
-            out.push(Instruction::LocalGet(slen));
-            out.push(Instruction::StructNew(go_string_idx));
-        } else {
-            out.push(Instruction::LocalGet(final_ptr));
-            out.push(Instruction::LocalGet(slen));
+            self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
         }
 
         Ok(())
@@ -1476,14 +1281,26 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let fval = locals.add_local(&format!("__ftos_v_{}", locals.locals.len()), ValType::F64);
-        let abs_val = locals.add_local(&format!("__ftos_abs_{}", locals.locals.len()), ValType::F64);
-        let is_neg = locals.add_local(&format!("__ftos_neg_{}", locals.locals.len()), ValType::I32);
-        let int_part = locals.add_local(&format!("__ftos_ip_{}", locals.locals.len()), ValType::I64);
-        let frac_val = locals.add_local(&format!("__ftos_fv_{}", locals.locals.len()), ValType::F64);
-        let frac_int = locals.add_local(&format!("__ftos_fi_{}", locals.locals.len()), ValType::I64);
-        let int_ptr = locals.add_local(&format!("__ftos_iptr_{}", locals.locals.len()), ValType::I32);
-        let int_len = locals.add_local(&format!("__ftos_ilen_{}", locals.locals.len()), ValType::I32);
+        let func_idx = self.rt_f64_to_str_func_idx.ok_or_else(|| {
+            Error::InternalError("rt_f64_to_str host import not registered".to_string())
+        })?;
+        out.push(Instruction::Call(func_idx));
+
+        if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+            self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+        }
+
+        Ok(())
+    }
+
+    // End of string conversion functions - old WASM codegen removed in favor of host imports
+    // _end_of_impl_marker
+    #[cfg(any())]
+    fn _placeholder_do_not_call() {
+        let _fval = 0u32;
+        let _frac_int = 0u32;
+        let _int_ptr = 0u32;
+        let _int_len = 0u32;
         let frac_buf = locals.add_local(&format!("__ftos_fb_{}", locals.locals.len()), ValType::I32);
         let frac_pos = locals.add_local(&format!("__ftos_fp_{}", locals.locals.len()), ValType::I32);
         let final_ptr = locals.add_local(&format!("__ftos_rp_{}", locals.locals.len()), ValType::I32);

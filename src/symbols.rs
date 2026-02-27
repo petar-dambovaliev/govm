@@ -475,7 +475,7 @@ impl DefineType {
                             ContextType::Named(n.clone(), t.strip_type())
                         }
                         ContextType::Embedded(n, t) => {
-                            ContextType::Named(n.clone(), t.strip_type())
+                            ContextType::Embedded(n.clone(), t.strip_type())
                         }
                         ContextType::Unnamed(t) => {
                             ContextType::Unnamed(t.strip_type())

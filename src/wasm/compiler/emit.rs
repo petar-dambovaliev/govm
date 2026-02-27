@@ -164,6 +164,8 @@ impl WasmCompiler {
             },
             &ConstExpr::i32_const(Self::HEAP_BASE),
         );
+        self.export_section
+            .export("heap_ptr", ExportKind::Global, self.heap_ptr_global);
         self.next_global_idx += 1;
 
         self.stack_ptr_global = self.next_global_idx;
@@ -251,6 +253,24 @@ impl WasmCompiler {
                 &[ValType::I32],
             ),
             ("ctx_oom", &[], &[]),
+            (
+                "rt_streq",
+                &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                &[ValType::I32],
+            ),
+            (
+                "rt_strcmp",
+                &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                &[ValType::I32],
+            ),
+            ("rt_alloc", &[ValType::I32], &[ValType::I32]),
+            ("rt_i64_to_str", &[ValType::I64], &[ValType::I32, ValType::I32]),
+            ("rt_f64_to_str", &[ValType::F64], &[ValType::I32, ValType::I32]),
+            (
+                "rt_str_concat",
+                &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                &[ValType::I32, ValType::I32],
+            ),
         ];
 
         for (name, params, results) in pairs {
@@ -261,8 +281,15 @@ impl WasmCompiler {
             );
             self.next_type_idx += 1;
 
-            if *name == "ctx_oom" {
-                self.oom_func_idx = self.next_func_idx;
+            match *name {
+                "ctx_oom" => self.oom_func_idx = self.next_func_idx,
+                "rt_streq" => self.rt_streq_func_idx = Some(self.next_func_idx),
+                "rt_strcmp" => self.rt_strcmp_func_idx = Some(self.next_func_idx),
+                "rt_alloc" => self.alloc_func_idx_stored = Some(self.next_func_idx),
+                "rt_i64_to_str" => self.rt_i64_to_str_func_idx = Some(self.next_func_idx),
+                "rt_f64_to_str" => self.rt_f64_to_str_func_idx = Some(self.next_func_idx),
+                "rt_str_concat" => self.rt_str_concat_func_idx = Some(self.next_func_idx),
+                _ => {}
             }
 
             self.import_section.import(
@@ -403,94 +430,6 @@ impl WasmCompiler {
         Ok(())
     }
 
-    pub(crate) fn emit_alloc_function(&mut self) {
-        let type_idx = self.next_type_idx;
-        self.type_section
-            .ty()
-            .function(vec![ValType::I32], vec![ValType::I32]);
-        self.next_type_idx += 1;
-
-        let func_idx = self.next_func_idx;
-        self.function_section.function(type_idx);
-        self.next_func_idx += 1;
-
-        let mut func = Function::new(vec![(1, ValType::I32)]);
-
-        // Align size to 8: size = (size + 7) & ~7
-        func.instruction(&Instruction::LocalGet(0));
-        func.instruction(&Instruction::I32Const(7));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Const(!7));
-        func.instruction(&Instruction::I32And);
-        func.instruction(&Instruction::LocalSet(0));
-
-        // Save current pointer
-        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
-        func.instruction(&Instruction::LocalSet(1));
-
-        // Bump heap pointer
-        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
-        func.instruction(&Instruction::LocalGet(0));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::GlobalSet(self.heap_ptr_global));
-
-        // Overflow check: if new_ptr < old_ptr, the add wrapped around
-        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::I32LtU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::Call(self.oom_func_idx));
-        func.instruction(&Instruction::Unreachable);
-        func.instruction(&Instruction::End);
-
-        // Bounds check: if new heap_ptr >= memory size in bytes, grow
-        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
-        func.instruction(&Instruction::MemorySize(0));
-        func.instruction(&Instruction::I32Const(16));
-        func.instruction(&Instruction::I32Shl);
-        func.instruction(&Instruction::I32GeU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        // Compute pages needed: (heap_ptr - current_bytes + 65535) >> 16
-        func.instruction(&Instruction::GlobalGet(self.heap_ptr_global));
-        func.instruction(&Instruction::MemorySize(0));
-        func.instruction(&Instruction::I32Const(16));
-        func.instruction(&Instruction::I32Shl);
-        func.instruction(&Instruction::I32Sub);
-        func.instruction(&Instruction::I32Const(65535));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Const(16));
-        func.instruction(&Instruction::I32ShrU);
-        func.instruction(&Instruction::MemoryGrow(0));
-        func.instruction(&Instruction::I32Const(-1));
-        func.instruction(&Instruction::I32Eq);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::Call(self.oom_func_idx));
-        func.instruction(&Instruction::Unreachable);
-        func.instruction(&Instruction::End);
-        func.instruction(&Instruction::End);
-
-        // Return old pointer
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::End);
-
-        self.code_buffer.push((func_idx, func));
-        self.export_section
-            .export("alloc", ExportKind::Func, func_idx);
-
-        self.functions.push(FuncInfo {
-            wasm_func_idx: func_idx,
-            type_idx,
-            name: "__wasm_alloc".to_string(),
-            params: vec![("size".to_string(), WasmType::I32)],
-            results: vec![WasmType::I32],
-            result_go_types: vec![],
-            is_exported: true,
-            recv_type: None,
-            is_variadic: false,
-            variadic_elem_vt: None,
-            iface_param_indices: vec![],
-        });
-    }
 
     pub(crate) fn emit_reset_function(&mut self) {
         let type_idx = self.next_type_idx;
@@ -737,254 +676,13 @@ impl WasmCompiler {
     }
 
     pub(crate) fn alloc_func_idx(&self) -> Result<u32, Error> {
-        self.functions
-            .iter()
-            .find(|f| f.name == "__wasm_alloc")
-            .map(|f| f.wasm_func_idx)
-            .ok_or_else(|| {
-                Error::InternalError(
-                    "alloc function not registered; emit_alloc_function must be called before compilation".to_string(),
-                )
-            })
+        self.alloc_func_idx_stored.ok_or_else(|| {
+            Error::InternalError(
+                "alloc function not registered; emit_host_imports must be called before compilation".to_string(),
+            )
+        })
     }
 
-    /// Returns the cached type index for the (i32, i32, i32, i32) -> i32 string
-    /// comparison signature, creating it on first call.
-    fn get_or_create_str_cmp_type_idx(&mut self) -> u32 {
-        if let Some(idx) = self.str_cmp_type_idx {
-            return idx;
-        }
-        let idx = self.next_type_idx;
-        self.type_section.ty().function(
-            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
-            vec![ValType::I32],
-        );
-        self.next_type_idx += 1;
-        self.str_cmp_type_idx = Some(idx);
-        idx
-    }
-
-    /// Phase 2: Emit __rt_streq(ptr1, len1, ptr2, len2) -> i32
-    pub(crate) fn emit_rt_streq(&mut self) {
-        if self.rt_streq_func_idx.is_some() {
-            return;
-        }
-
-        let type_idx = self.get_or_create_str_cmp_type_idx();
-
-        let func_idx = self.next_func_idx;
-        self.function_section.function(type_idx);
-        self.next_func_idx += 1;
-
-        // params: 0=ptr1, 1=len1, 2=ptr2, 3=len2; locals: 4=result, 5=idx
-        let mut func = Function::new(vec![(1, ValType::I32), (1, ValType::I32)]);
-
-        // result = 1 (assume equal)
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::LocalSet(4));
-
-        // if len1 != len2: return 0
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32Ne);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::Else);
-
-        // idx = 0
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(5));
-        func.instruction(&Instruction::Block(BlockType::Empty));
-        func.instruction(&Instruction::Loop(BlockType::Empty));
-
-        // if idx >= len1: break
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::I32GeU);
-        func.instruction(&Instruction::BrIf(1));
-
-        // if ptr1[idx] != ptr2[idx]: result=0, break
-        func.instruction(&Instruction::LocalGet(0));
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::LocalGet(2));
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::I32Ne);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::Br(2));
-        func.instruction(&Instruction::End);
-
-        // idx++
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::LocalSet(5));
-        func.instruction(&Instruction::Br(0));
-        func.instruction(&Instruction::End); // loop
-        func.instruction(&Instruction::End); // block
-        func.instruction(&Instruction::End); // else
-
-        func.instruction(&Instruction::LocalGet(4));
-        func.instruction(&Instruction::End);
-
-        self.code_buffer.push((func_idx, func));
-        self.rt_streq_func_idx = Some(func_idx);
-
-        self.functions.push(FuncInfo {
-            wasm_func_idx: func_idx,
-            type_idx,
-            name: "__rt_streq".to_string(),
-            params: vec![
-                ("ptr1".to_string(), WasmType::I32),
-                ("len1".to_string(), WasmType::I32),
-                ("ptr2".to_string(), WasmType::I32),
-                ("len2".to_string(), WasmType::I32),
-            ],
-            results: vec![WasmType::I32],
-            result_go_types: vec![],
-            is_exported: false,
-            recv_type: None,
-            is_variadic: false,
-            variadic_elem_vt: None,
-            iface_param_indices: vec![],
-        });
-    }
-
-    /// Phase 2: Emit __rt_strcmp(ptr1, len1, ptr2, len2) -> i32 (returns -1, 0, 1)
-    pub(crate) fn emit_rt_strcmp(&mut self) {
-        if self.rt_strcmp_func_idx.is_some() {
-            return;
-        }
-
-        let type_idx = self.get_or_create_str_cmp_type_idx();
-
-        let func_idx = self.next_func_idx;
-        self.function_section.function(type_idx);
-        self.next_func_idx += 1;
-
-        // params: 0=ptr1, 1=len1, 2=ptr2, 3=len2
-        // locals: 4=cmp, 5=idx, 6=min_len, 7=b1, 8=b2
-        let mut func = Function::new(vec![
-            (1, ValType::I32), (1, ValType::I32), (1, ValType::I32),
-            (1, ValType::I32), (1, ValType::I32),
-        ]);
-
-        // min_len = len1 <= len2 ? len1 : len2
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32LeU);
-        func.instruction(&Instruction::Select);
-        func.instruction(&Instruction::LocalSet(6));
-
-        // cmp = 0, idx = 0
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(5));
-
-        // byte-by-byte comparison loop
-        func.instruction(&Instruction::Block(BlockType::Empty));
-        func.instruction(&Instruction::Loop(BlockType::Empty));
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::LocalGet(6));
-        func.instruction(&Instruction::I32GeU);
-        func.instruction(&Instruction::BrIf(1));
-
-        // b1 = ptr1[idx], b2 = ptr2[idx]
-        func.instruction(&Instruction::LocalGet(0));
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::LocalSet(7));
-        func.instruction(&Instruction::LocalGet(2));
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::LocalSet(8));
-
-        // if b1 < b2: cmp = -1, break
-        func.instruction(&Instruction::LocalGet(7));
-        func.instruction(&Instruction::LocalGet(8));
-        func.instruction(&Instruction::I32LtU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(-1i32));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::Br(2));
-        func.instruction(&Instruction::End);
-
-        // if b1 > b2: cmp = 1, break
-        func.instruction(&Instruction::LocalGet(7));
-        func.instruction(&Instruction::LocalGet(8));
-        func.instruction(&Instruction::I32GtU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::Br(2));
-        func.instruction(&Instruction::End);
-
-        // idx++
-        func.instruction(&Instruction::LocalGet(5));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::LocalSet(5));
-        func.instruction(&Instruction::Br(0));
-        func.instruction(&Instruction::End); // loop
-        func.instruction(&Instruction::End); // block
-
-        // if cmp == 0: compare lengths
-        func.instruction(&Instruction::LocalGet(4));
-        func.instruction(&Instruction::I32Eqz);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32LtU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(-1i32));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::Else);
-        func.instruction(&Instruction::LocalGet(1));
-        func.instruction(&Instruction::LocalGet(3));
-        func.instruction(&Instruction::I32GtU);
-        func.instruction(&Instruction::If(BlockType::Empty));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::LocalSet(4));
-        func.instruction(&Instruction::End);
-        func.instruction(&Instruction::End);
-        func.instruction(&Instruction::End);
-
-        func.instruction(&Instruction::LocalGet(4));
-        func.instruction(&Instruction::End);
-
-        self.code_buffer.push((func_idx, func));
-        self.rt_strcmp_func_idx = Some(func_idx);
-
-        self.functions.push(FuncInfo {
-            wasm_func_idx: func_idx,
-            type_idx,
-            name: "__rt_strcmp".to_string(),
-            params: vec![
-                ("ptr1".to_string(), WasmType::I32),
-                ("len1".to_string(), WasmType::I32),
-                ("ptr2".to_string(), WasmType::I32),
-                ("len2".to_string(), WasmType::I32),
-            ],
-            results: vec![WasmType::I32],
-            result_go_types: vec![],
-            is_exported: false,
-            recv_type: None,
-            is_variadic: false,
-            variadic_elem_vt: None,
-            iface_param_indices: vec![],
-        });
-    }
 
     /// Returns the cached type index for the (i32, i32) -> i32 comparison
     /// signature, creating it on first call.

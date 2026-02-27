@@ -447,3 +447,331 @@ func F() int {
         "\\101 should be 'A' (65)"
     );
 }
+
+#[test]
+fn test_bitwise_and_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 0xFF
+    x &= 0x0F
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0x0F, "0xFF &= 0x0F should be 0x0F");
+}
+
+#[test]
+fn test_bitwise_or_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 0xF0
+    x |= 0x0F
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0xFF, "0xF0 |= 0x0F should be 0xFF");
+}
+
+#[test]
+fn test_bitwise_xor_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 0xFF
+    x ^= 0x0F
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0xF0, "0xFF ^= 0x0F should be 0xF0");
+}
+
+#[test]
+fn test_shl_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 1
+    x <<= 4
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 16, "1 <<= 4 should be 16");
+}
+
+#[test]
+fn test_shr_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 256
+    x >>= 4
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 16, "256 >>= 4 should be 16");
+}
+
+#[test]
+fn test_andnot_assign() {
+    let src = r#"package main
+
+func F() int {
+    x := 0xFF
+    x &^= 0x0F
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0xF0, "0xFF &^= 0x0F should be 0xF0");
+}
+
+#[test]
+fn test_make_slice_zero_initialized() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 5)
+    sum := 0
+    for i := 0; i < 5; i++ {
+        sum += s[i]
+    }
+    return sum
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "make([]int, 5) should be zero-initialized");
+}
+
+#[test]
+fn test_append_spread_nil_dst() {
+    let src = r#"package main
+
+func F() int {
+    src := []int{10, 20, 30}
+    var dst []int
+    dst = append(dst, src...)
+    return dst[0] + dst[1] + dst[2]
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 60, "append(nil, src...) should work");
+}
+
+#[test]
+fn test_append_spread_nil_src() {
+    let src = r#"package main
+
+func F() int {
+    dst := []int{1, 2, 3}
+    var src []int
+    dst = append(dst, src...)
+    return len(dst)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 3, "append(dst, nil...) should keep dst unchanged");
+}
+
+#[test]
+fn test_make_len_gt_cap_panics() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 10, 5)
+    return len(s)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert!(f.call(&mut s, ()).is_err(), "make([]int, 10, 5) should panic when len > cap");
+}
+
+#[test]
+fn test_make_len_eq_cap_ok() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 5, 5)
+    return len(s)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 5, "make([]int, 5, 5) should work fine");
+}
+
+#[test]
+fn test_type_switch_init_scope() {
+    let src = r#"package main
+
+type Stringer interface {
+    String() string
+}
+
+type MyStr struct {
+    val int
+}
+
+func (m MyStr) String() string {
+    return "hello"
+}
+
+func F() int {
+    x := 10
+    var i Stringer
+    i = MyStr{val: 42}
+    switch x := 100; i.(type) {
+    case MyStr:
+        return x
+    }
+    return 0
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 100, "type switch init var x should shadow outer x");
+}
+
+#[test]
+fn test_struct_field_not_misidentified_as_companion() {
+    let src = r#"package main
+
+type S struct {
+    A   int
+    A_1 int
+    B   int
+}
+
+func F() int {
+    s := S{10, 20, 30}
+    return s.A + s.A_1 + s.B
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        60,
+        "positional struct literal with A, A_1, B should assign 10, 20, 30 correctly"
+    );
+}
+
+// =============================================================================
+// Regression: cap() on 2-result expression must return length, not pointer
+// =============================================================================
+
+#[test]
+fn test_cap_returns_length_not_pointer() {
+    let src = r#"package main
+
+func F() int {
+    s := make([]int, 5, 10)
+    return cap(s)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 10, "cap() must return the capacity, not a pointer");
+}
+
+// =============================================================================
+// Regression: %= (RemAssign) must use correct integer rem instructions
+// =============================================================================
+
+#[test]
+fn test_rem_assign_integer() {
+    let src = r#"package main
+
+func F() int {
+    x := 17
+    x %= 5
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 2, "17 %%= 5 should be 2");
+}
+
+// =============================================================================
+// Regression: clear() on struct field map must not corrupt memory
+// =============================================================================
+
+#[test]
+fn test_clear_map_on_struct_field() {
+    let src = r#"package main
+
+type S struct {
+    M map[int]int
+}
+
+func F() int {
+    s := S{M: map[int]int{1: 10, 2: 20}}
+    clear(s.M)
+    return len(s.M)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 0, "clear(s.M) should empty the map");
+}
+
+// =============================================================================
+// Regression: range over map with string values must preserve string length
+// =============================================================================
+
+#[test]
+fn test_range_map_string_values() {
+    let src = r#"package main
+
+func F() int {
+    m := map[int]string{1: "hello", 2: "world"}
+    total := 0
+    for _, v := range m {
+        total += len(v)
+    }
+    return total
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 10, "range over string-valued map should preserve string lengths");
+}
+
+// =============================================================================
+// Regression: arrays of strings must use 8-byte elements (ptr + len)
+// =============================================================================
+
+#[test]
+fn test_string_array_element_size() {
+    let src = r#"package main
+
+func F() int {
+    a := [3]string{"ab", "cd", "ef"}
+    total := 0
+    total += len(a[0])
+    total += len(a[1])
+    total += len(a[2])
+    return total
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(f.call(&mut s, ()).unwrap(), 6, "string array elements must not overlap");
+}

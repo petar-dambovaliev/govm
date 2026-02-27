@@ -108,15 +108,32 @@ impl WasmCompiler {
         if let Some(key) = &range.key {
             if let ast::Expression::Ident(ident) = key {
                 if ident.name != "_" {
-                    let key_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
-                        locals.add_local(&ident.name, mti.key_vt)
+                    if mti.is_string_key {
+                        let key_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
+                            locals.add_local(&ident.name, ValType::I32)
+                        } else {
+                            locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, ValType::I32))
+                        };
+                        let key_len_local = locals.add_local(&format!("{}__str_len", ident.name), ValType::I32);
+                        locals.set_var_struct_type(&ident.name, "__string");
+                        locals.string_locals.insert(ident.name.clone(), (key_local, key_len_local));
+                        out.push(Instruction::LocalGet(entry_local));
+                        out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalSet(key_local));
+                        out.push(Instruction::LocalGet(entry_local));
+                        out.push(Instruction::I32Load(MemArg { offset: 8, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalSet(key_len_local));
                     } else {
-                        locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, mti.key_vt))
-                    };
-                    out.push(Instruction::LocalGet(entry_local));
-                    let (_, key_align) = Self::elem_size_and_align(mti.key_vt);
-                    Self::emit_typed_load(mti.key_vt, 4, key_align, out);
-                    out.push(Instruction::LocalSet(key_local));
+                        let key_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
+                            locals.add_local(&ident.name, mti.key_vt)
+                        } else {
+                            locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, mti.key_vt))
+                        };
+                        out.push(Instruction::LocalGet(entry_local));
+                        let (_, key_align) = Self::elem_size_and_align(mti.key_vt);
+                        Self::emit_typed_load(mti.key_vt, 4, key_align, out);
+                        out.push(Instruction::LocalSet(key_local));
+                    }
                 }
             }
         }
@@ -125,16 +142,33 @@ impl WasmCompiler {
         if let Some(value) = &range.value {
             if let ast::Expression::Ident(ident) = value {
                 if ident.name != "_" {
-                    let val_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
-                        locals.add_local(&ident.name, mti.val_vt)
-                    } else {
-                        locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, mti.val_vt))
-                    };
                     let val_offset = 4u64 + mti.key_size as u64;
-                    let (_, val_align) = Self::elem_size_and_align(mti.val_vt);
-                    out.push(Instruction::LocalGet(entry_local));
-                    Self::emit_typed_load(mti.val_vt, val_offset, val_align, out);
-                    out.push(Instruction::LocalSet(val_local));
+                    if mti.is_string_val {
+                        let val_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
+                            locals.add_local(&ident.name, ValType::I32)
+                        } else {
+                            locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, ValType::I32))
+                        };
+                        let val_len_local = locals.add_local(&format!("{}__str_len", ident.name), ValType::I32);
+                        locals.set_var_struct_type(&ident.name, "__string");
+                        locals.string_locals.insert(ident.name.clone(), (val_local, val_len_local));
+                        out.push(Instruction::LocalGet(entry_local));
+                        out.push(Instruction::I32Load(MemArg { offset: val_offset, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalSet(val_local));
+                        out.push(Instruction::LocalGet(entry_local));
+                        out.push(Instruction::I32Load(MemArg { offset: val_offset + 4, align: 2, memory_index: 0 }));
+                        out.push(Instruction::LocalSet(val_len_local));
+                    } else {
+                        let val_local = if range.op.as_ref().map_or(false, |(_, op)| *op == Operator::Define) {
+                            locals.add_local(&ident.name, mti.val_vt)
+                        } else {
+                            locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, mti.val_vt))
+                        };
+                        let (_, val_align) = Self::elem_size_and_align(mti.val_vt);
+                        out.push(Instruction::LocalGet(entry_local));
+                        Self::emit_typed_load(mti.val_vt, val_offset, val_align, out);
+                        out.push(Instruction::LocalSet(val_local));
+                    }
                 }
             }
         }

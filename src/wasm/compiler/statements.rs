@@ -1407,15 +1407,27 @@ impl WasmCompiler {
                                         })),
                                     }
                                     out.push(Instruction::LocalGet(rhs_tmp));
-                                    let arith = match assign.op {
-                                        Operator::AddAssign => Self::typed_add(vt),
-                                        Operator::SubAssign => Self::typed_sub(vt),
-                                        Operator::MulAssign => Self::typed_mul(vt),
-                                        Operator::QuoAssign => Self::typed_div(vt, false),
-                                        Operator::RemAssign => Self::typed_rem(vt, false),
-                                        _ => Self::typed_add(vt),
-                                    };
-                                    out.push(arith);
+                                    let is_unsigned = locals.unsigned_vars.contains(&ident.name);
+                                    if assign.op == Operator::AndNotAssign {
+                                        for instr in Self::typed_andnot(vt) {
+                                            out.push(instr);
+                                        }
+                                    } else {
+                                        let arith = match assign.op {
+                                            Operator::AddAssign => Self::typed_add(vt),
+                                            Operator::SubAssign => Self::typed_sub(vt),
+                                            Operator::MulAssign => Self::typed_mul(vt),
+                                            Operator::QuoAssign => Self::typed_div(vt, is_unsigned),
+                                            Operator::RemAssign => Self::typed_rem(vt, is_unsigned),
+                                            Operator::AndAssign => Self::typed_and(vt),
+                                            Operator::OrAssign => Self::typed_or(vt),
+                                            Operator::XorAssign => Self::typed_xor(vt),
+                                            Operator::ShlAssign => Self::typed_shl(vt),
+                                            Operator::ShrAssign => Self::typed_shr(vt, is_unsigned),
+                                            _ => Self::typed_add(vt),
+                                        };
+                                        out.push(arith);
+                                    }
                                     let result_tmp = locals.add_local(
                                         &format!("__cap_res_{}", locals.locals.len()),
                                         vt,
@@ -1468,7 +1480,10 @@ impl WasmCompiler {
                                         }
                                         Operator::AddAssign | Operator::SubAssign |
                                         Operator::MulAssign | Operator::QuoAssign |
-                                        Operator::RemAssign => {
+                                        Operator::RemAssign | Operator::AndAssign |
+                                        Operator::OrAssign | Operator::XorAssign |
+                                        Operator::ShlAssign | Operator::ShrAssign |
+                                        Operator::AndNotAssign => {
                                             let rhs_tmp = locals.add_local(
                                                 &format!("__mb_rhs_{}", locals.locals.len()),
                                                 mb_vt,
@@ -1495,15 +1510,27 @@ impl WasmCompiler {
                                             let (_, align) = Self::elem_size_and_align(mb_vt);
                                             Self::emit_typed_load(mb_vt, 0, align, out);
                                             out.push(Instruction::LocalGet(rhs_tmp));
-                                            let op_instr = match assign.op {
-                                                Operator::AddAssign => Self::typed_add(mb_vt),
-                                                Operator::SubAssign => Self::typed_sub(mb_vt),
-                                                Operator::MulAssign => Self::typed_mul(mb_vt),
-                                                Operator::QuoAssign => Self::typed_div(mb_vt, false),
-                                                Operator::RemAssign => Self::typed_rem(mb_vt, false),
-                                                _ => Self::typed_add(mb_vt),
-                                            };
-                                            out.push(op_instr);
+                                            let mb_unsigned = locals.unsigned_vars.contains(&ident.name);
+                                            if assign.op == Operator::AndNotAssign {
+                                                for instr in Self::typed_andnot(mb_vt) {
+                                                    out.push(instr);
+                                                }
+                                            } else {
+                                                let op_instr = match assign.op {
+                                                    Operator::AddAssign => Self::typed_add(mb_vt),
+                                                    Operator::SubAssign => Self::typed_sub(mb_vt),
+                                                    Operator::MulAssign => Self::typed_mul(mb_vt),
+                                                    Operator::QuoAssign => Self::typed_div(mb_vt, mb_unsigned),
+                                                    Operator::RemAssign => Self::typed_rem(mb_vt, mb_unsigned),
+                                                    Operator::AndAssign => Self::typed_and(mb_vt),
+                                                    Operator::OrAssign => Self::typed_or(mb_vt),
+                                                    Operator::XorAssign => Self::typed_xor(mb_vt),
+                                                    Operator::ShlAssign => Self::typed_shl(mb_vt),
+                                                    Operator::ShrAssign => Self::typed_shr(mb_vt, mb_unsigned),
+                                                    _ => Self::typed_add(mb_vt),
+                                                };
+                                                out.push(op_instr);
+                                            }
 
                                             let result_tmp = locals.add_local(
                                                 &format!("__mb_res_{}", locals.locals.len()),
@@ -2015,8 +2042,58 @@ impl WasmCompiler {
     pub(crate) fn typed_rem(vt: ValType, is_unsigned: bool) -> Instruction<'static> {
         match vt {
             ValType::I32 => if is_unsigned { Instruction::I32RemU } else { Instruction::I32RemS },
-            ValType::F32 | ValType::F64 => Instruction::I64RemS,
+            ValType::F32 | ValType::F64 => unreachable!("Go does not support % on float types"),
             _ => if is_unsigned { Instruction::I64RemU } else { Instruction::I64RemS },
+        }
+    }
+
+    pub(crate) fn typed_and(vt: ValType) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => Instruction::I32And,
+            _ => Instruction::I64And,
+        }
+    }
+
+    pub(crate) fn typed_or(vt: ValType) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => Instruction::I32Or,
+            _ => Instruction::I64Or,
+        }
+    }
+
+    pub(crate) fn typed_xor(vt: ValType) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => Instruction::I32Xor,
+            _ => Instruction::I64Xor,
+        }
+    }
+
+    pub(crate) fn typed_shl(vt: ValType) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => Instruction::I32Shl,
+            _ => Instruction::I64Shl,
+        }
+    }
+
+    pub(crate) fn typed_shr(vt: ValType, is_unsigned: bool) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => if is_unsigned { Instruction::I32ShrU } else { Instruction::I32ShrS },
+            _ => if is_unsigned { Instruction::I64ShrU } else { Instruction::I64ShrS },
+        }
+    }
+
+    pub(crate) fn typed_andnot(vt: ValType) -> Vec<Instruction<'static>> {
+        match vt {
+            ValType::I32 => vec![
+                Instruction::I32Const(-1),
+                Instruction::I32Xor,
+                Instruction::I32And,
+            ],
+            _ => vec![
+                Instruction::I64Const(-1),
+                Instruction::I64Xor,
+                Instruction::I64And,
+            ],
         }
     }
 

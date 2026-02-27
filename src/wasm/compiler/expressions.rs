@@ -2346,8 +2346,28 @@ impl WasmCompiler {
                             }
                         }
                         ConstValue::Complex128(re, im) => {
-                            out.push(Instruction::F64Const((*re).into()));
-                            out.push(Instruction::F64Const((*im).into()));
+                            if let Some(gc_idx) = self.gc_builtin_types.complex128 {
+                                out.push(Instruction::F64Const((*re).into()));
+                                out.push(Instruction::F64Const((*im).into()));
+                                out.push(Instruction::StructNew(gc_idx));
+                            } else {
+                                let total_size: i32 = 16;
+                                let float_align: u32 = 3;
+                                let ptr_local = locals.add_local(
+                                    &format!("__const_cmplx_{}", locals.locals.len()),
+                                    ValType::I32,
+                                );
+                                out.push(Instruction::I32Const(total_size));
+                                out.push(Instruction::Call(self.alloc_func_idx()?));
+                                out.push(Instruction::LocalSet(ptr_local));
+                                out.push(Instruction::LocalGet(ptr_local));
+                                out.push(Instruction::F64Const((*re).into()));
+                                out.push(Instruction::F64Store(MemArg { offset: 0, align: float_align, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(ptr_local));
+                                out.push(Instruction::F64Const((*im).into()));
+                                out.push(Instruction::F64Store(MemArg { offset: 8, align: float_align, memory_index: 0 }));
+                                out.push(Instruction::LocalGet(ptr_local));
+                            }
                         }
                     }
                     let go_type = match &cv {
@@ -2583,7 +2603,7 @@ impl WasmCompiler {
     pub(crate) fn go_type_elem_size_and_align(elem_type: &ast::Expression) -> (i32, u32) {
         match elem_type {
             ast::Expression::Ident(id) => match id.name.as_str() {
-                "int" | "int64" | "uint" | "uint64" | "float64" => (8, 3),
+                "int" | "int64" | "uint" | "uint64" | "float64" | "string" => (8, 3),
                 "int32" | "uint32" | "float32" | "rune" => (4, 2),
                 "int16" | "uint16" => (2, 1),
                 "int8" | "uint8" | "byte" | "bool" => (1, 0),
@@ -3142,9 +3162,13 @@ impl WasmCompiler {
             let mut idx = 0;
             while idx < sd.fields.len() {
                 indices.push(idx);
-                if idx + 1 < sd.fields.len()
+                let has_companion = idx + 1 < sd.fields.len()
                     && sd.fields[idx + 1].name == format!("{}_{}", sd.fields[idx].name, 1)
-                {
+                    && matches!(
+                        sd.fields[idx].go_type_tag.as_deref(),
+                        Some("__string") | Some("__interface")
+                    );
+                if has_companion {
                     idx += 2;
                 } else {
                     idx += 1;
