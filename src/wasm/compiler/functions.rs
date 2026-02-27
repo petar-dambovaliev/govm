@@ -88,7 +88,7 @@ impl WasmCompiler {
             if let ast::Expression::Ellipsis(ellipsis) = &field.typ {
                 is_variadic = true;
                 let elem_vt = if let Some(ref elt) = ellipsis.elt {
-                    Self::infer_array_elem_vt(elt)
+                    self.infer_array_elem_vt(elt)
                 } else {
                     ValType::I64
                 };
@@ -298,12 +298,12 @@ impl WasmCompiler {
             }
 
             if let ast::Expression::TypeSlice(slice_type) = &field.typ {
-                let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                 for name_ident in &field.name {
                     locals.set_var_struct_type(&name_ident.name, "__slice");
                     locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
                     if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
-                        let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                        let inner_vt = self.infer_array_elem_vt(&inner_st.typ);
                         locals.nested_slice_inner_elem_types.insert(name_ident.name.clone(), inner_vt);
                     }
                     if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {

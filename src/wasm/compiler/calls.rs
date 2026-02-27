@@ -2905,7 +2905,7 @@ impl WasmCompiler {
                             "slice-to-array conversion requires a constant array length".to_string(),
                         ));
                     };
-                    let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                    let elem_vt = self.infer_array_elem_vt(&arr_type.typ);
                     let (elem_size, _) = Self::elem_size_and_align(elem_vt);
 
                     self.compile_expression(arg, out, locals)?;

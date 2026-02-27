@@ -1008,6 +1008,18 @@ impl WasmCompiler {
             ast::Expression::Slice(slice) => {
                 self.is_string_expr(&slice.left, locals)
             }
+            ast::Expression::Index(idx) => {
+                if let Some(left) = idx.left.as_deref() {
+                    if let ast::Expression::Ident(ident) = left {
+                        if let Some(&(arr_elem_vt, ..)) = locals.array_info.get(&ident.name) {
+                            if let Some(gc_idx) = self.gc_builtin_types.go_string {
+                                return arr_elem_vt == Self::gc_ref_val_type(gc_idx);
+                            }
+                        }
+                    }
+                }
+                false
+            }
             ast::Expression::Selector(sel) => {
                 if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
                     if let Some(sdef) = self.struct_defs.get(&type_name) {
@@ -2343,10 +2355,10 @@ impl WasmCompiler {
         Ok(())
     }
 
-    pub(crate) fn infer_slice_elem_type(type_arg: Option<&ast::Expression>) -> ValType {
+    pub(crate) fn infer_slice_elem_type(&self, type_arg: Option<&ast::Expression>) -> ValType {
         match type_arg {
             Some(ast::Expression::TypeSlice(slice_type)) => {
-                Self::infer_array_elem_vt(&slice_type.typ)
+                self.infer_array_elem_vt(&slice_type.typ)
             }
             _ => ValType::I64,
         }
@@ -2657,15 +2669,19 @@ impl WasmCompiler {
         )))
     }
 
-    pub(crate) fn infer_array_elem_vt(elem_type: &ast::Expression) -> ValType {
+    pub(crate) fn infer_array_elem_vt(&self, elem_type: &ast::Expression) -> ValType {
         match elem_type {
-            ast::Expression::Ident(id) => match id.name.as_str() {
-                "int" | "int64" | "uint" | "uint64" => ValType::I64,
-                "float64" => ValType::F64,
-                "float32" => ValType::F32,
-                "int32" | "uint32" | "byte" | "uint8" | "int16" | "uint16" | "bool" => ValType::I32,
-                _ => ValType::I32,
-            },
+            ast::Expression::Ident(id) => {
+                if let Some(&idx) = match id.name.as_str() {
+                    "string" => self.gc_builtin_types.go_string.as_ref(),
+                    "complex64" => self.gc_builtin_types.complex64.as_ref(),
+                    "complex128" => self.gc_builtin_types.complex128.as_ref(),
+                    _ => None,
+                } {
+                    return Self::gc_ref_val_type(idx);
+                }
+                Self::val_type_for_type_name(&id.name)
+            }
             ast::Expression::TypeSlice(_)
             | ast::Expression::TypeArray(_)
             | ast::Expression::TypeMap(_)
@@ -2710,7 +2726,22 @@ impl WasmCompiler {
             )));
         };
 
-        let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+        let elem_vt = self.infer_array_elem_vt(&arr_type.typ);
+
+        if matches!(elem_vt, ValType::Ref(_)) {
+            let gc_array_type_idx = self.get_or_create_gc_array_type(elem_vt);
+            for kv in lit_val.values.iter() {
+                if let ast::Element::Expr(expr) = &kv.val {
+                    self.compile_expression(expr, out, locals)?;
+                }
+            }
+            out.push(Instruction::ArrayNewFixed {
+                array_type_index: gc_array_type_idx,
+                array_size: arr_len,
+            });
+            return Ok(());
+        }
+
         let (elem_size, align) = Self::go_type_elem_size_and_align(&arr_type.typ);
         let total_bytes = (arr_len as i32).checked_mul(elem_size).ok_or_else(|| {
             Error::InternalError(format!(
@@ -2842,7 +2873,7 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+        let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
         let (elem_size, align) = Self::elem_size_and_align(elem_vt);
         let n_elems = lit_val.values.len() as i32;
         let data_bytes = n_elems * elem_size;
@@ -3003,8 +3034,8 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let key_vt = Self::infer_array_elem_vt(&map_type.key);
-        let val_vt = Self::infer_array_elem_vt(&map_type.val);
+        let key_vt = self.infer_array_elem_vt(&map_type.key);
+        let val_vt = self.infer_array_elem_vt(&map_type.val);
         let is_string_key = matches!(map_type.key.as_ref(), ast::Expression::Ident(id) if id.name == "string");
         let is_string_val = matches!(map_type.val.as_ref(), ast::Expression::Ident(id) if id.name == "string");
         let key_size = if is_string_key { 8u32 } else { val_type_byte_size(key_vt) };
@@ -4266,6 +4297,20 @@ impl WasmCompiler {
         // Array indexing: a[i] with bounds check
         if let ast::Expression::Ident(ident) = left {
             if let Some(&(arr_elem_vt, arr_len, go_es, go_ea)) = locals.array_info.get(&ident.name) {
+                if matches!(arr_elem_vt, ValType::Ref(_)) {
+                    let gc_array_type_idx = self.get_or_create_gc_array_type(arr_elem_vt);
+                    self.compile_expression(left, out, locals)?;
+
+                    self.compile_expression(&idx.index, out, locals)?;
+                    let idx_vt = self.infer_val_type(&idx.index, locals);
+                    if idx_vt == ValType::I64 {
+                        out.push(Instruction::I32WrapI64);
+                    }
+
+                    out.push(Instruction::ArrayGet(gc_array_type_idx));
+                    return Ok(GoType::String);
+                }
+
                 let (arr_elem_size, arr_align) = (go_es, go_ea);
                 self.compile_expression(left, out, locals)?;
                 let base = locals.add_local(&format!("__arri_b_{}", locals.locals.len()), ValType::I32);

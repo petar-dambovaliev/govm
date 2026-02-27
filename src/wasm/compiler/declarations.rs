@@ -316,7 +316,7 @@ impl WasmCompiler {
                 if let ast::Expression::Ellipsis(ellipsis) = &field.typ {
                     is_variadic = true;
                     let elem_vt = if let Some(ref elt) = ellipsis.elt {
-                        Self::infer_array_elem_vt(elt)
+                        self.infer_array_elem_vt(elt)
                     } else {
                         ValType::I64
                     };
@@ -1060,7 +1060,7 @@ impl WasmCompiler {
                 // Track array element type for correct load instructions
                 if let Some(type_expr) = &spec.typ {
                     if let ast::Expression::TypeArray(arr) = type_expr {
-                        let elem_vt = Self::infer_array_elem_vt(&arr.typ);
+                        let elem_vt = self.infer_array_elem_vt(&arr.typ);
                         let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&arr.typ);
                         self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
                     }
@@ -1068,7 +1068,7 @@ impl WasmCompiler {
                 if let Some(val) = spec.values.first() {
                     if let ast::Expression::CompositeLit(comp) = val {
                         if let ast::Expression::TypeArray(arr) = comp.typ.as_ref() {
-                            let elem_vt = Self::infer_array_elem_vt(&arr.typ);
+                            let elem_vt = self.infer_array_elem_vt(&arr.typ);
                             let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&arr.typ);
                             self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
                         }
@@ -1085,7 +1085,7 @@ impl WasmCompiler {
                     }
                     if let ast::Expression::TypeSlice(slice_type) = type_expr {
                         self.global_var_struct_types.insert(var_name.clone(), "__slice".to_string());
-                        let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                        let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                         let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&slice_type.typ);
                         self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
                         if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
@@ -1100,7 +1100,7 @@ impl WasmCompiler {
                     if let ast::Expression::CompositeLit(comp) = val {
                         if let ast::Expression::TypeSlice(slice_type) = comp.typ.as_ref() {
                             self.global_var_struct_types.insert(var_name.clone(), "__slice".to_string());
-                            let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                            let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                             let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&slice_type.typ);
                             self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
                             if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {

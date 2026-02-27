@@ -459,7 +459,7 @@ impl WasmCompiler {
     }
 
     pub(crate) fn setup_named_composite_var(
-        &self,
+        &mut self,
         var_name: &str,
         underlying: &ast::Expression,
         locals: &mut LocalAlloc,
@@ -467,10 +467,10 @@ impl WasmCompiler {
         match underlying {
             ast::Expression::TypeSlice(slice_type) => {
                 locals.set_var_struct_type(var_name, "__slice");
-                let elem_vt = Self::infer_array_elem_vt(&slice_type.typ);
+                let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                 locals.slice_elem_types.insert(var_name.to_string(), elem_vt);
                 if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
-                    let inner_vt = Self::infer_array_elem_vt(&inner_st.typ);
+                    let inner_vt = self.infer_array_elem_vt(&inner_st.typ);
                     locals.nested_slice_inner_elem_types.insert(var_name.to_string(), inner_vt);
                 }
                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
@@ -485,8 +485,8 @@ impl WasmCompiler {
             }
             ast::Expression::TypeMap(map_type) => {
                 locals.set_var_struct_type(var_name, "__map");
-                let key_vt = Self::infer_array_elem_vt(&map_type.key);
-                let val_vt = Self::infer_array_elem_vt(&map_type.val);
+                let key_vt = self.infer_array_elem_vt(&map_type.key);
+                let val_vt = self.infer_array_elem_vt(&map_type.val);
                 let is_string_key = matches!(map_type.key.as_ref(), ast::Expression::Ident(id) if id.name == "string");
                 let is_string_val = matches!(map_type.val.as_ref(), ast::Expression::Ident(id) if id.name == "string");
                 let key_size = if is_string_key { 8u32 } else { val_type_byte_size(key_vt) };
@@ -510,10 +510,13 @@ impl WasmCompiler {
                 let arr_len = if let ast::Expression::BasicLit(lit) = arr_type.len.as_ref() {
                     lit.value.parse::<u32>().unwrap_or(0)
                 } else { 0 };
-                let elem_vt = Self::infer_array_elem_vt(&arr_type.typ);
+                let elem_vt = self.infer_array_elem_vt(&arr_type.typ);
                 let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
                 locals.set_var_struct_type(var_name, "__array");
                 locals.array_info.insert(var_name.to_string(), (elem_vt, arr_len, go_es, go_ea));
+                if matches!(elem_vt, ValType::Ref(_)) {
+                    self.get_or_create_gc_array_type(elem_vt);
+                }
             }
             _ => {}
         }
@@ -918,6 +921,13 @@ impl WasmCompiler {
                             if let Some(gc_idx) = sd.gc_type_idx {
                                 return Self::gc_ref_val_type(gc_idx);
                             }
+                        }
+                    }
+                } else if let ast::Expression::TypeArray(arr_type) = cl.typ.as_ref() {
+                    let elem_vt = self.infer_array_elem_vt(&arr_type.typ);
+                    if matches!(elem_vt, ValType::Ref(_)) {
+                        if let Some(&gc_arr_idx) = self.gc_array_types.get(&elem_vt) {
+                            return Self::gc_ref_val_type(gc_arr_idx);
                         }
                     }
                 }

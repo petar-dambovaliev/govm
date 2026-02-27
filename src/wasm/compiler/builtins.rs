@@ -482,7 +482,7 @@ impl WasmCompiler {
             }
         }
 
-        let elem_vt = Self::infer_slice_elem_type(call.args.first());
+        let elem_vt = self.infer_slice_elem_type(call.args.first());
         let (elem_size, _align) = Self::elem_size_and_align(elem_vt);
         const HEADER_SIZE: i32 = 12;
 
