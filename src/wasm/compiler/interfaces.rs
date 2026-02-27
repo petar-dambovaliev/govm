@@ -547,6 +547,19 @@ impl WasmCompiler {
                 Error::InternalError(format!("variable '{}' not found", ident.name))
             })?;
             (tid, data)
+        } else if self.is_interface_field_selector(&ta.left, locals) {
+            let tid = locals.add_local(
+                &format!("__ta_tid_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            let data = locals.add_local(
+                &format!("__ta_data_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            self.compile_expression(&ta.left, out, locals)?;
+            out.push(Instruction::LocalSet(tid));
+            out.push(Instruction::LocalSet(data));
+            (tid, data)
         } else {
             self.compile_expression(&ta.left, out, locals)?;
             let wrapper = locals.add_local(
@@ -660,6 +673,19 @@ impl WasmCompiler {
             let data = locals.find(&ident.name).ok_or_else(|| {
                 Error::InternalError(format!("variable '{}' not found", ident.name))
             })?;
+            (tid, data)
+        } else if self.is_interface_field_selector(&ta.left, locals) {
+            let tid = locals.add_local(
+                &format!("__taok_tid_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            let data = locals.add_local(
+                &format!("__taok_data_{}", locals.locals.len()),
+                ValType::I32,
+            );
+            self.compile_expression(&ta.left, out, locals)?;
+            out.push(Instruction::LocalSet(tid));
+            out.push(Instruction::LocalSet(data));
             (tid, data)
         } else {
             self.compile_expression(&ta.left, out, locals)?;
@@ -1099,7 +1125,8 @@ impl WasmCompiler {
         }
 
         // Find all concrete types that implement this method
-        let candidates: Vec<(u32, u32, Vec<ValType>, Vec<String>)> = self
+        // Tuple: (type_id, func_idx, result_types, result_go_types, receiver_vt)
+        let candidates: Vec<(u32, u32, Vec<ValType>, Vec<String>, ValType)> = self
             .functions
             .iter()
             .filter_map(|f| {
@@ -1109,7 +1136,8 @@ impl WasmCompiler {
                 }
                 let type_id = self.type_registry.get(type_name).copied()?;
                 let result_types: Vec<ValType> = f.results.iter().map(|r| r.to_val_type()).collect();
-                Some((type_id, f.wasm_func_idx, result_types, f.result_go_types.clone()))
+                let recv_vt = f.params.first().map(|(_, wt)| wt.to_val_type()).unwrap_or(ValType::I32);
+                Some((type_id, f.wasm_func_idx, result_types, f.result_go_types.clone(), recv_vt))
             })
             .collect();
 
@@ -1136,13 +1164,17 @@ impl WasmCompiler {
             result_locals.push((rl, vt));
         }
 
+        // Determine receiver ValType from the first candidate
+        let recv_vt = candidates[0].4;
+        let (_, recv_align) = Self::elem_size_and_align(recv_vt);
+
         // Try vtable-based dispatch if itab is populated
         let iface_info = self.find_iface_method_info(method_name);
         if self.itab_base > 0 && self.max_iface_methods > 0 && iface_info.is_some() {
             let (iface_id, method_idx) = iface_info.unwrap();
 
             // Build the function type for call_indirect (deduplicated)
-            let mut param_types: Vec<ValType> = vec![ValType::I32]; // receiver
+            let mut param_types: Vec<ValType> = vec![recv_vt];
             for (_, vt) in &arg_locals {
                 param_types.push(*vt);
             }
@@ -1181,9 +1213,9 @@ impl WasmCompiler {
             out.push(Instruction::I32Eqz); // func_idx != 0
             out.push(Instruction::If(BlockType::Empty));
             {
-                // Push receiver (unwrap box)
+                // Push receiver (unwrap box using correct type)
                 out.push(Instruction::LocalGet(data_local));
-                out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                Self::emit_typed_load(recv_vt, 0, recv_align, out);
                 for (arg_local, _) in &arg_locals {
                     out.push(Instruction::LocalGet(*arg_local));
                 }
@@ -1196,14 +1228,15 @@ impl WasmCompiler {
             out.push(Instruction::Else);
             {
                 // Fallback: if/else chain for types not in itab
-                for (type_id, func_idx, _result_types, _result_go_types) in candidates.iter() {
+                for (type_id, func_idx, _result_types, _result_go_types, cand_recv_vt) in candidates.iter() {
+                    let (_, cand_align) = Self::elem_size_and_align(*cand_recv_vt);
                     out.push(Instruction::LocalGet(tid_local));
                     out.push(Instruction::I32Const(*type_id as i32));
                     out.push(Instruction::I32Eq);
                     out.push(Instruction::If(BlockType::Empty));
                     {
                         out.push(Instruction::LocalGet(data_local));
-                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                        Self::emit_typed_load(*cand_recv_vt, 0, cand_align, out);
                         for (arg_local, _) in &arg_locals {
                             out.push(Instruction::LocalGet(*arg_local));
                         }
@@ -1220,14 +1253,15 @@ impl WasmCompiler {
             self.needs_func_table = true;
         } else {
             // Fallback: if/else chain on type_id (original behavior)
-            for (type_id, func_idx, _result_types, _result_go_types) in candidates.iter() {
+            for (type_id, func_idx, _result_types, _result_go_types, cand_recv_vt) in candidates.iter() {
+                let (_, cand_align) = Self::elem_size_and_align(*cand_recv_vt);
                 out.push(Instruction::LocalGet(tid_local));
                 out.push(Instruction::I32Const(*type_id as i32));
                 out.push(Instruction::I32Eq);
                 out.push(Instruction::If(BlockType::Empty));
                 {
                     out.push(Instruction::LocalGet(data_local));
-                    out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    Self::emit_typed_load(*cand_recv_vt, 0, cand_align, out);
                     for (arg_local, _) in &arg_locals {
                         out.push(Instruction::LocalGet(*arg_local));
                     }

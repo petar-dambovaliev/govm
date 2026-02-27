@@ -1,6 +1,18 @@
 use super::*;
 
 impl WasmCompiler {
+    /// Count Go-level parameters by excluding WASM-expanded companion slots
+    /// (string length, interface type_id, closure env_ptr).
+    fn go_level_param_count(params: &[(String, WasmType)]) -> usize {
+        params.iter()
+            .filter(|(name, _)| {
+                !name.ends_with("__str_len")
+                    && !name.ends_with("__type_id")
+                    && !name.ends_with("__env_ptr")
+            })
+            .count()
+    }
+
     pub(crate) fn compile_call(
         &mut self,
         call: &ast::Call,
@@ -1454,8 +1466,8 @@ impl WasmCompiler {
                 let fi_lookup = self.find_func_in_pkg(&ident.name).cloned();
                 if let Some(func_info) = fi_lookup {
                     if func_info.is_variadic {
-                        // Fixed params (excluding variadic)
-                        let fixed_count = func_info.params.len() - 1;
+                        // Go-level fixed params (excluding variadic and WASM-expanded slots)
+                        let fixed_count = Self::go_level_param_count(&func_info.params) - 1;
                         for arg in call.args.iter().take(fixed_count) {
                             self.compile_expression(arg, out, locals)?;
                         }
@@ -1950,7 +1962,7 @@ impl WasmCompiler {
                         let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified && f.recv_type.is_none()).cloned() {
                             if fi.is_variadic {
-                                let fixed_count = fi.params.len() - 1;
+                                let fixed_count = Self::go_level_param_count(&fi.params) - 1;
                                 for arg in call.args.iter().take(fixed_count) {
                                     self.compile_expression(arg, out, locals)?;
                                 }

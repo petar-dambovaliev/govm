@@ -256,3 +256,194 @@ func F() int {
         "a type implementing multiple interfaces should dispatch correctly through each"
     );
 }
+
+// =============================================================================
+// Bug 1: Right-shift signedness should depend only on LHS type
+// =============================================================================
+
+#[test]
+fn test_right_shift_signed_lhs_unsigned_rhs() {
+    let src = r#"package main
+
+func F() int {
+    var x int = -8
+    var n uint = 1
+    return x >> n
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        -4,
+        "right-shift of signed int by unsigned count should be arithmetic (sign-preserving)"
+    );
+}
+
+#[test]
+fn test_right_shift_unsigned_lhs() {
+    let src = r#"package main
+
+func F() int {
+    var x uint = 16
+    var n uint = 2
+    return int(x >> n)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        4,
+        "right-shift of unsigned int should be logical"
+    );
+}
+
+// =============================================================================
+// Bug 2: /= and %= should not compile as addition
+// =============================================================================
+
+#[test]
+fn test_quo_assign_local() {
+    let src = r#"package main
+
+func F() int {
+    x := 100
+    x /= 5
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        20,
+        "/= on local variable should divide, not add"
+    );
+}
+
+#[test]
+fn test_rem_assign_local() {
+    let src = r#"package main
+
+func F() int {
+    x := 17
+    x %= 5
+    return x
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        2,
+        "%= on local variable should compute remainder, not add"
+    );
+}
+
+// =============================================================================
+// Bug 5: append() on nil slice should not corrupt memory
+// =============================================================================
+
+#[test]
+fn test_append_nil_slice() {
+    let src = r#"package main
+
+func F() int {
+    var s []int
+    s = append(s, 10)
+    s = append(s, 20)
+    s = append(s, 30)
+    result := 0
+    for i := 0; i < len(s); i++ {
+        result = result + s[i]
+    }
+    return result
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        60,
+        "appending to a nil slice should produce correct results"
+    );
+}
+
+#[test]
+fn test_append_nil_slice_no_corruption() {
+    let src = r#"package main
+
+func F() int {
+    var s []int
+    s = append(s, 1)
+    var s2 []int
+    return len(s) + len(s2)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        1,
+        "appending to nil slice should not corrupt other nil slice lengths"
+    );
+}
+
+// =============================================================================
+// Bug 9: Octal escape sequences in character literals
+// =============================================================================
+
+#[test]
+fn test_octal_escape_nul() {
+    let src = r#"package main
+
+func F() int {
+    c := '\000'
+    return int(c)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        0,
+        "\\000 should be NUL character (0)"
+    );
+}
+
+#[test]
+fn test_octal_escape_question_mark() {
+    let src = r#"package main
+
+func F() int {
+    c := '\077'
+    return int(c)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        63,
+        "\\077 should be '?' (63)"
+    );
+}
+
+#[test]
+fn test_octal_escape_uppercase_a() {
+    let src = r#"package main
+
+func F() int {
+    c := '\101'
+    return int(c)
+}
+"#;
+    let (mut s, inst) = compile_and_instantiate(src);
+    let f = inst.get_typed_func::<(), i64>(&mut s, "F").unwrap();
+    assert_eq!(
+        f.call(&mut s, ()).unwrap(),
+        65,
+        "\\101 should be 'A' (65)"
+    );
+}

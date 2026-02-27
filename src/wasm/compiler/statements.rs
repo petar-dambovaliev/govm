@@ -1411,6 +1411,8 @@ impl WasmCompiler {
                                         Operator::AddAssign => Self::typed_add(vt),
                                         Operator::SubAssign => Self::typed_sub(vt),
                                         Operator::MulAssign => Self::typed_mul(vt),
+                                        Operator::QuoAssign => Self::typed_div(vt, false),
+                                        Operator::RemAssign => Self::typed_rem(vt, false),
                                         _ => Self::typed_add(vt),
                                     };
                                     out.push(arith);
@@ -1497,6 +1499,8 @@ impl WasmCompiler {
                                                 Operator::AddAssign => Self::typed_add(mb_vt),
                                                 Operator::SubAssign => Self::typed_sub(mb_vt),
                                                 Operator::MulAssign => Self::typed_mul(mb_vt),
+                                                Operator::QuoAssign => Self::typed_div(mb_vt, false),
+                                                Operator::RemAssign => Self::typed_rem(mb_vt, false),
                                                 _ => Self::typed_add(mb_vt),
                                             };
                                             out.push(op_instr);
@@ -2005,6 +2009,14 @@ impl WasmCompiler {
             ValType::F32 => Instruction::F32Div,
             ValType::F64 => Instruction::F64Div,
             _ => if is_unsigned { Instruction::I64DivU } else { Instruction::I64DivS },
+        }
+    }
+
+    pub(crate) fn typed_rem(vt: ValType, is_unsigned: bool) -> Instruction<'static> {
+        match vt {
+            ValType::I32 => if is_unsigned { Instruction::I32RemU } else { Instruction::I32RemS },
+            ValType::F32 | ValType::F64 => Instruction::I64RemS,
+            _ => if is_unsigned { Instruction::I64RemU } else { Instruction::I64RemS },
         }
     }
 

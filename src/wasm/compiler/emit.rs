@@ -1468,9 +1468,26 @@ impl WasmCompiler {
             return;
         }
 
+        // Recompute itab_base using the final type count, since new types may have
+        // been registered during Phase 2/3 compilation via get_or_create_type_id.
+        let final_type_id = self.next_type_id;
+        if final_type_id > self.itab_max_type_id {
+            self.itab_max_type_id = final_type_id;
+            let new_base =
+                (Self::TYPE_DESC_BASE as u32 + final_type_id * Self::TYPE_DESC_ENTRY_SIZE as u32 + 7) & !7;
+            self.itab_base = new_base;
+        }
+
         let max_type_id = self.itab_max_type_id;
         let max_iface_id = self.next_iface_id;
         let max_methods = self.max_iface_methods;
+
+        let entry_size_check = max_methods as usize * 4;
+        let table_size_check = max_type_id as usize * max_iface_id as usize * entry_size_check;
+        if self.itab_base as usize + table_size_check > Self::HEAP_BASE as usize {
+            self.itab_base = 0;
+            return;
+        }
 
         let entry_size = max_methods as usize * 4;
         let table_size = max_type_id as usize * max_iface_id as usize * entry_size;

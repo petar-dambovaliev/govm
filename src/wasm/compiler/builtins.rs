@@ -692,6 +692,17 @@ impl WasmCompiler {
         );
         out.push(Instruction::LocalSet(hdr_local));
 
+        // Nil-slice guard: if hdr_local == 0, allocate a fresh 12-byte header
+        out.push(Instruction::LocalGet(hdr_local));
+        out.push(Instruction::I32Eqz);
+        out.push(Instruction::If(BlockType::Empty));
+        {
+            out.push(Instruction::I32Const(12));
+            out.push(Instruction::Call(self.alloc_func_idx()?));
+            out.push(Instruction::LocalSet(hdr_local));
+        }
+        out.push(Instruction::End);
+
         // Load current len
         let old_len = locals.add_local(
             &format!("__app_len_{}", locals.locals.len()),

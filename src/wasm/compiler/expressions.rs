@@ -320,7 +320,20 @@ impl WasmCompiler {
                 Some('\\') => Ok('\\'),
                 Some('\'') => Ok('\''),
                 Some('"') => Ok('"'),
-                Some('0') => Ok('\0'),
+                Some(d @ '0'..='7') => {
+                    let mut octal = String::new();
+                    octal.push(d);
+                    for _ in 0..2 {
+                        match chars.next() {
+                            Some(c @ '0'..='7') => octal.push(c),
+                            _ => break,
+                        }
+                    }
+                    u32::from_str_radix(&octal, 8)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .ok_or_else(|| Error::SyntaxError(format!("invalid octal escape: \\{}", octal)))
+                }
                 Some('a') => Ok('\x07'),
                 Some('b') => Ok('\x08'),
                 Some('f') => Ok('\x0C'),
@@ -1797,8 +1810,12 @@ impl WasmCompiler {
                 return Ok(if matches!(op.op, Operator::Equal | Operator::NotEqual | Operator::Less | Operator::Greater | Operator::LessEqual | Operator::GreaterEqual) { GoType::Bool } else { GoType::Float64 });
             }
 
-            let is_unsigned = self.is_unsigned_expr(&op.x, locals)
-                || self.is_unsigned_expr(y, locals);
+            let is_unsigned = if op.op == Operator::Shr {
+                self.is_unsigned_expr(&op.x, locals)
+            } else {
+                self.is_unsigned_expr(&op.x, locals)
+                    || self.is_unsigned_expr(y, locals)
+            };
 
             if lhs_type == ValType::I32 && rhs_type == ValType::I32 {
                 self.compile_expression(&op.x, out, locals)?;

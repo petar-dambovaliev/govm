@@ -939,23 +939,8 @@ impl WasmCompiler {
                     Some("__interface".to_string())
                 }
                 ast::Expression::TypeInterface(_) => Some("__interface".to_string()),
-                ast::Expression::TypePointer(ptr) => {
-                    if let ast::Expression::Ident(id) = ptr.typ.as_ref() {
-                        if self.struct_defs.contains_key(&id.name) {
-                            Some(id.name.clone())
-                        } else if let Some(ref pkg) = self.current_package {
-                            let qualified = format!("{}.{}", pkg, id.name);
-                            if self.struct_defs.contains_key(&qualified) {
-                                Some(qualified)
-                            } else {
-                                Some("__ptr".to_string())
-                            }
-                        } else {
-                            Some("__ptr".to_string())
-                        }
-                    } else {
-                        Some("__ptr".to_string())
-                    }
+                ast::Expression::TypePointer(_) => {
+                    Some("__ptr".to_string())
                 }
                 ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name) => {
                     Some(id.name.clone())
