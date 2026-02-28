@@ -595,6 +595,9 @@ impl WasmCompiler {
         if let Some(&(global_idx, gvt)) = self.resolve_global_var(&ident.name) {
             if matches!(gvt, ValType::Ref(_)) {
                 out.push(Instruction::GlobalGet(global_idx));
+                if self.lookup_gc_slice_info(gvt).is_some() {
+                    return Ok(GoType::Slice(Box::new(GoType::Int64)));
+                }
                 return Ok(GoType::String);
             }
             let resolved_name = self.resolve_global_var_name(&ident.name);
@@ -992,7 +995,7 @@ impl WasmCompiler {
                     || locals.gc_string_locals.contains_key(&ident.name)
                     || self.global_vars.contains_key(&format!("{}_1", ident.name))
                     || self.global_vars.contains_key(&format!("{}_1", self.resolve_global_var_name(&ident.name)))
-                    || self.resolve_global_var(&ident.name).map_or(false, |&(_, vt)| matches!(vt, ValType::Ref(_)))
+                    || self.resolve_global_var(&ident.name).map_or(false, |&(_, vt)| matches!(vt, ValType::Ref(_)) && self.lookup_gc_slice_info(vt).is_none())
                     || matches!(self.constants.get(&ident.name), Some(ConstValue::Str(_)))
                     || {
                         let qualified = self.qualify_pkg_name(&ident.name);
@@ -1567,6 +1570,19 @@ impl WasmCompiler {
                         } else {
                             out.push(Instruction::I32Const(0));
                             out.push(Instruction::I32Ne);
+                        }
+                        return Ok(GoType::Bool);
+                    }
+                }
+
+                // GC ref nil comparison: s == nil or s != nil (slices, etc.)
+                {
+                    let gc_ref_nil = self.check_gc_ref_nil_cmp(&op.x, y, locals);
+                    if let Some(ref_expr) = gc_ref_nil {
+                        self.compile_expression(ref_expr, out, locals)?;
+                        out.push(Instruction::RefIsNull);
+                        if op.op == Operator::NotEqual {
+                            out.push(Instruction::I32Eqz);
                         }
                         return Ok(GoType::Bool);
                     }
@@ -2473,9 +2489,21 @@ impl WasmCompiler {
         let used_index_addr = if let ast::Expression::Index(idx) = sel.x.as_ref() {
             if let Some(ref type_name) = struct_type_name {
                 if let Some(sd) = self.struct_defs.get(type_name) {
-                    if sd.gc_type_idx.is_none() && sd.find_field(&sel.sel.name).is_some() {
-                        let (_elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
-                        out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    if sd.find_field(&sel.sel.name).is_some() {
+                        let is_gc_slice = if let Some(left) = idx.left.as_deref() {
+                            if let ast::Expression::Ident(ident) = left {
+                                self.resolve_gc_slice_info_for_ident(&ident.name, locals).is_some()
+                            } else {
+                                self.lookup_gc_slice_info(self.infer_val_type(left, locals)).is_some()
+                            }
+                        } else { false };
+
+                        if is_gc_slice {
+                            self.compile_expression(&sel.x, out, locals)?;
+                        } else {
+                            let (_elem_vt, _align) = self.compile_index_store_addr(idx, out, locals)?;
+                            out.push(Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+                        }
                         true
                     } else { false }
                 } else { false }
@@ -2672,6 +2700,40 @@ impl WasmCompiler {
         )))
     }
 
+    pub(crate) fn ensure_array_elem_vt(&mut self, elem_type: &ast::Expression) -> ValType {
+        let vt = self.infer_array_elem_vt(elem_type);
+        if !matches!(vt, ValType::I32) {
+            return vt;
+        }
+        if let ast::Expression::Ident(id) = elem_type {
+            let resolved = self.resolve_struct_in_pkg(&id.name);
+            if self.struct_defs.contains_key(&resolved) {
+                self.register_gc_struct_type_late(&resolved);
+                if let Some(&gc_idx) = self.gc_struct_types.get(&resolved) {
+                    return Self::gc_ref_val_type(gc_idx);
+                }
+            }
+            if self.struct_defs.contains_key(&id.name) {
+                self.register_gc_struct_type_late(&id.name);
+                if let Some(&gc_idx) = self.gc_struct_types.get(&id.name) {
+                    return Self::gc_ref_val_type(gc_idx);
+                }
+            }
+        }
+        if let ast::Expression::Selector(sel) = elem_type {
+            if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                if self.struct_defs.contains_key(&qualified) {
+                    self.register_gc_struct_type_late(&qualified);
+                    if let Some(&gc_idx) = self.gc_struct_types.get(&qualified) {
+                        return Self::gc_ref_val_type(gc_idx);
+                    }
+                }
+            }
+        }
+        vt
+    }
+
     pub(crate) fn infer_array_elem_vt(&self, elem_type: &ast::Expression) -> ValType {
         match elem_type {
             ast::Expression::Ident(id) => {
@@ -2683,7 +2745,32 @@ impl WasmCompiler {
                 } {
                     return Self::gc_ref_val_type(idx);
                 }
+                if let Some(&gc_idx) = self.gc_struct_types.get(&id.name) {
+                    if self.struct_defs.get(&id.name).and_then(|sd| sd.gc_type_idx).is_some() {
+                        return Self::gc_ref_val_type(gc_idx);
+                    }
+                }
+                let pkg = self.current_package.as_deref().unwrap_or("");
+                if !pkg.is_empty() {
+                    let qualified = format!("{}.{}", pkg, id.name);
+                    if let Some(&gc_idx) = self.gc_struct_types.get(&qualified) {
+                        if self.struct_defs.get(&qualified).and_then(|sd| sd.gc_type_idx).is_some() {
+                            return Self::gc_ref_val_type(gc_idx);
+                        }
+                    }
+                }
                 Self::val_type_for_type_name(&id.name)
+            }
+            ast::Expression::Selector(sel) => {
+                if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                    let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                    if let Some(&gc_idx) = self.gc_struct_types.get(&qualified) {
+                        if self.struct_defs.get(&qualified).and_then(|sd| sd.gc_type_idx).is_some() {
+                            return Self::gc_ref_val_type(gc_idx);
+                        }
+                    }
+                }
+                ValType::I32
             }
             ast::Expression::TypeSlice(_)
             | ast::Expression::TypeArray(_)
@@ -2876,31 +2963,14 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
-        let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
-        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
-        let n_elems = lit_val.values.len() as i32;
-        let data_bytes = n_elems * elem_size;
-        const HEADER_SIZE: i32 = 12;
-
-        out.push(Instruction::I32Const(HEADER_SIZE));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
-        let hdr_local = locals.add_local(
-            &format!("__slit_hdr_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::LocalSet(hdr_local));
-
-        out.push(Instruction::I32Const(data_bytes));
-        out.push(Instruction::Call(self.alloc_func_idx()?));
-        let data_local = locals.add_local(
-            &format!("__slit_data_{}", locals.locals.len()),
-            ValType::I32,
-        );
-        out.push(Instruction::LocalSet(data_local));
+        if !self.should_gc_slice_elem(&slice_type.typ) {
+            return self.compile_slice_literal_linear(slice_type, lit_val, out, locals);
+        }
+        let elem_vt = self.ensure_array_elem_vt(&slice_type.typ);
+        let n_elems = lit_val.values.len() as u32;
+        let (slice_gc_idx, array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
 
         let is_inner_slice = matches!(slice_type.typ.as_ref(), ast::Expression::TypeSlice(_));
-
-        // Resolve the element type name for composite literal type elision
         let elem_type_name = if let ast::Expression::Ident(id) = slice_type.typ.as_ref() {
             Some(self.resolve_struct_in_pkg(&id.name))
         } else {
@@ -2908,8 +2978,8 @@ impl WasmCompiler {
         };
         let is_struct_elem = elem_type_name.as_ref().map_or(false, |n| self.struct_defs.contains_key(n));
 
-        for (i, kv) in lit_val.values.iter().enumerate() {
-            out.push(Instruction::LocalGet(data_local));
+        // Push each element value onto the stack for ArrayNewFixed
+        for kv in lit_val.values.iter() {
             if is_inner_slice {
                 let inner_lit_val = match &kv.val {
                     ast::Element::LitValue(lv) => Some(lv),
@@ -2921,22 +2991,17 @@ impl WasmCompiler {
                 } else if let ast::Element::Expr(expr) = &kv.val {
                     self.compile_expression(expr, out, locals)?;
                 } else {
-                    out.push(Instruction::Drop);
-                    continue;
+                    Self::emit_gc_default_value(elem_vt, out);
                 }
             } else if is_struct_elem {
-                // Type elision: []StructType{{field values...}} — inner literal inherits the element type
                 let inner_lit_val = match &kv.val {
                     ast::Element::LitValue(lv) => Some(lv),
                     ast::Element::Expr(ast::Expression::CompositeLit(comp)) => {
-                        // Already has explicit type, compile normally
                         self.compile_expression(&ast::Expression::CompositeLit(comp.clone()), out, locals)?;
                         None
                     }
                     ast::Element::Expr(expr) => {
                         self.compile_expression(expr, out, locals)?;
-                        let val_vt = self.infer_val_type(expr, locals);
-                        Self::emit_typed_coerce(val_vt, elem_vt, out)?;
                         None
                     }
                 };
@@ -3007,6 +3072,59 @@ impl WasmCompiler {
                     }
                 }
             } else {
+                Self::emit_gc_default_value(elem_vt, out);
+            }
+        }
+
+        // ArrayNewFixed creates the array from the n_elems values on the stack
+        out.push(Instruction::ArrayNewFixed { array_type_index: array_gc_idx, array_size: n_elems });
+        // StructNew(slice_gc_idx): (array_ref, offset=0, len=n, cap=n)
+        out.push(Instruction::I32Const(0)); // offset
+        out.push(Instruction::I32Const(n_elems as i32)); // len
+        out.push(Instruction::I32Const(n_elems as i32)); // cap
+        out.push(Instruction::StructNew(slice_gc_idx));
+
+        Ok(())
+    }
+
+    fn compile_slice_literal_linear(
+        &mut self,
+        slice_type: &ast::SliceType,
+        lit_val: &ast::LiteralValue,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<(), Error> {
+        let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
+        let (elem_size, align) = Self::elem_size_and_align(elem_vt);
+        let n_elems = lit_val.values.len() as i32;
+        let data_bytes = n_elems * elem_size;
+        const HEADER_SIZE: i32 = 12;
+
+        out.push(Instruction::I32Const(HEADER_SIZE));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        let hdr_local = locals.add_local(
+            &format!("__slit_hdr_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::LocalSet(hdr_local));
+
+        out.push(Instruction::I32Const(data_bytes));
+        out.push(Instruction::Call(self.alloc_func_idx()?));
+        let data_local = locals.add_local(
+            &format!("__slit_data_{}", locals.locals.len()),
+            ValType::I32,
+        );
+        out.push(Instruction::LocalSet(data_local));
+
+        for (i, kv) in lit_val.values.iter().enumerate() {
+            out.push(Instruction::LocalGet(data_local));
+            if let ast::Element::Expr(expr) = &kv.val {
+                self.compile_expression(expr, out, locals)?;
+                let val_vt = self.infer_val_type(expr, locals);
+                if val_vt != elem_vt {
+                    Self::emit_typed_coerce(val_vt, elem_vt, out)?;
+                }
+            } else {
                 out.push(Instruction::Drop);
                 continue;
             }
@@ -3017,11 +3135,9 @@ impl WasmCompiler {
         out.push(Instruction::LocalGet(hdr_local));
         out.push(Instruction::LocalGet(data_local));
         out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-
         out.push(Instruction::LocalGet(hdr_local));
         out.push(Instruction::I32Const(n_elems));
         out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
-
         out.push(Instruction::LocalGet(hdr_local));
         out.push(Instruction::I32Const(n_elems));
         out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
@@ -3824,6 +3940,17 @@ impl WasmCompiler {
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<GoType, Error> {
+        // GC slice subslice path
+        let gc_info = if let ast::Expression::Ident(ident) = &*slice.left {
+            self.resolve_gc_slice_info_for_ident(&ident.name, locals)
+        } else {
+            self.lookup_gc_slice_info(self.infer_val_type(&slice.left, locals))
+        };
+
+        if let Some(gc_info) = gc_info {
+            return self.compile_gc_subslice(slice, &gc_info, out, locals);
+        }
+
         let is_string = self.is_string_expr(&slice.left, locals);
 
         // Detect __slice header variables so we can load data_ptr/len/cap from header
@@ -4125,6 +4252,126 @@ impl WasmCompiler {
         Ok(GoType::Slice(Box::new(GoType::Int32)))
     }
 
+    fn compile_gc_subslice(
+        &mut self,
+        slice: &ast::Slice,
+        gc_info: &super::GcSliceInfo,
+        out: &mut Vec<Instruction<'static>>,
+        locals: &mut LocalAlloc,
+    ) -> Result<GoType, Error> {
+        let slice_vt = Self::gc_ref_val_type(gc_info.slice_gc_idx);
+        let arr_vt = Self::gc_ref_val_type(gc_info.array_gc_idx);
+
+        self.compile_expression(&slice.left, out, locals)?;
+        let src_ref = locals.add_local(&format!("__gcss_sr_{}", locals.locals.len()), slice_vt);
+        out.push(Instruction::LocalSet(src_ref));
+
+        let arr_ref = locals.add_local(&format!("__gcss_ar_{}", locals.locals.len()), arr_vt);
+        out.push(Instruction::LocalGet(src_ref));
+        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 0 });
+        out.push(Instruction::LocalSet(arr_ref));
+
+        let orig_off = locals.add_local(&format!("__gcss_oo_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalGet(src_ref));
+        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 1 });
+        out.push(Instruction::LocalSet(orig_off));
+
+        let orig_len = locals.add_local(&format!("__gcss_ol_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalGet(src_ref));
+        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 2 });
+        out.push(Instruction::LocalSet(orig_len));
+
+        let orig_cap = locals.add_local(&format!("__gcss_oc_{}", locals.locals.len()), ValType::I32);
+        out.push(Instruction::LocalGet(src_ref));
+        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 3 });
+        out.push(Instruction::LocalSet(orig_cap));
+
+        // Compile low
+        let low = locals.add_local(&format!("__gcss_lo_{}", locals.locals.len()), ValType::I32);
+        if let Some(ref lo_expr) = slice.index[0] {
+            self.compile_expression(lo_expr, out, locals)?;
+            let vt = self.infer_val_type(lo_expr, locals);
+            if vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+        } else {
+            out.push(Instruction::I32Const(0));
+        }
+        out.push(Instruction::LocalSet(low));
+
+        // Compile high
+        let high = locals.add_local(&format!("__gcss_hi_{}", locals.locals.len()), ValType::I32);
+        if let Some(ref hi_expr) = slice.index[1] {
+            self.compile_expression(hi_expr, out, locals)?;
+            let vt = self.infer_val_type(hi_expr, locals);
+            if vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+        } else {
+            out.push(Instruction::LocalGet(orig_len));
+        }
+        out.push(Instruction::LocalSet(high));
+
+        // Bounds: low <= high
+        out.push(Instruction::LocalGet(low));
+        out.push(Instruction::LocalGet(high));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Unreachable);
+        out.push(Instruction::End);
+        // Bounds: high <= cap
+        out.push(Instruction::LocalGet(high));
+        out.push(Instruction::LocalGet(orig_cap));
+        out.push(Instruction::I32GtU);
+        out.push(Instruction::If(BlockType::Empty));
+        out.push(Instruction::Unreachable);
+        out.push(Instruction::End);
+
+        // Three-index slice: s[low:high:max]
+        let three_idx_max = if let Some(ref max_expr) = slice.index[2] {
+            let max_l = locals.add_local(&format!("__gcss_mx_{}", locals.locals.len()), ValType::I32);
+            self.compile_expression(max_expr, out, locals)?;
+            let vt = self.infer_val_type(max_expr, locals);
+            if vt == ValType::I64 { out.push(Instruction::I32WrapI64); }
+            out.push(Instruction::LocalSet(max_l));
+            // high <= max
+            out.push(Instruction::LocalGet(high));
+            out.push(Instruction::LocalGet(max_l));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+            // max <= cap
+            out.push(Instruction::LocalGet(max_l));
+            out.push(Instruction::LocalGet(orig_cap));
+            out.push(Instruction::I32GtU);
+            out.push(Instruction::If(BlockType::Empty));
+            out.push(Instruction::Unreachable);
+            out.push(Instruction::End);
+            Some(max_l)
+        } else {
+            None
+        };
+
+        // Build new GC slice struct: (array_ref, new_offset, new_len, new_cap)
+        out.push(Instruction::LocalGet(arr_ref));
+        // new_offset = orig_off + low
+        out.push(Instruction::LocalGet(orig_off));
+        out.push(Instruction::LocalGet(low));
+        out.push(Instruction::I32Add);
+        // new_len = high - low
+        out.push(Instruction::LocalGet(high));
+        out.push(Instruction::LocalGet(low));
+        out.push(Instruction::I32Sub);
+        // new_cap = (max or orig_cap) - low
+        if let Some(max_l) = three_idx_max {
+            out.push(Instruction::LocalGet(max_l));
+        } else {
+            out.push(Instruction::LocalGet(orig_cap));
+        }
+        out.push(Instruction::LocalGet(low));
+        out.push(Instruction::I32Sub);
+        out.push(Instruction::StructNew(gc_info.slice_gc_idx));
+
+        Ok(GoType::Slice(Box::new(GoType::Int32)))
+    }
+
     pub(crate) fn compile_index(
         &mut self,
         idx: &ast::Index,
@@ -4390,6 +4637,62 @@ impl WasmCompiler {
                         }
                     }
                 }
+            }
+        }
+
+        // Check for GC slice index first
+        {
+            let gc_info = if let ast::Expression::Ident(ident) = left {
+                self.resolve_gc_slice_info_for_ident(&ident.name, locals)
+            } else {
+                self.lookup_gc_slice_info(self.infer_val_type(left, locals))
+            };
+            if let Some(gc_info) = gc_info {
+                let slice_vt = Self::gc_ref_val_type(gc_info.slice_gc_idx);
+                let arr_vt = Self::gc_ref_val_type(gc_info.array_gc_idx);
+
+                self.compile_expression(left, out, locals)?;
+                let slice_ref = locals.add_local(&format!("__gcix_sr_{}", locals.locals.len()), slice_vt);
+                out.push(Instruction::LocalSet(slice_ref));
+
+                let arr_ref = locals.add_local(&format!("__gcix_ar_{}", locals.locals.len()), arr_vt);
+                out.push(Instruction::LocalGet(slice_ref));
+                out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 0 });
+                out.push(Instruction::LocalSet(arr_ref));
+
+                let offset_local = locals.add_local(&format!("__gcix_off_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalGet(slice_ref));
+                out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 1 });
+                out.push(Instruction::LocalSet(offset_local));
+
+                let len_local = locals.add_local(&format!("__gcix_len_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalGet(slice_ref));
+                out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 2 });
+                out.push(Instruction::LocalSet(len_local));
+
+                self.compile_expression(&idx.index, out, locals)?;
+                let idx_vt = self.infer_val_type(&idx.index, locals);
+                if idx_vt == ValType::I64 {
+                    out.push(Instruction::I32WrapI64);
+                }
+                let idx_local = locals.add_local(&format!("__gcix_i_{}", locals.locals.len()), ValType::I32);
+                out.push(Instruction::LocalTee(idx_local));
+
+                // Bounds check: idx >= len → panic
+                out.push(Instruction::LocalGet(len_local));
+                out.push(Instruction::I32GeU);
+                out.push(Instruction::If(BlockType::Empty));
+                out.push(Instruction::Unreachable);
+                out.push(Instruction::End);
+
+                // ArrayGet(arr_ref, offset + idx)
+                out.push(Instruction::LocalGet(arr_ref));
+                out.push(Instruction::LocalGet(offset_local));
+                out.push(Instruction::LocalGet(idx_local));
+                out.push(Instruction::I32Add);
+                out.push(Instruction::ArrayGet(gc_info.array_gc_idx));
+
+                return Ok(GoType::Int32);
             }
         }
 

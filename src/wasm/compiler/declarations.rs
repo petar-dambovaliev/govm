@@ -321,7 +321,8 @@ impl WasmCompiler {
                         ValType::I64
                     };
                     variadic_elem_vt = Some(elem_vt);
-                    param_types.push(ValType::I32);
+                    let (slice_gc_idx, _) = self.get_or_create_gc_slice_type(elem_vt);
+                    param_types.push(Self::gc_ref_val_type(slice_gc_idx));
                     let vname = field.name.first().map_or(
                         format!("_param{}", param_names.len()),
                         |id| id.name.clone()
@@ -871,7 +872,7 @@ impl WasmCompiler {
         }
     }
 
-    pub(crate) fn compute_struct_def(&self, fields: &[ast::Field]) -> StructDef {
+    pub(crate) fn compute_struct_def(&mut self, fields: &[ast::Field]) -> StructDef {
         let mut result_fields = Vec::new();
         let mut offset: u32 = 0;
         let mut embedded_types = Vec::new();
@@ -987,6 +988,29 @@ impl WasmCompiler {
         }
     }
 
+    fn detect_global_gc_slice_type(&mut self, spec: &ast::VarSpec) -> Option<ValType> {
+        let slice_type_expr = if let Some(ast::Expression::TypeSlice(sl)) = spec.typ.as_ref() {
+            Some(&*sl.typ)
+        } else if let Some(val) = spec.values.first() {
+            if let ast::Expression::CompositeLit(comp) = val {
+                if let ast::Expression::TypeSlice(sl) = comp.typ.as_ref() {
+                    Some(&*sl.typ)
+                } else { None }
+            } else { None }
+        } else { None };
+
+        if let Some(elem_expr) = slice_type_expr {
+            if !self.should_gc_slice_elem(elem_expr) {
+                return None;
+            }
+            let elem_vt = self.ensure_array_elem_vt(elem_expr);
+            let (slice_gc_idx, _) = self.get_or_create_gc_slice_type(elem_vt);
+            Some(Self::gc_ref_val_type(slice_gc_idx))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn compile_global_var(&mut self, spec: &ast::VarSpec) -> Result<(), Error> {
         // Check for composite types (struct, slice, map) that need heap allocation
         let is_composite_type = spec.typ.as_ref().map_or(false, |t| {
@@ -1002,16 +1026,29 @@ impl WasmCompiler {
         });
 
         if is_composite_type {
-            // Composite globals are I32 pointers to heap-allocated data
+            // Check if this is a slice composite that should use GC types
+            let gc_slice_vt = self.detect_global_gc_slice_type(spec);
+
             for name in &spec.name {
                 let var_name = self.qualify_pkg_name(&name.name);
                 let global_idx = self.next_global_idx;
-                self.global_section.global(
-                    GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-                    &ConstExpr::i32_const(0),
-                );
+                let global_vt = gc_slice_vt.unwrap_or(ValType::I32);
+                if let Some(ref_vt) = gc_slice_vt {
+                    self.global_section.global(
+                        GlobalType { val_type: ref_vt, mutable: true, shared: false },
+                        &ConstExpr::ref_null(match ref_vt {
+                            ValType::Ref(rt) => rt.heap_type,
+                            _ => unreachable!(),
+                        }),
+                    );
+                } else {
+                    self.global_section.global(
+                        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                        &ConstExpr::i32_const(0),
+                    );
+                }
                 self.next_global_idx += 1;
-                self.global_vars.insert(var_name.clone(), (global_idx, ValType::I32));
+                self.global_vars.insert(var_name.clone(), (global_idx, global_vt));
 
                 // Track array element type for correct load instructions
                 if let Some(type_expr) = &spec.typ {
@@ -1078,7 +1115,7 @@ impl WasmCompiler {
                 }
 
                 if let Some(val) = spec.values.first() {
-                    self.global_var_inits.push((var_name, val.clone(), ValType::I32, self.current_package.clone()));
+                    self.global_var_inits.push((var_name, val.clone(), global_vt, self.current_package.clone()));
                 }
             }
             return Ok(());

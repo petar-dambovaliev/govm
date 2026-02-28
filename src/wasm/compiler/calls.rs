@@ -675,6 +675,78 @@ impl WasmCompiler {
                                     return Ok(GoType::String);
                                 }
                             }
+                            // GC byte/rune slice → string conversion
+                            if let Some(gc_info) = self.lookup_gc_slice_info(vt) {
+                                if let Some(go_string_idx) = self.gc_builtin_types.go_string {
+                                    self.compile_expression(arg, out, locals)?;
+                                    let slice_vt = Self::gc_ref_val_type(gc_info.slice_gc_idx);
+                                    let arr_vt = Self::gc_ref_val_type(gc_info.array_gc_idx);
+                                    let sl_ref = locals.add_local(&format!("__gs2s_s_{}", locals.locals.len()), slice_vt);
+                                    out.push(Instruction::LocalTee(sl_ref));
+                                    out.push(Instruction::RefIsNull);
+                                    out.push(Instruction::If(BlockType::Result(Self::gc_ref_val_type(go_string_idx))));
+                                    {
+                                        let byte_arr_idx = self.gc_builtin_types.byte_array.unwrap();
+                                        out.push(Instruction::RefNull(HeapType::Concrete(byte_arr_idx)));
+                                        out.push(Instruction::I32Const(0));
+                                        out.push(Instruction::StructNew(go_string_idx));
+                                    }
+                                    out.push(Instruction::Else);
+                                    {
+                                        let arr_ref = locals.add_local(&format!("__gs2s_a_{}", locals.locals.len()), arr_vt);
+                                        let off = locals.add_local(&format!("__gs2s_o_{}", locals.locals.len()), ValType::I32);
+                                        let len = locals.add_local(&format!("__gs2s_l_{}", locals.locals.len()), ValType::I32);
+                                        out.push(Instruction::LocalGet(sl_ref));
+                                        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 0 });
+                                        out.push(Instruction::LocalSet(arr_ref));
+                                        out.push(Instruction::LocalGet(sl_ref));
+                                        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 1 });
+                                        out.push(Instruction::LocalSet(off));
+                                        out.push(Instruction::LocalGet(sl_ref));
+                                        out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 2 });
+                                        out.push(Instruction::LocalSet(len));
+
+                                        let buf = locals.add_local(&format!("__gs2s_b_{}", locals.locals.len()), ValType::I32);
+                                        out.push(Instruction::LocalGet(len));
+                                        out.push(Instruction::Call(self.alloc_func_idx()?));
+                                        out.push(Instruction::LocalSet(buf));
+
+                                        let i_local = locals.add_local(&format!("__gs2s_i_{}", locals.locals.len()), ValType::I32);
+                                        out.push(Instruction::I32Const(0));
+                                        out.push(Instruction::LocalSet(i_local));
+                                        out.push(Instruction::Block(BlockType::Empty));
+                                        out.push(Instruction::Loop(BlockType::Empty));
+                                        out.push(Instruction::LocalGet(i_local));
+                                        out.push(Instruction::LocalGet(len));
+                                        out.push(Instruction::I32GeU);
+                                        out.push(Instruction::BrIf(1));
+                                        // buf[i] = (byte) arr[off + i]
+                                        out.push(Instruction::LocalGet(buf));
+                                        out.push(Instruction::LocalGet(i_local));
+                                        out.push(Instruction::I32Add);
+                                        out.push(Instruction::LocalGet(arr_ref));
+                                        out.push(Instruction::LocalGet(off));
+                                        out.push(Instruction::LocalGet(i_local));
+                                        out.push(Instruction::I32Add);
+                                        out.push(Instruction::ArrayGet(gc_info.array_gc_idx));
+                                        out.push(Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+                                        out.push(Instruction::LocalGet(i_local));
+                                        out.push(Instruction::I32Const(1));
+                                        out.push(Instruction::I32Add);
+                                        out.push(Instruction::LocalSet(i_local));
+                                        out.push(Instruction::Br(0));
+                                        out.push(Instruction::End); // loop
+                                        out.push(Instruction::End); // block
+
+                                        out.push(Instruction::LocalGet(buf));
+                                        out.push(Instruction::LocalGet(len));
+                                        self.emit_linear_to_gc_string(go_string_idx, out, locals)?;
+                                    }
+                                    out.push(Instruction::End); // if/else
+                                    return Ok(GoType::String);
+                                }
+                            }
+
                             self.compile_expression(arg, out, locals)?;
                             let rune_local = locals.add_local(
                                 &format!("__rune_{}", locals.locals.len()),
@@ -1343,6 +1415,56 @@ impl WasmCompiler {
                                 return Ok(GoType::Void);
                             }
                             if let ast::Expression::Ident(ident_arg) = arg {
+                                if let Some(gc_info) = locals.gc_slice_info.get(&ident_arg.name).cloned() {
+                                    if let Some(local_idx) = locals.find(&ident_arg.name) {
+                                        let slice_vt = Self::gc_ref_val_type(gc_info.slice_gc_idx);
+                                        let arr_vt = Self::gc_ref_val_type(gc_info.array_gc_idx);
+                                        // nil check
+                                        out.push(Instruction::LocalGet(local_idx));
+                                        out.push(Instruction::RefIsNull);
+                                        out.push(Instruction::I32Eqz);
+                                        out.push(Instruction::If(BlockType::Empty));
+                                        {
+                                            let arr_ref = locals.add_local(&format!("__clr_ar_{}", locals.locals.len()), arr_vt);
+                                            let off = locals.add_local(&format!("__clr_off_{}", locals.locals.len()), ValType::I32);
+                                            let len = locals.add_local(&format!("__clr_len_{}", locals.locals.len()), ValType::I32);
+                                            out.push(Instruction::LocalGet(local_idx));
+                                            out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 0 });
+                                            out.push(Instruction::LocalSet(arr_ref));
+                                            out.push(Instruction::LocalGet(local_idx));
+                                            out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 1 });
+                                            out.push(Instruction::LocalSet(off));
+                                            out.push(Instruction::LocalGet(local_idx));
+                                            out.push(Instruction::StructGet { struct_type_index: gc_info.slice_gc_idx, field_index: 2 });
+                                            out.push(Instruction::LocalSet(len));
+                                            // Loop: set each element to default
+                                            let i = locals.add_local(&format!("__clr_i_{}", locals.locals.len()), ValType::I32);
+                                            out.push(Instruction::I32Const(0));
+                                            out.push(Instruction::LocalSet(i));
+                                            out.push(Instruction::Block(BlockType::Empty));
+                                            out.push(Instruction::Loop(BlockType::Empty));
+                                            out.push(Instruction::LocalGet(i));
+                                            out.push(Instruction::LocalGet(len));
+                                            out.push(Instruction::I32GeU);
+                                            out.push(Instruction::BrIf(1));
+                                            out.push(Instruction::LocalGet(arr_ref));
+                                            out.push(Instruction::LocalGet(off));
+                                            out.push(Instruction::LocalGet(i));
+                                            out.push(Instruction::I32Add);
+                                            Self::emit_gc_default_value(gc_info.elem_vt, out);
+                                            out.push(Instruction::ArraySet(gc_info.array_gc_idx));
+                                            out.push(Instruction::LocalGet(i));
+                                            out.push(Instruction::I32Const(1));
+                                            out.push(Instruction::I32Add);
+                                            out.push(Instruction::LocalSet(i));
+                                            out.push(Instruction::Br(0));
+                                            out.push(Instruction::End); // loop
+                                            out.push(Instruction::End); // block
+                                        }
+                                        out.push(Instruction::End);
+                                        return Ok(GoType::Void);
+                                    }
+                                }
                                 if let Some(local_idx) = locals.find(&ident_arg.name) {
                                     let is_slice = locals.is_var_type_slice(&ident_arg.name);
                                     if is_slice || locals.slice_elem_types.contains_key(&ident_arg.name) {
@@ -1558,40 +1680,22 @@ impl WasmCompiler {
                             // s... spreading: arg is already a slice, pass directly
                             self.compile_expression(&variadic_args[0], out, locals)?;
                         } else {
-                            // Allocate slice header (12 bytes: ptr, len, cap)
-                            let hdr = locals.add_local(&format!("__va_hdr_{}", locals.locals.len()), ValType::I32);
-                            out.push(Instruction::I32Const(12));
-                            out.push(Instruction::Call(self.alloc_func_idx()?));
-                            out.push(Instruction::LocalSet(hdr));
+                            let (slice_gc_idx, array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
 
-                            // Allocate data buffer
-                            let data_ptr = locals.add_local(&format!("__va_data_{}", locals.locals.len()), ValType::I32);
-                            out.push(Instruction::I32Const(n_variadic * elem_size));
-                            out.push(Instruction::Call(self.alloc_func_idx()?));
-                            out.push(Instruction::LocalSet(data_ptr));
-
-                            // Store each variadic arg
-                            for (j, arg) in variadic_args.iter().enumerate() {
-                                out.push(Instruction::LocalGet(data_ptr));
+                            // Compile each variadic arg, then pack into GC ArrayNewFixed
+                            for arg in variadic_args.iter() {
                                 self.compile_expression(arg, out, locals)?;
                                 let arg_vt = self.infer_val_type(arg, locals);
                                 Self::emit_typed_coerce(arg_vt, elem_vt, out)?;
-                                let offset = j as u64 * elem_size as u64;
-                                Self::emit_typed_store(elem_vt, offset, elem_align, out);
                             }
-
-                            // Write header: ptr, len, cap
-                            out.push(Instruction::LocalGet(hdr));
-                            out.push(Instruction::LocalGet(data_ptr));
-                            out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                            out.push(Instruction::LocalGet(hdr));
-                            out.push(Instruction::I32Const(n_variadic));
-                            out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                            out.push(Instruction::LocalGet(hdr));
-                            out.push(Instruction::I32Const(n_variadic));
-                            out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
-
-                            out.push(Instruction::LocalGet(hdr));
+                            out.push(Instruction::ArrayNewFixed {
+                                array_type_index: array_gc_idx,
+                                array_size: n_variadic as u32,
+                            });
+                            out.push(Instruction::I32Const(0)); // offset
+                            out.push(Instruction::I32Const(n_variadic)); // len
+                            out.push(Instruction::I32Const(n_variadic)); // cap
+                            out.push(Instruction::StructNew(slice_gc_idx));
                         }
                         out.push(Instruction::Call(func_info.wasm_func_idx));
                     } else {
@@ -2045,42 +2149,26 @@ impl WasmCompiler {
                                 }
                                 let variadic_args = &call.args[fixed_count..];
                                 let elem_vt = fi.variadic_elem_vt.unwrap_or(ValType::I64);
-                                let (elem_size, elem_align) = Self::elem_size_and_align(elem_vt);
                                 let n_variadic = variadic_args.len() as i32;
 
                                 if call.dots.is_some() && n_variadic == 1 {
                                     self.compile_expression(&variadic_args[0], out, locals)?;
                                 } else {
-                                    let hdr = locals.add_local(&format!("__va_hdr_{}", locals.locals.len()), ValType::I32);
-                                    out.push(Instruction::I32Const(12));
-                                    out.push(Instruction::Call(self.alloc_func_idx()?));
-                                    out.push(Instruction::LocalSet(hdr));
+                                    let (slice_gc_idx, array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
 
-                                    let data_ptr = locals.add_local(&format!("__va_data_{}", locals.locals.len()), ValType::I32);
-                                    out.push(Instruction::I32Const(n_variadic * elem_size));
-                                    out.push(Instruction::Call(self.alloc_func_idx()?));
-                                    out.push(Instruction::LocalSet(data_ptr));
-
-                                    for (j, arg) in variadic_args.iter().enumerate() {
-                                        out.push(Instruction::LocalGet(data_ptr));
+                                    for arg in variadic_args.iter() {
                                         self.compile_expression(arg, out, locals)?;
                                         let arg_vt = self.infer_val_type(arg, locals);
                                         Self::emit_typed_coerce(arg_vt, elem_vt, out)?;
-                                        let offset = j as u64 * elem_size as u64;
-                                        Self::emit_typed_store(elem_vt, offset, elem_align, out);
                                     }
-
-                                    out.push(Instruction::LocalGet(hdr));
-                                    out.push(Instruction::LocalGet(data_ptr));
-                                    out.push(Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-                                    out.push(Instruction::LocalGet(hdr));
-                                    out.push(Instruction::I32Const(n_variadic));
-                                    out.push(Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
-                                    out.push(Instruction::LocalGet(hdr));
-                                    out.push(Instruction::I32Const(n_variadic));
-                                    out.push(Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
-
-                                    out.push(Instruction::LocalGet(hdr));
+                                    out.push(Instruction::ArrayNewFixed {
+                                        array_type_index: array_gc_idx,
+                                        array_size: n_variadic as u32,
+                                    });
+                                    out.push(Instruction::I32Const(0)); // offset
+                                    out.push(Instruction::I32Const(n_variadic)); // len
+                                    out.push(Instruction::I32Const(n_variadic)); // cap
+                                    out.push(Instruction::StructNew(slice_gc_idx));
                                 }
                             } else {
                                 let mut wasm_param_idx = 0usize;

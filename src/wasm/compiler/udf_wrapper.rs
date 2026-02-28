@@ -609,188 +609,24 @@ impl WasmCompiler {
         func.instruction(&Instruction::End); // end loop
         func.instruction(&Instruction::End); // end block
 
-        // === Step 3.5: Flatten GC slice → linear memory slice ===
-        {
-            let total_size = input_sd.total_size as i32;
-
-            // Allocate struct data array: total_size * row_count
-            func.instruction(&Instruction::LocalGet(local_row_count));
-            func.instruction(&Instruction::I32Const(total_size));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::Call(alloc_idx));
-            func.instruction(&Instruction::LocalSet(local_linear_data_ptr));
-
-            // Allocate 12-byte slice header
-            func.instruction(&Instruction::I32Const(12));
-            func.instruction(&Instruction::Call(alloc_idx));
-            func.instruction(&Instruction::LocalSet(local_linear_slice_ptr));
-
-            // Write slice header: [data_ptr, len, cap]
-            func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
-            func.instruction(&Instruction::LocalGet(local_linear_data_ptr));
-            func.instruction(&Instruction::I32Store(MemArg { offset: 0, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
-            func.instruction(&Instruction::LocalGet(local_row_count));
-            func.instruction(&Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
-            func.instruction(&Instruction::LocalGet(local_row_count));
-            func.instruction(&Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
-
-            // Loop: copy each GC struct's fields into linear memory
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalSet(local_i));
-
-            func.instruction(&Instruction::Block(BlockType::Empty));
-            func.instruction(&Instruction::Loop(BlockType::Empty));
-
-            func.instruction(&Instruction::LocalGet(local_i));
-            func.instruction(&Instruction::LocalGet(local_row_count));
-            func.instruction(&Instruction::I32GeU);
-            func.instruction(&Instruction::BrIf(1));
-
-            // struct_ref = input_array[i]
-            func.instruction(&Instruction::LocalGet(local_input_array));
-            func.instruction(&Instruction::LocalGet(local_i));
-            func.instruction(&Instruction::ArrayGet(input_array_gc_idx));
-            func.instruction(&Instruction::LocalSet(local_struct_ref));
-
-            // row_base = data_ptr + i * total_size
-            func.instruction(&Instruction::LocalGet(local_linear_data_ptr));
-            func.instruction(&Instruction::LocalGet(local_i));
-            func.instruction(&Instruction::I32Const(total_size));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::LocalSet(local_row_base));
-
-            for f in &input_sd.fields {
-                func.instruction(&Instruction::LocalGet(local_row_base));
-                func.instruction(&Instruction::LocalGet(local_struct_ref));
-                func.instruction(&Instruction::StructGet {
-                    struct_type_index: input_gc_type_idx,
-                    field_index: f.field_index,
-                });
-                let mem_arg = |align: u32| MemArg { offset: f.offset as u64, align, memory_index: 0 };
-                match f.wasm_type {
-                    WasmType::I32 => func.instruction(&Instruction::I32Store(mem_arg(2))),
-                    WasmType::I64 => func.instruction(&Instruction::I64Store(mem_arg(3))),
-                    WasmType::F32 => func.instruction(&Instruction::F32Store(mem_arg(2))),
-                    WasmType::F64 => func.instruction(&Instruction::F64Store(mem_arg(3))),
-                    WasmType::Ref(_) => {
-                        func.instruction(&Instruction::Drop); // drop the ref value
-                        func.instruction(&Instruction::Drop); // drop the address
-                        func.instruction(&Instruction::LocalGet(local_row_base));
-                        func.instruction(&Instruction::I32Const(0));
-                        func.instruction(&Instruction::I32Store(mem_arg(2)));
-                        &mut func
-                    }
-                };
-            }
-
-            func.instruction(&Instruction::LocalGet(local_i));
-            func.instruction(&Instruction::I32Const(1));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::LocalSet(local_i));
-
-            func.instruction(&Instruction::Br(0));
-            func.instruction(&Instruction::End); // end loop
-            func.instruction(&Instruction::End); // end block
-        }
-
-        // === Step 4: Call original function (with linear memory pointer) ===
-        func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
+        // === Step 4: Call original function with GC slice ref directly ===
+        func.instruction(&Instruction::LocalGet(local_input_slice));
         func.instruction(&Instruction::Call(original_func_idx));
-        // Result: i32 (linear memory slice pointer) on stack
+        // Result: GC slice ref on stack
 
         // === Step 5: Marshal output ===
         if let Some((ref out_sd, out_gc_idx, out_slice_gc, out_array_gc)) = output_slice_info {
-            // Store the linear memory result pointer
-            func.instruction(&Instruction::LocalSet(local_linear_slice_ptr));
+            // The function returned a GC slice ref directly
+            func.instruction(&Instruction::LocalSet(local_output_slice));
 
-            // Read output slice header: [data_ptr, len, cap]
-            func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
-            func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalSet(local_linear_data_ptr));
-
-            func.instruction(&Instruction::LocalGet(local_linear_slice_ptr));
-            func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalSet(local_output_row_count));
-
-            // Rebuild GC output array from linear memory
-            func.instruction(&Instruction::RefNull(HeapType::Concrete(out_gc_idx)));
-            func.instruction(&Instruction::LocalGet(local_output_row_count));
-            func.instruction(&Instruction::ArrayNew(out_array_gc));
+            // Extract the output array and row count from the GC slice
+            func.instruction(&Instruction::LocalGet(local_output_slice));
+            func.instruction(&Instruction::StructGet { struct_type_index: out_slice_gc, field_index: 0 });
             func.instruction(&Instruction::LocalSet(local_output_array));
 
-            {
-                let out_total_size = out_sd.total_size as i32;
-
-                func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::LocalSet(local_i));
-
-                func.instruction(&Instruction::Block(BlockType::Empty));
-                func.instruction(&Instruction::Loop(BlockType::Empty));
-
-                func.instruction(&Instruction::LocalGet(local_i));
-                func.instruction(&Instruction::LocalGet(local_output_row_count));
-                func.instruction(&Instruction::I32GeU);
-                func.instruction(&Instruction::BrIf(1));
-
-                // Create new GC struct
-                func.instruction(&Instruction::StructNewDefault(out_gc_idx));
-                func.instruction(&Instruction::LocalSet(local_output_struct));
-
-                // row_base = data_ptr + i * total_size
-                func.instruction(&Instruction::LocalGet(local_linear_data_ptr));
-                func.instruction(&Instruction::LocalGet(local_i));
-                func.instruction(&Instruction::I32Const(out_total_size));
-                func.instruction(&Instruction::I32Mul);
-                func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::LocalSet(local_row_base));
-
-                for f in &out_sd.fields {
-                    func.instruction(&Instruction::LocalGet(local_output_struct));
-                    func.instruction(&Instruction::LocalGet(local_row_base));
-                    let mem_arg = |align: u32| MemArg { offset: f.offset as u64, align, memory_index: 0 };
-                    match f.wasm_type {
-                        WasmType::I32 => func.instruction(&Instruction::I32Load(mem_arg(2))),
-                        WasmType::I64 => func.instruction(&Instruction::I64Load(mem_arg(3))),
-                        WasmType::F32 => func.instruction(&Instruction::F32Load(mem_arg(2))),
-                        WasmType::F64 => func.instruction(&Instruction::F64Load(mem_arg(3))),
-                        WasmType::Ref(_) => {
-                            func.instruction(&Instruction::Drop); // drop address
-                            func.instruction(&Instruction::Drop); // drop struct ref
-                            continue;
-                        }
-                    };
-                    func.instruction(&Instruction::StructSet {
-                        struct_type_index: out_gc_idx,
-                        field_index: f.field_index,
-                    });
-                }
-
-                // Store in GC array
-                func.instruction(&Instruction::LocalGet(local_output_array));
-                func.instruction(&Instruction::LocalGet(local_i));
-                func.instruction(&Instruction::LocalGet(local_output_struct));
-                func.instruction(&Instruction::ArraySet(out_array_gc));
-
-                func.instruction(&Instruction::LocalGet(local_i));
-                func.instruction(&Instruction::I32Const(1));
-                func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::LocalSet(local_i));
-
-                func.instruction(&Instruction::Br(0));
-                func.instruction(&Instruction::End); // end loop
-                func.instruction(&Instruction::End); // end block
-            }
-
-            // Build GC slice from the rebuilt array
-            func.instruction(&Instruction::LocalGet(local_output_array));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalGet(local_output_row_count));
-            func.instruction(&Instruction::LocalGet(local_output_row_count));
-            func.instruction(&Instruction::StructNew(out_slice_gc));
-            func.instruction(&Instruction::LocalSet(local_output_slice));
+            func.instruction(&Instruction::LocalGet(local_output_slice));
+            func.instruction(&Instruction::StructGet { struct_type_index: out_slice_gc, field_index: 2 });
+            func.instruction(&Instruction::LocalSet(local_output_row_count));
 
             let num_out_fields = out_sd.fields.len();
             let header_size = 8 + (num_out_fields as i32) * COLUMN_ENTRY_SIZE;

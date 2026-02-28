@@ -333,6 +333,14 @@ impl GoType {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct GcSliceInfo {
+    pub(crate) slice_gc_idx: u32,
+    pub(crate) array_gc_idx: u32,
+    pub(crate) elem_vt: ValType,
+    pub(crate) elem_gc_idx: Option<u32>,
+}
+
 pub(crate) struct LocalAlloc {
     pub(crate) params: Vec<(String, ValType)>,
     locals: Vec<(String, ValType, u32)>,
@@ -355,6 +363,7 @@ pub(crate) struct LocalAlloc {
     memory_backed_vars: HashMap<String, (u32, ValType)>,
     pub(crate) func_typed_params: HashMap<String, FuncTypedParamInfo>,
     pub(crate) iface_type_id_locals: HashMap<String, u32>,
+    pub(crate) gc_slice_info: HashMap<String, GcSliceInfo>,
 }
 
 impl LocalAlloc {
@@ -381,6 +390,7 @@ impl LocalAlloc {
             memory_backed_vars: HashMap::new(),
             func_typed_params: HashMap::new(),
             iface_type_id_locals: HashMap::new(),
+            gc_slice_info: HashMap::new(),
         }
     }
 
@@ -1136,6 +1146,54 @@ impl WasmCompiler {
         })
     }
 
+    pub(crate) fn lookup_gc_slice_info(&self, vt: ValType) -> Option<GcSliceInfo> {
+        let slice_gc_idx = match vt {
+            ValType::Ref(rt) => match rt.heap_type {
+                HeapType::Concrete(idx) => idx,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        for (&elem_vt, &idx) in &self.gc_slice_types {
+            if idx == slice_gc_idx {
+                let array_gc_idx = self.gc_array_types.get(&elem_vt).copied().unwrap_or(0);
+                let elem_gc_idx = match elem_vt {
+                    ValType::Ref(rt) => match rt.heap_type {
+                        HeapType::Concrete(i) => Some(i),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                return Some(GcSliceInfo {
+                    slice_gc_idx,
+                    array_gc_idx,
+                    elem_vt,
+                    elem_gc_idx,
+                });
+            }
+        }
+        None
+    }
+
+    pub(crate) fn track_gc_slice_var(&self, name: &str, vt: ValType, locals: &mut LocalAlloc) {
+        if let Some(info) = self.lookup_gc_slice_info(vt) {
+            locals.gc_slice_info.insert(name.to_string(), info.clone());
+            locals.slice_elem_types.insert(name.to_string(), info.elem_vt);
+            locals.set_var_type(name, DefineType::Slice(Box::new(DefineType::Null)));
+        }
+    }
+
+    pub(crate) fn resolve_gc_slice_info_for_ident(&self, name: &str, locals: &LocalAlloc) -> Option<GcSliceInfo> {
+        if let Some(info) = locals.gc_slice_info.get(name) {
+            return Some(info.clone());
+        }
+        let resolved = self.resolve_global_var_name(name);
+        if let Some(&(_, gvt)) = self.global_vars.get(&resolved) {
+            return self.lookup_gc_slice_info(gvt);
+        }
+        None
+    }
+
     pub(crate) fn val_type_to_wasm_type(vt: ValType) -> WasmType {
         match vt {
             ValType::I32 => WasmType::I32,
@@ -1189,6 +1247,9 @@ impl WasmCompiler {
     }
 
     pub(crate) fn get_or_create_gc_slice_type(&mut self, elem_vt: ValType) -> (u32, u32) {
+        if matches!(elem_vt, ValType::I32) {
+            eprintln!("[DEBUG] get_or_create_gc_slice_type called with I32! backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+        }
         let array_type_idx = self.get_or_create_gc_array_type(elem_vt);
         if let Some(&slice_idx) = self.gc_slice_types.get(&elem_vt) {
             return (slice_idx, array_type_idx);

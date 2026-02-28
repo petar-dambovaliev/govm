@@ -623,7 +623,7 @@ impl WasmCompiler {
             .map_or(false, |(_base, is_alias)| *is_alias)
     }
 
-    pub(crate) fn field_to_wasm_types(&self, field: &ast::Field) -> Vec<WasmType> {
+    pub(crate) fn field_to_wasm_types(&mut self, field: &ast::Field) -> Vec<WasmType> {
         match &field.typ {
             ast::Expression::Ident(ident) => match self.resolve_type_name(&ident.name) {
                 "bool" | "byte" | "uint8" | "int8" | "int16" | "uint16" | "int32"
@@ -643,8 +643,14 @@ impl WasmCompiler {
                 _ => vec![WasmType::I32],
             },
             ast::Expression::TypePointer(_) => vec![WasmType::I32],
-            ast::Expression::TypeSlice(_) => {
-                vec![WasmType::I32]
+            ast::Expression::TypeSlice(sl) => {
+                if self.should_gc_slice_elem(&sl.typ) {
+                    let elem_vt = self.ensure_array_elem_vt(&sl.typ);
+                    let (slice_gc_idx, _array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
+                    vec![WasmType::Ref(slice_gc_idx)]
+                } else {
+                    vec![WasmType::I32]
+                }
             }
             ast::Expression::TypeArray(_) => vec![WasmType::I32],
             ast::Expression::TypeMap(_) => vec![WasmType::I32],
@@ -654,6 +660,104 @@ impl WasmCompiler {
             ast::Expression::Ellipsis(_) => vec![WasmType::I32], // variadic → slice header ptr
             _ => vec![WasmType::I32],
         }
+    }
+
+    pub(crate) fn infer_or_create_val_type(&mut self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
+        if let ast::Expression::Call(call) = expr {
+            if let ast::Expression::Ident(fn_id) = call.func.as_ref() {
+                if fn_id.name == "make" {
+                    if let Some(ast::Expression::TypeSlice(sl)) = call.args.first() {
+                        if self.should_gc_slice_elem(&sl.typ) {
+                            let elem_vt = self.ensure_array_elem_vt(&sl.typ);
+                            let (slice_gc_idx, _) = self.get_or_create_gc_slice_type(elem_vt);
+                            return Self::gc_ref_val_type(slice_gc_idx);
+                        }
+                    }
+                }
+                if fn_id.name == "append" {
+                    if let Some(first_arg) = call.args.first() {
+                        let src_vt = self.infer_val_type(first_arg, locals);
+                        if matches!(src_vt, ValType::Ref(_)) {
+                            return src_vt;
+                        }
+                    }
+                }
+            }
+        }
+        if let ast::Expression::CompositeLit(comp) = expr {
+            if let ast::Expression::TypeSlice(sl) = comp.typ.as_ref() {
+                if self.should_gc_slice_elem(&sl.typ) {
+                    let elem_vt = self.ensure_array_elem_vt(&sl.typ);
+                    let (slice_gc_idx, _) = self.get_or_create_gc_slice_type(elem_vt);
+                    return Self::gc_ref_val_type(slice_gc_idx);
+                }
+            }
+            // Named slice types: type MySlice []int → MySlice{1,2,3}
+            if let ast::Expression::Ident(id) = comp.typ.as_ref() {
+                let qualified = self.qualify_pkg_name(&id.name);
+                if let Some(underlying) = self.named_composite_types.get(&id.name)
+                    .or_else(|| self.named_composite_types.get(&qualified))
+                    .cloned()
+                {
+                    if let ast::Expression::TypeSlice(sl) = &underlying {
+                        let elem_vt = self.ensure_array_elem_vt(&sl.typ);
+                        let (slice_gc_idx, _) = self.get_or_create_gc_slice_type(elem_vt);
+                        return Self::gc_ref_val_type(slice_gc_idx);
+                    }
+                }
+            }
+        }
+        self.infer_val_type(expr, locals)
+    }
+
+    pub(crate) fn is_byte_or_rune_elem(elem_type: &ast::Expression) -> bool {
+        if let ast::Expression::Ident(id) = elem_type {
+            matches!(id.name.as_str(), "byte" | "uint8" | "rune")
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn check_gc_ref_nil_cmp<'a>(
+        &self,
+        lhs: &'a ast::Expression,
+        rhs: &'a ast::Expression,
+        locals: &LocalAlloc,
+    ) -> Option<&'a ast::Expression> {
+        let is_nil = |e: &ast::Expression| matches!(e, ast::Expression::Ident(id) if id.name == "nil");
+        let is_gc_ref = |e: &ast::Expression| {
+            let vt = self.infer_val_type(e, locals);
+            matches!(vt, ValType::Ref(_))
+        };
+        if is_nil(rhs) && is_gc_ref(lhs) {
+            Some(lhs)
+        } else if is_nil(lhs) && is_gc_ref(rhs) {
+            Some(rhs)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn should_gc_slice_elem(&self, elem_type: &ast::Expression) -> bool {
+        let elem_vt = self.infer_array_elem_vt(elem_type);
+        if !matches!(elem_vt, ValType::I32) {
+            return true;
+        }
+        if let ast::Expression::Ident(id) = elem_type {
+            let resolved = self.resolve_struct_in_pkg(&id.name);
+            if self.struct_defs.contains_key(&resolved) || self.struct_defs.contains_key(&id.name) {
+                return true;
+            }
+        }
+        if let ast::Expression::Selector(sel) = elem_type {
+            if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
+                let qualified = format!("{}.{}", pkg.name, sel.sel.name);
+                if self.struct_defs.contains_key(&qualified) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub(crate) fn infer_val_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
@@ -806,7 +910,31 @@ impl WasmCompiler {
                         "int8" | "int16" | "int32" | "rune"
                         | "byte" | "uint8" | "uint16" | "uint32" | "bool" | "uintptr" => ValType::I32,
                         "len" | "cap" => ValType::I64,
-                        "make" | "append" | "new" | "recover" => ValType::I32,
+                        "make" => {
+                            if let Some(ast::Expression::TypeSlice(sl)) = call.args.first() {
+                                let elem_vt = self.infer_array_elem_vt(&sl.typ);
+                                if let Some(&idx) = self.gc_slice_types.get(&elem_vt) {
+                                    Self::gc_ref_val_type(idx)
+                                } else {
+                                    ValType::I32
+                                }
+                            } else {
+                                ValType::I32
+                            }
+                        }
+                        "append" => {
+                            if let Some(first_arg) = call.args.first() {
+                                let src_vt = self.infer_val_type(first_arg, locals);
+                                if matches!(src_vt, ValType::Ref(_)) {
+                                    src_vt
+                                } else {
+                                    ValType::I32
+                                }
+                            } else {
+                                ValType::I32
+                            }
+                        }
+                        "new" | "recover" => ValType::I32,
                         "complex" => {
                             let is_c64 = call.args.first().map_or(false, |a| self.infer_val_type(a, locals) == ValType::F32);
                             let gc_idx = if is_c64 { self.gc_builtin_types.complex64 } else { self.gc_builtin_types.complex128 };
@@ -972,6 +1100,11 @@ impl WasmCompiler {
                             return Self::gc_ref_val_type(gc_arr_idx);
                         }
                     }
+                } else if let ast::Expression::TypeSlice(sl) = cl.typ.as_ref() {
+                    let elem_vt = self.infer_array_elem_vt(&sl.typ);
+                    if let Some(&slice_gc_idx) = self.gc_slice_types.get(&elem_vt) {
+                        return Self::gc_ref_val_type(slice_gc_idx);
+                    }
                 }
                 ValType::I32
             }
@@ -1007,12 +1140,8 @@ impl WasmCompiler {
                     ValType::I64
                 }
             }
-            ast::Expression::Slice(slice) => {
-                if self.is_string_expr(&slice.left, locals) {
-                    ValType::I32
-                } else {
-                    ValType::I32
-                }
+            ast::Expression::Slice(sl) => {
+                self.infer_val_type(&sl.left, locals)
             }
             ast::Expression::FuncLit(_) => ValType::I32,
             ast::Expression::TypeAssert(ta) => {
@@ -1061,7 +1190,14 @@ impl WasmCompiler {
                 _ => ValType::I32,
             },
             ast::Expression::TypePointer(_) => ValType::I32,
-            ast::Expression::TypeSlice(_) => ValType::I32,
+            ast::Expression::TypeSlice(sl) => {
+                let elem_vt = self.infer_array_elem_vt(&sl.typ);
+                if let Some(&slice_gc_idx) = self.gc_slice_types.get(&elem_vt) {
+                    Self::gc_ref_val_type(slice_gc_idx)
+                } else {
+                    ValType::I32
+                }
+            }
             ast::Expression::TypeInterface(_) => ValType::I32,
             ast::Expression::TypeMap(_) => ValType::I32,
             ast::Expression::TypeFunction(_) => ValType::I32,

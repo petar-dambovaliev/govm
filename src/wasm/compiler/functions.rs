@@ -93,7 +93,8 @@ impl WasmCompiler {
                     ValType::I64
                 };
                 variadic_elem_vt = Some(elem_vt);
-                param_types.push(ValType::I32); // slice header pointer
+                let (slice_gc_idx, _array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
+                param_types.push(Self::gc_ref_val_type(slice_gc_idx));
                 let vname = field.name.first().map_or(
                     format!("_param{}", param_names.len()),
                     |id| id.name.clone()
@@ -274,6 +275,17 @@ impl WasmCompiler {
             self.define_var(vp_name, DefineType::Slice(Box::new(DefineType::Null)));
             if let Some(evtype) = variadic_elem_vt {
                 locals.slice_elem_types.insert(vp_name.clone(), evtype);
+                let (slice_gc_idx, array_gc_idx) = self.get_or_create_gc_slice_type(evtype);
+                let elem_gc_idx = match evtype {
+                    ValType::Ref(rt) => match rt.heap_type {
+                        HeapType::Concrete(idx) => Some(idx),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                locals.gc_slice_info.insert(vp_name.clone(), super::GcSliceInfo {
+                    slice_gc_idx, array_gc_idx, elem_vt: evtype, elem_gc_idx,
+                });
             }
         }
 
@@ -298,19 +310,41 @@ impl WasmCompiler {
             }
 
             if let ast::Expression::TypeSlice(slice_type) = &field.typ {
-                let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
-                for name_ident in &field.name {
-                    locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(DefineType::Null)));
-                    locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
-                    if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
-                        let inner_vt = self.infer_array_elem_vt(&inner_st.typ);
-                        locals.nested_slice_inner_elem_types.insert(name_ident.name.clone(), inner_vt);
-                    }
-                    if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                        let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
-                        if self.struct_defs.contains_key(&resolved_elem) {
-                            locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
+                let elem_vt_for_linear = self.infer_array_elem_vt(&slice_type.typ);
+                if self.should_gc_slice_elem(&slice_type.typ) {
+                    let elem_vt = self.ensure_array_elem_vt(&slice_type.typ);
+                    let (slice_gc_idx, array_gc_idx) = self.get_or_create_gc_slice_type(elem_vt);
+                    let elem_gc_idx = match elem_vt {
+                        ValType::Ref(rt) => match rt.heap_type {
+                            HeapType::Concrete(idx) => Some(idx),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    for name_ident in &field.name {
+                        locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(DefineType::Null)));
+                        locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
+                        locals.gc_slice_info.insert(name_ident.name.clone(), GcSliceInfo {
+                            slice_gc_idx,
+                            array_gc_idx,
+                            elem_vt,
+                            elem_gc_idx,
+                        });
+                        if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
+                            let inner_vt = self.infer_array_elem_vt(&inner_st.typ);
+                            locals.nested_slice_inner_elem_types.insert(name_ident.name.clone(), inner_vt);
                         }
+                        if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
+                            let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                            if self.struct_defs.contains_key(&resolved_elem) {
+                                locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
+                            }
+                        }
+                    }
+                } else {
+                    for name_ident in &field.name {
+                        locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(DefineType::Null)));
+                        locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt_for_linear);
                     }
                 }
             }

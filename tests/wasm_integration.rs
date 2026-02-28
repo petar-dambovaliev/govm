@@ -29845,3 +29845,44 @@ func Transform(rows []Row) []Row {
     let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
     let _instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
 }
+
+#[test]
+fn test_string_time_struct_udf_validates() {
+    let source = r#"
+package main
+
+import "time"
+
+type Row struct {
+    Id            int32
+    CustomerCode  string
+    FirstName     string
+    LastName      string
+    Email         string
+    Phone         string
+    Company       string
+    City          string
+    State         string
+    PostalCode    string
+    Country       string
+    Tier          string
+    IsActive      bool
+    TotalOrders   int32
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+}
+
+func Transform(rows []Row) []Row {
+    return rows
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source).expect("compilation failed");
+
+    let runtime = UdfRuntime::new().expect("runtime init failed");
+    let module = runtime.load_module(&result.wasm_bytes).expect("module load failed");
+    let state = HostState::new();
+    let mut store = runtime.create_store(state, 1_000_000).expect("store creation failed");
+    let _instance = runtime.instantiate(&mut store, &module).expect("instantiation failed");
+}
