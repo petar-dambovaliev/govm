@@ -469,7 +469,7 @@ impl WasmCompiler {
             name: "__wasm_reset".to_string(),
             params: vec![],
             results: vec![],
-            result_go_types: vec![],
+            result_define_types: vec![],
             is_exported: true,
             recv_type: None,
             is_variadic: false,
@@ -509,7 +509,7 @@ impl WasmCompiler {
             name: "__wasm_alloc".to_string(),
             params: vec![("size".to_string(), WasmType::I32)],
             results: vec![WasmType::I32],
-            result_go_types: vec![],
+            result_define_types: vec![],
             is_exported: true,
             recv_type: None,
             is_variadic: false,
@@ -597,7 +597,7 @@ impl WasmCompiler {
                 ("len".to_string(), WasmType::I32),
             ],
             results: vec![WasmType::Ref(go_string_idx)],
-            result_go_types: vec!["string".to_string()],
+            result_define_types: vec![DefineType::String],
             is_exported: true,
             recv_type: None,
             is_variadic: false,
@@ -780,7 +780,7 @@ impl WasmCompiler {
             let size = self.type_byte_size(type_name);
             let cmp_func_idx: u32 = 0;
             let comparable = !self.struct_defs.get(type_name).map_or(false, |sdef| {
-                sdef.fields.iter().any(|f| matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map")))
+                sdef.fields.iter().any(|f| f.is_slice_or_map_field())
             });
             let flags: u32 = if comparable { 1 } else { 0 };
 

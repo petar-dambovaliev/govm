@@ -155,15 +155,15 @@ impl WasmCompiler {
         }
 
         let mut result_types: Vec<ValType> = Vec::new();
-        let mut result_go_types: Vec<String> = Vec::new();
+        let mut result_define_types: Vec<DefineType> = Vec::new();
         for field in &decl.typ.result.list {
             let field_wasm_types = self.field_to_wasm_types(field);
-            let go_type_name = self.expr_type_name(&field.typ);
+            let dt = self.expr_to_define_type(&field.typ).unwrap_or(DefineType::Null);
             let count = if field.name.len() > 1 { field.name.len() } else { 1 };
             for _ in 0..count {
                 for wt in &field_wasm_types {
                     result_types.push(wt.to_val_type());
-                    result_go_types.push(go_type_name.clone());
+                    result_define_types.push(dt.clone());
                 }
             }
         }
@@ -250,7 +250,7 @@ impl WasmCompiler {
                 name: internal_name,
                 params: wasm_params,
                 results: wasm_results,
-                result_go_types: result_go_types.clone(),
+                result_define_types: result_define_types.clone(),
                 is_exported,
                 recv_type: recv_type_name.clone(),
                 is_variadic,
@@ -270,7 +270,7 @@ impl WasmCompiler {
 
         // Track variadic parameter as slice
         if let Some(ref vp_name) = variadic_param_name {
-            locals.set_var_struct_type(vp_name, "__slice");
+            locals.set_var_type(vp_name, DefineType::Slice(Box::new(DefineType::Null)));
             self.define_var(vp_name, DefineType::Slice(Box::new(DefineType::Null)));
             if let Some(evtype) = variadic_elem_vt {
                 locals.slice_elem_types.insert(vp_name.clone(), evtype);
@@ -282,7 +282,7 @@ impl WasmCompiler {
             for field in &recv.list {
                 let recv_name = field.name.first().map_or("self", |id| &id.name);
                 if let Some(ref rtn) = recv_type_name {
-                    locals.set_var_struct_type(recv_name, rtn);
+                    locals.set_var_type(recv_name, self.go_type_name_to_define_type(rtn));
                     self.define_var(recv_name, self.go_type_name_to_define_type(rtn));
                 }
             }
@@ -300,7 +300,7 @@ impl WasmCompiler {
             if let ast::Expression::TypeSlice(slice_type) = &field.typ {
                 let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                 for name_ident in &field.name {
-                    locals.set_var_struct_type(&name_ident.name, "__slice");
+                    locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(DefineType::Null)));
                     locals.slice_elem_types.insert(name_ident.name.clone(), elem_vt);
                     if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
                         let inner_vt = self.infer_array_elem_vt(&inner_st.typ);
@@ -318,22 +318,22 @@ impl WasmCompiler {
                 let resolved_struct = self.resolve_struct_in_pkg(&type_ident.name);
                 if self.struct_defs.contains_key(&resolved_struct) {
                     for name_ident in &field.name {
-                        locals.set_var_struct_type(&name_ident.name, &resolved_struct);
+                        locals.set_var_type(&name_ident.name, self.go_type_name_to_define_type(&resolved_struct));
                     }
                 }
                 if type_ident.name == "Context" {
                     for name_ident in &field.name {
-                        locals.set_var_struct_type(&name_ident.name, "__context");
+                        locals.set_var_type(&name_ident.name, DefineType::Struct { name: "Context".to_string(), fields: vec![], methods: vec![] });
                     }
                 }
                 if type_ident.name == "string" {
                     for name_ident in &field.name {
                         if self.gc_builtin_types.go_string.is_some() {
-                            locals.set_var_struct_type(&name_ident.name, "__string");
+                            locals.set_var_type(&name_ident.name, DefineType::String);
                             let ref_idx = locals.find(&name_ident.name).unwrap_or(0);
                             locals.gc_string_locals.insert(name_ident.name.clone(), ref_idx);
                         } else {
-                            locals.set_var_struct_type(&name_ident.name, "__string");
+                            locals.set_var_type(&name_ident.name, DefineType::String);
                             let ptr_idx = locals.find(&name_ident.name).unwrap_or(0);
                             let len_name = format!("{}__str_len", name_ident.name);
                             let len_idx = locals.find(&len_name).unwrap_or_else(|| {
@@ -353,8 +353,7 @@ impl WasmCompiler {
                     || type_ident.name == "any"
                 {
                     for name_ident in &field.name {
-                        let iface_tag = format!("__iface_{}", type_ident.name);
-                        locals.set_var_struct_type(&name_ident.name, &iface_tag);
+                        locals.set_var_type(&name_ident.name, DefineType::Interface { name: type_ident.name.clone(), methods: vec![] });
                         let tid_param_name = format!("{}__type_id", name_ident.name);
                         let tid_local = locals.find(&tid_param_name).unwrap_or_else(|| {
                             locals.add_local(&tid_param_name, ValType::I32)
@@ -368,18 +367,11 @@ impl WasmCompiler {
                     let resolved_ptr_struct = self.resolve_struct_in_pkg(&type_ident.name);
                     if self.struct_defs.contains_key(&resolved_ptr_struct) {
                         for name_ident in &field.name {
-                            locals.set_var_struct_type(&name_ident.name, &resolved_ptr_struct);
-                            locals.pointer_to_struct_vars.insert(name_ident.name.clone());
+                            locals.set_var_type(&name_ident.name, DefineType::Ref(Box::new(self.go_type_name_to_define_type(&resolved_ptr_struct))));
                         }
                     } else {
-                        let ptr_tag = match type_ident.name.as_str() {
-                            "int" | "int64" | "uint" | "uint64" => "__ptr_i64",
-                            "float32" => "__ptr_f32",
-                            "float64" => "__ptr_f64",
-                            _ => "__ptr_i32",
-                        };
                         for name_ident in &field.name {
-                            locals.set_var_struct_type(&name_ident.name, ptr_tag);
+                            locals.set_var_type(&name_ident.name, DefineType::Ref(Box::new(DefineType::Null)));
                         }
                     }
                 }
@@ -388,7 +380,7 @@ impl WasmCompiler {
                 if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
                     if pkg.name == "context" && sel.sel.name == "Context" {
                         for name_ident in &field.name {
-                            locals.set_var_struct_type(&name_ident.name, "__context");
+                            locals.set_var_type(&name_ident.name, DefineType::Struct { name: "Context".to_string(), fields: vec![], methods: vec![] });
                         }
                     }
                 }
@@ -577,7 +569,7 @@ impl WasmCompiler {
             }
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();
-            self.current_result_go_types = result_go_types.clone();
+            self.current_result_define_types = result_define_types.clone();
             let goto_targets = Self::scan_goto_targets(body);
             if goto_targets.is_empty() {
                 self.compile_block(&body, &mut func_body, &mut locals, &result_types)?;
@@ -588,7 +580,7 @@ impl WasmCompiler {
             }
             self.named_returns = Vec::new();
             self.current_result_types = Vec::new();
-            self.current_result_go_types = Vec::new();
+            self.current_result_define_types = Vec::new();
             self.constants = saved_constants;
         }
 
@@ -755,7 +747,7 @@ impl WasmCompiler {
             name: closure_name,
             params: wasm_params,
             results: wasm_results,
-            result_go_types: vec![],
+            result_define_types: vec![],
             is_exported: false,
             recv_type: None,
             is_variadic: false,
@@ -799,7 +791,7 @@ impl WasmCompiler {
 
         let saved_named_returns = std::mem::replace(&mut self.named_returns, named_returns.clone());
         let saved_result_types = std::mem::replace(&mut self.current_result_types, result_types.clone());
-        let saved_result_go_types = std::mem::replace(&mut self.current_result_go_types, vec![]);
+        let saved_result_define_types = std::mem::replace(&mut self.current_result_define_types, vec![]);
         let saved_stack_frame = self.current_stack_frame.take();
         let saved_stack_alloc_target = self.stack_alloc_target.take();
 
@@ -822,7 +814,7 @@ impl WasmCompiler {
         self.constants = saved_constants;
         self.named_returns = saved_named_returns;
         self.current_result_types = saved_result_types;
-        self.current_result_go_types = saved_result_go_types;
+        self.current_result_define_types = saved_result_define_types;
         self.current_stack_frame = saved_stack_frame;
         self.stack_alloc_target = saved_stack_alloc_target;
 

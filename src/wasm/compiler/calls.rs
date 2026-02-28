@@ -402,7 +402,7 @@ impl WasmCompiler {
                             // Check if arg is a []rune slice => string([]rune)
                             if let ast::Expression::Ident(arg_ident) = arg {
                                 if locals.rune_slices.contains(&arg_ident.name)
-                                    && locals.get_var_struct_type(&arg_ident.name) == Some("__slice")
+                                    && locals.is_var_type_slice(&arg_ident.name)
                                 {
                                     let hdr_idx = locals.find(&arg_ident.name).ok_or_else(|| {
                                         Error::InternalError(format!(
@@ -613,7 +613,7 @@ impl WasmCompiler {
                             // Check if arg is a []byte slice => string([]byte)
                             if let ast::Expression::Ident(arg_ident) = arg {
                                 if locals.slice_elem_types.get(&arg_ident.name) == Some(&ValType::I32)
-                                    && locals.get_var_struct_type(&arg_ident.name) == Some("__slice")
+                                    && locals.is_var_type_slice(&arg_ident.name)
                                 {
                                     // Pack I32 slice elements back into compact bytes
                                     let hdr_idx = locals.find(&arg_ident.name).ok_or_else(|| {
@@ -1201,7 +1201,7 @@ impl WasmCompiler {
                                                 let tmp_name = format!("__del_map_tmp_{}", locals.locals.len());
                                                 let tmp_local = locals.add_local(&tmp_name, ValType::I32);
                                                 out.push(Instruction::LocalSet(tmp_local));
-                                                locals.set_var_struct_type(&tmp_name, "__map");
+                                                locals.set_var_type(&tmp_name, DefineType::Map(Box::new(DefineType::Null), Box::new(DefineType::Null)));
                                                 locals.map_types.insert(tmp_name.clone(), mti);
                                                 self.compile_map_delete(&tmp_name, &key_expr, out, locals)?;
                                             } else {
@@ -1344,8 +1344,8 @@ impl WasmCompiler {
                             }
                             if let ast::Expression::Ident(ident_arg) = arg {
                                 if let Some(local_idx) = locals.find(&ident_arg.name) {
-                                    let struct_type = locals.get_var_struct_type(&ident_arg.name);
-                                    if struct_type == Some("__slice") || locals.slice_elem_types.contains_key(&ident_arg.name) {
+                                    let is_slice = locals.is_var_type_slice(&ident_arg.name);
+                                    if is_slice || locals.slice_elem_types.contains_key(&ident_arg.name) {
                                         let elem_vt = locals.slice_elem_types.get(&ident_arg.name).copied().unwrap_or(ValType::I64);
                                         let (elem_size, _) = Self::elem_size_and_align(elem_vt);
                                         // nil check: skip if slice header pointer is 0
@@ -1365,7 +1365,7 @@ impl WasmCompiler {
                                         out.push(Instruction::End);
                                         return Ok(GoType::Void);
                                     }
-                                    if struct_type == Some("__map") {
+                                    if locals.is_var_type_map(&ident_arg.name) {
                                         // nil check: skip if map pointer is 0
                                         out.push(Instruction::LocalGet(local_idx));
                                         out.push(Instruction::I32Const(0));
@@ -1453,7 +1453,7 @@ impl WasmCompiler {
                                         out.push(Instruction::End); // if (nil check)
                                         return Ok(GoType::Void);
                                     }
-                                    if struct_type == Some("__array") {
+                                    if matches!(locals.get_var_type(&ident_arg.name), Some(DefineType::Array { .. })) {
                                         if let Some(&(_elem_vt, arr_len, go_es, _)) = locals.array_info.get(&ident_arg.name) {
                                             let elem_size = go_es;
                                             let total_bytes = elem_size as i32 * arr_len as i32;
@@ -1635,7 +1635,7 @@ impl WasmCompiler {
                                     } else if let Some(tid) = self.get_iface_type_id_local(&arg_ident.name, locals) {
                                         out.push(Instruction::LocalGet(tid));
                                     } else {
-                                        let concrete_type = locals.get_var_struct_type(&arg_ident.name)
+                                        let concrete_type = locals.get_var_struct_name(&arg_ident.name)
                                             .map(|s| s.to_string())
                                             .unwrap_or_else(|| arg_ident.name.clone());
                                         let type_id = self.get_or_create_type_id(&concrete_type);
@@ -1687,7 +1687,7 @@ impl WasmCompiler {
                                 } else if let ast::Expression::Operation(addr_op) = arg {
                                     if addr_op.op == Operator::And {
                                         let concrete_type = if let ast::Expression::Ident(inner_id) = &*addr_op.x {
-                                            locals.get_var_struct_type(&inner_id.name)
+                                            locals.get_var_struct_name(&inner_id.name)
                                                 .map(|s| s.to_string())
                                                 .unwrap_or_else(|| inner_id.name.clone())
                                         } else if let ast::Expression::CompositeLit(comp) = &*addr_op.x {
@@ -1851,7 +1851,7 @@ impl WasmCompiler {
                         let is_str = self.is_string_expr(arg, locals);
                         self.compile_expression(arg, out, locals)?;
                         let concrete_type = if let ast::Expression::Ident(arg_id) = arg {
-                            locals.get_var_struct_type(&arg_id.name)
+                            locals.get_var_struct_name(&arg_id.name)
                                 .map(|s| s.to_string())
                                 .unwrap_or_else(|| arg_id.name.clone())
                         } else if let ast::Expression::Call(inner_call) = arg {
@@ -1938,7 +1938,7 @@ impl WasmCompiler {
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
                     // Handle context method calls (ctx.Log, ctx.QueryID, etc.)
-                    if locals.get_var_struct_type(&pkg_ident.name) == Some("__context") {
+                    if matches!(locals.get_var_type(&pkg_ident.name), Some(DefineType::Struct { name, .. }) if name == "Context") {
                         let ctx_host_idx: Option<u32> = match sel.sel.name.as_str() {
                             "Log" => Some(0),
                             "QueryID" => Some(1),
@@ -2104,7 +2104,7 @@ impl WasmCompiler {
                                             } else if let Some(tid) = self.get_iface_type_id_local(&arg_ident.name, locals) {
                                                 out.push(Instruction::LocalGet(tid));
                                             } else {
-                                                let concrete_type = locals.get_var_struct_type(&arg_ident.name)
+                                                let concrete_type = locals.get_var_struct_name(&arg_ident.name)
                                                     .map(|s| s.to_string())
                                                     .unwrap_or_else(|| arg_ident.name.clone());
                                                 let type_id = self.get_or_create_type_id(&concrete_type);
@@ -2132,7 +2132,7 @@ impl WasmCompiler {
                                         } else if let ast::Expression::Operation(addr_op) = arg {
                                             if addr_op.op == Operator::And {
                                                 let concrete_type = if let ast::Expression::Ident(inner_id) = &*addr_op.x {
-                                                    locals.get_var_struct_type(&inner_id.name)
+                                                    locals.get_var_struct_name(&inner_id.name)
                                                         .map(|s| s.to_string())
                                                         .unwrap_or_else(|| inner_id.name.clone())
                                                 } else if let ast::Expression::CompositeLit(comp) = &*addr_op.x {
@@ -2404,7 +2404,7 @@ impl WasmCompiler {
 
                     // Resolve the receiver's struct type name for qualified lookup
                     let recv_type_name = locals
-                        .get_var_struct_type(&pkg_ident.name)
+                        .get_var_struct_name(&pkg_ident.name)
                         .map(|s| s.to_string());
 
                     let found = if let Some(ref type_name) = recv_type_name {

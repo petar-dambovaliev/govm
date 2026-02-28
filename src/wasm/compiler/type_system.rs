@@ -234,11 +234,11 @@ impl WasmCompiler {
         }
     }
 
-    pub(crate) fn infer_struct_type_from_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
+    pub(crate) fn resolve_expr_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<DefineType> {
         match expr {
             ast::Expression::Ident(ident) => {
-                if let Some(t) = locals.get_var_struct_type(&ident.name) {
-                    return Some(t.to_string());
+                if let Some(dt) = locals.get_var_type(&ident.name) {
+                    return Some(dt.clone());
                 }
                 let resolved = self.resolve_global_var_name(&ident.name);
                 self.global_var_struct_types.get(&resolved).cloned()
@@ -249,38 +249,34 @@ impl WasmCompiler {
                     if let Some(type_name) = self.constant_types.get(&sel.sel.name)
                         .or_else(|| self.constant_types.get(&qualified))
                     {
-                        return Some(type_name.clone());
+                        return Some(self.go_type_name_to_define_type(type_name));
                     }
                 }
-                let parent_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals)?;
-                let struct_def = self.struct_defs.get(&parent_type)?;
+                let parent_dt = self.resolve_expr_type(sel.x.as_ref(), locals)?;
+                let parent_name = parent_dt.resolved_name()?;
+                let struct_def = self.struct_defs.get(parent_name)?;
                 let field = struct_def.find_field(&sel.sel.name)?;
-                let tag = field.go_type_tag.as_deref()?;
-                if tag.starts_with("__") {
-                    None
-                } else {
-                    Some(tag.to_string())
-                }
+                field.field_type.clone()
             }
             ast::Expression::Index(idx) => {
                 if let Some(ast::Expression::Ident(ident)) = idx.left.as_deref() {
                     if let Some(mti) = locals.map_types.get(&ident.name) {
                         if let Some(ref st) = mti.val_struct_type {
-                            return Some(st.clone());
+                            return Some(self.go_type_name_to_define_type(st));
                         }
                     }
                     if let Some(st) = locals.slice_elem_struct_types.get(&ident.name) {
-                        return Some(st.clone());
+                        return Some(self.go_type_name_to_define_type(st));
                     }
                     let qualified = self.qualify_pkg_name(&ident.name);
                     if let Some(st) = self.global_slice_elem_struct_types.get(&qualified) {
-                        return Some(st.clone());
+                        return Some(self.go_type_name_to_define_type(st));
                     }
                 }
                 None
             }
             ast::Expression::Call(call) => {
-                self.infer_return_struct_type(call, locals)
+                self.resolve_call_return_type(call, locals)
             }
             ast::Expression::TypeAssert(ta) => {
                 if let Some(ref target) = ta.right {
@@ -288,24 +284,29 @@ impl WasmCompiler {
                         if let ast::Expression::Ident(type_ident) = ptr.typ.as_ref() {
                             let resolved = self.resolve_struct_in_pkg(&type_ident.name);
                             if self.struct_defs.contains_key(&resolved) {
-                                return Some(resolved);
+                                return Some(self.go_type_name_to_define_type(&resolved));
                             }
                         }
                     }
                     if let ast::Expression::Ident(type_ident) = target.as_ref() {
                         let resolved = self.resolve_struct_in_pkg(&type_ident.name);
                         if self.struct_defs.contains_key(&resolved) {
-                            return Some(resolved);
+                            return Some(self.go_type_name_to_define_type(&resolved));
                         }
                     }
                 }
                 None
             }
             ast::Expression::Operation(op) if op.y.is_none() && matches!(op.op, Operator::And) => {
-                self.infer_struct_type_from_expr(&op.x, locals)
+                self.resolve_expr_type(&op.x, locals)
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn infer_struct_type_from_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
+        self.resolve_expr_type(expr, locals)
+            .and_then(|dt| dt.resolved_name().map(|s| s.to_string()))
     }
 
     pub(crate) fn is_known_named_type(&self, name: &str) -> bool {
@@ -341,16 +342,16 @@ impl WasmCompiler {
         None
     }
 
-    pub(crate) fn infer_return_struct_type(&self, call: &ast::Call, locals: &LocalAlloc) -> Option<String> {
+    pub(crate) fn resolve_call_return_type(&self, call: &ast::Call, locals: &LocalAlloc) -> Option<DefineType> {
         match call.func.as_ref() {
             ast::Expression::Ident(ident) => {
                 let fi = self.functions.iter().find(|f| f.name == ident.name && f.recv_type.is_none())?;
-                fi.result_go_types.first().cloned()
-                    .filter(|t| self.is_known_named_type(t))
+                fi.result_define_types.first().cloned()
+                    .filter(|dt| dt.resolved_name().map_or(false, |n| self.is_known_named_type(n)))
             }
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
-                    let recv_type = locals.get_var_struct_type(&recv_ident.name)
+                    let recv_type = locals.get_var_struct_name(&recv_ident.name)
                         .map(|s| s.to_string())
                         .or_else(|| {
                             if self.struct_defs.contains_key(&recv_ident.name) {
@@ -361,17 +362,23 @@ impl WasmCompiler {
                         });
                     if let Some(type_name) = recv_type {
                         let fi = self.find_method_func(&type_name, &sel.sel.name)?;
-                        return fi.result_go_types.first().cloned()
-                            .filter(|t| self.is_known_named_type(t));
+                        return fi.result_define_types.first().cloned()
+                            .filter(|dt| dt.resolved_name().map_or(false, |n| self.is_known_named_type(n)));
                     }
                 }
-                let parent_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals)?;
-                let fi = self.find_method_func(&parent_type, &sel.sel.name)?;
-                fi.result_go_types.first().cloned()
-                    .filter(|t| self.is_known_named_type(t))
+                let parent_dt = self.resolve_expr_type(sel.x.as_ref(), locals)?;
+                let parent_name = parent_dt.resolved_name()?;
+                let fi = self.find_method_func(parent_name, &sel.sel.name)?;
+                fi.result_define_types.first().cloned()
+                    .filter(|dt| dt.resolved_name().map_or(false, |n| self.is_known_named_type(n)))
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn infer_return_struct_type(&self, call: &ast::Call, locals: &LocalAlloc) -> Option<String> {
+        self.resolve_call_return_type(call, locals)
+            .and_then(|dt| dt.resolved_name().map(|s| s.to_string()))
     }
 
     pub(crate) fn infer_go_type_from_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
@@ -466,7 +473,7 @@ impl WasmCompiler {
     ) {
         match underlying {
             ast::Expression::TypeSlice(slice_type) => {
-                locals.set_var_struct_type(var_name, "__slice");
+                locals.set_var_type(var_name, DefineType::Slice(Box::new(DefineType::Null)));
                 let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                 locals.slice_elem_types.insert(var_name.to_string(), elem_vt);
                 if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
@@ -484,7 +491,7 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::TypeMap(map_type) => {
-                locals.set_var_struct_type(var_name, "__map");
+                locals.set_var_type(var_name, DefineType::Map(Box::new(DefineType::Null), Box::new(DefineType::Null)));
                 let key_vt = self.infer_array_elem_vt(&map_type.key);
                 let val_vt = self.infer_array_elem_vt(&map_type.val);
                 let is_string_key = matches!(map_type.key.as_ref(), ast::Expression::Ident(id) if id.name == "string");
@@ -512,7 +519,7 @@ impl WasmCompiler {
                 } else { 0 };
                 let elem_vt = self.infer_array_elem_vt(&arr_type.typ);
                 let (go_es, go_ea) = Self::go_type_elem_size_and_align(&arr_type.typ);
-                locals.set_var_struct_type(var_name, "__array");
+                locals.set_var_type(var_name, DefineType::Array { inner_type: Box::new(DefineType::Null), len: 0 });
                 locals.array_info.insert(var_name.to_string(), (elem_vt, arr_len, go_es, go_ea));
                 if matches!(elem_vt, ValType::Ref(_)) {
                     self.get_or_create_gc_array_type(elem_vt);
@@ -849,7 +856,7 @@ impl WasmCompiler {
                                 return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());
                             }
                         }
-                        if let Some(type_name) = locals.get_var_struct_type(&receiver.name) {
+                        if let Some(type_name) = locals.get_var_struct_name(&receiver.name) {
                             let qname = format!("{}.{}", type_name, method_name);
                             if let Some(fi) = self.functions.iter().find(|f| f.name == qname) {
                                 return fi.results.first().map_or(ValType::I64, |wt| wt.to_val_type());

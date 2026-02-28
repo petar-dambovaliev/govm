@@ -172,13 +172,13 @@ impl WasmCompiler {
                 if is_inlined_native {
                     let internal_name = self.qualify_pkg_name(name);
                     let mut result_types: Vec<ValType> = Vec::new();
-                    let mut result_go_types: Vec<String> = Vec::new();
+                    let mut result_define_types: Vec<DefineType> = Vec::new();
                     for field in &func_decl.typ.result.list {
-                        let go_type_name = self.expr_type_name(&field.typ);
                         let field_wasm_types = self.field_to_wasm_types(field);
+                        let dt = self.expr_to_define_type(&field.typ).unwrap_or(DefineType::Null);
                         for wt in &field_wasm_types {
                             result_types.push(wt.to_val_type());
-                            result_go_types.push(go_type_name.clone());
+                            result_define_types.push(dt.clone());
                         }
                     }
                     let wasm_results: Vec<WasmType> = result_types
@@ -191,7 +191,7 @@ impl WasmCompiler {
                         name: internal_name.clone(),
                         params: Vec::new(),
                         results: wasm_results,
-                        result_go_types,
+                        result_define_types,
                         is_exported: false,
                         recv_type: None,
                         is_variadic: false,
@@ -224,13 +224,13 @@ impl WasmCompiler {
                         }
                     }
                     let mut result_types: Vec<ValType> = Vec::new();
-                    let mut result_go_types: Vec<String> = Vec::new();
+                    let mut result_define_types: Vec<DefineType> = Vec::new();
                     for field in &func_decl.typ.result.list {
-                        let go_type_name = self.expr_type_name(&field.typ);
                         let field_wasm_types = self.field_to_wasm_types(field);
+                        let dt = self.expr_to_define_type(&field.typ).unwrap_or(DefineType::Null);
                         for wt in &field_wasm_types {
                             result_types.push(wt.to_val_type());
-                            result_go_types.push(go_type_name.clone());
+                            result_define_types.push(dt.clone());
                         }
                     }
 
@@ -250,7 +250,7 @@ impl WasmCompiler {
                         name: internal_name.clone(),
                         params: wasm_params,
                         results: wasm_results,
-                        result_go_types,
+                        result_define_types,
                         is_exported: false,
                         recv_type: None,
                         is_variadic: false,
@@ -381,14 +381,14 @@ impl WasmCompiler {
                 }
             }
 
-            let mut result_go_types: Vec<String> = Vec::new();
+            let mut result_define_types: Vec<DefineType> = Vec::new();
             for field in &func_decl.typ.result.list {
-                let go_type_name = self.expr_type_name(&field.typ);
                 let field_wasm_types = self.field_to_wasm_types(field);
+                let dt = self.expr_to_define_type(&field.typ).unwrap_or(DefineType::Null);
                 let count = if field.name.len() > 1 { field.name.len() } else { 1 };
                 for _ in 0..count {
                     for _ in &field_wasm_types {
-                        result_go_types.push(go_type_name.clone());
+                        result_define_types.push(dt.clone());
                     }
                 }
             }
@@ -457,7 +457,7 @@ impl WasmCompiler {
                 name: internal_name.clone(),
                 params: wasm_params,
                 results: wasm_results,
-                result_go_types,
+                result_define_types,
                 is_exported,
                 recv_type: recv_type_name,
                 is_variadic,
@@ -888,9 +888,8 @@ impl WasmCompiler {
                             name: embed_name,
                             wasm_type: WasmType::I32,
                             offset: embed_offset,
-                            go_type_tag: None,
+                            field_type: None,
                             field_index: 0,
-                            slice_elem_type_tag: None,
                         });
                         for inner_field in &inner_def.fields {
                             let abs_offset = embed_offset + inner_field.offset;
@@ -898,9 +897,8 @@ impl WasmCompiler {
                                 name: inner_field.name.clone(),
                                 wasm_type: inner_field.wasm_type,
                                 offset: abs_offset,
-                                go_type_tag: inner_field.go_type_tag.clone(),
+                                field_type: inner_field.field_type.clone(),
                                 field_index: 0,
-                                slice_elem_type_tag: inner_field.slice_elem_type_tag.clone(),
                             });
                         }
                         offset += inner_def.total_size;
@@ -916,58 +914,18 @@ impl WasmCompiler {
                 field.name.iter().map(|n| n.name.clone()).collect()
             };
 
-            let slice_elem_type_tag = if let ast::Expression::TypeSlice(st) = &field.typ {
-                if let ast::Expression::Ident(el_id) = st.typ.as_ref() {
-                    let resolved = self.resolve_struct_in_pkg(&el_id.name);
-                    if self.struct_defs.contains_key(&resolved) {
-                        Some(resolved)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let field_type = self.expr_to_define_type(&field.typ);
 
-            let go_type_tag = match &field.typ {
-                ast::Expression::TypeSlice(_) => Some("__slice".to_string()),
-                ast::Expression::TypeMap(_) => Some("__map".to_string()),
-                ast::Expression::Ident(id) if id.name == "string" => Some("__string".to_string()),
-                ast::Expression::Ident(id) if id.name == "error" || id.name == "any" || self.iface_defs.contains_key(&id.name) => {
-                    Some("__interface".to_string())
-                }
-                ast::Expression::TypeInterface(_) => Some("__interface".to_string()),
-                ast::Expression::TypePointer(_) => {
-                    Some("__ptr".to_string())
-                }
-                ast::Expression::Ident(id) if self.struct_defs.contains_key(&id.name) => {
-                    Some(id.name.clone())
-                }
-                ast::Expression::Selector(sel) => {
-                    if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
-                        let qualified = format!("{}.{}", pkg_id.name, sel.sel.name);
-                        if self.struct_defs.contains_key(&qualified) {
-                            Some(qualified)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-                ast::Expression::Ident(id) if id.name == "bool" => Some("bool".to_string()),
-                _ => None,
-            };
+            let is_interface = field_type.as_ref().map_or(false, |dt| dt.is_interface_type());
+            let is_string = field_type.as_ref().map_or(false, |dt| dt.is_string_type());
 
             // Interface fields need two i32 slots: data_ptr and type_id
-            if go_type_tag.as_deref() == Some("__interface") && wasm_types == vec![WasmType::I32] {
+            if is_interface && wasm_types == vec![WasmType::I32] {
                 wasm_types = vec![WasmType::I32, WasmType::I32];
             }
 
             // String fields in linear memory structs need two i32 slots: ptr and len
-            if go_type_tag.as_deref() == Some("__string") && wasm_types.len() == 1 && matches!(wasm_types[0], WasmType::Ref(_)) {
+            if is_string && wasm_types.len() == 1 && matches!(wasm_types[0], WasmType::Ref(_)) {
                 wasm_types = vec![WasmType::I32, WasmType::I32];
             }
 
@@ -981,9 +939,8 @@ impl WasmCompiler {
                         name: name.clone(),
                         wasm_type: wt,
                         offset,
-                        go_type_tag: go_type_tag.clone(),
+                        field_type: field_type.clone(),
                         field_index: 0,
-                        slice_elem_type_tag: slice_elem_type_tag.clone(),
                     });
                     offset += size;
                 } else {
@@ -999,9 +956,8 @@ impl WasmCompiler {
                             },
                             wasm_type: wt,
                             offset,
-                            go_type_tag: if i == 0 { go_type_tag.clone() } else { None },
+                            field_type: if i == 0 { field_type.clone() } else { None },
                             field_index: 0,
-                            slice_elem_type_tag: if i == 0 { slice_elem_type_tag.clone() } else { None },
                         });
                         offset += size;
                     }
@@ -1080,11 +1036,12 @@ impl WasmCompiler {
                     if let ast::Expression::Ident(type_id) = type_expr {
                         let resolved = self.resolve_struct_in_pkg(&type_id.name);
                         if self.struct_defs.contains_key(&resolved) {
-                            self.global_var_struct_types.insert(var_name.clone(), resolved);
+                            let dt = self.go_type_name_to_define_type(&resolved);
+                            self.global_var_struct_types.insert(var_name.clone(), dt);
                         }
                     }
                     if let ast::Expression::TypeSlice(slice_type) = type_expr {
-                        self.global_var_struct_types.insert(var_name.clone(), "__slice".to_string());
+                        self.global_var_struct_types.insert(var_name.clone(), DefineType::Slice(Box::new(DefineType::Null)));
                         let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                         let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&slice_type.typ);
                         self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
@@ -1099,7 +1056,7 @@ impl WasmCompiler {
                 if let Some(val) = spec.values.first() {
                     if let ast::Expression::CompositeLit(comp) = val {
                         if let ast::Expression::TypeSlice(slice_type) = comp.typ.as_ref() {
-                            self.global_var_struct_types.insert(var_name.clone(), "__slice".to_string());
+                            self.global_var_struct_types.insert(var_name.clone(), DefineType::Slice(Box::new(DefineType::Null)));
                             let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                             let (elem_size, elem_align) = Self::go_type_elem_size_and_align(&slice_type.typ);
                             self.global_array_elem_types.insert(var_name.clone(), (elem_vt, elem_size, elem_align));
@@ -1113,7 +1070,8 @@ impl WasmCompiler {
                         if let ast::Expression::Ident(type_id) = comp.typ.as_ref() {
                             let resolved = self.resolve_struct_in_pkg(&type_id.name);
                             if self.struct_defs.contains_key(&resolved) {
-                                self.global_var_struct_types.insert(var_name.clone(), resolved);
+                                let dt = self.go_type_name_to_define_type(&resolved);
+                                self.global_var_struct_types.insert(var_name.clone(), dt);
                             }
                         }
                     }
@@ -1192,7 +1150,7 @@ impl WasmCompiler {
                     if let ast::Expression::Ident(pkg_id) = sel.x.as_ref() {
                         let qualified = format!("{}.{}", pkg_id.name, sel.sel.name);
                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                            if fi.result_go_types.iter().any(|t| t == "error") {
+                            if fi.result_define_types.iter().any(|dt| dt.resolved_name() == Some("error")) {
                                 return true;
                             }
                         }

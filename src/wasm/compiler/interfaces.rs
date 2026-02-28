@@ -111,14 +111,14 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::Ident(ident) => {
-                if let Some(st) = locals.get_var_struct_type(&ident.name) {
-                    if st == "__string" {
-                        return "string".to_string();
-                    }
-                    if st.starts_with("__") {
-                        return "int".to_string();
-                    }
-                    return st.to_string();
+                if locals.is_var_type_string(&ident.name) {
+                    return "string".to_string();
+                }
+                if let Some(sn) = locals.get_var_struct_name(&ident.name) {
+                    return sn.to_string();
+                }
+                if locals.get_var_type(&ident.name).is_some() {
+                    return "int".to_string();
                 }
                 if let Some(vt) = locals.find_type(&ident.name) {
                     return Self::type_id_for_val_type(vt).to_string();
@@ -138,11 +138,11 @@ impl WasmCompiler {
             ast::Expression::Call(call) => {
                 let go_type = if let ast::Expression::Ident(ident) = call.func.as_ref() {
                     self.find_func_in_pkg(&ident.name)
-                        .and_then(|fi| fi.result_go_types.first().cloned())
+                        .and_then(|fi| fi.result_define_types.first().map(|dt| dt.to_string()))
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     self.resolve_selector_method_name(sel, locals)
                         .and_then(|q| self.functions.iter().find(|f| f.name == q))
-                        .and_then(|fi| fi.result_go_types.first().cloned())
+                        .and_then(|fi| fi.result_define_types.first().map(|dt| dt.to_string()))
                 } else {
                     None
                 };
@@ -252,11 +252,7 @@ impl WasmCompiler {
 
     pub(crate) fn is_interface_var(&self, name: &str, locals: &LocalAlloc) -> bool {
         let sym_says = self.is_sym_interface_var(name);
-        let old_says = if let Some(st) = locals.get_var_struct_type(name) {
-            st == "__interface" || st.starts_with("__iface_")
-        } else {
-            false
-        };
+        let old_says = locals.is_var_type_interface(name);
         sym_says || old_says
     }
 
@@ -284,7 +280,7 @@ impl WasmCompiler {
             if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
                 if let Some(struct_def) = self.struct_defs.get(&type_name) {
                     if let Some(field) = struct_def.find_field(&sel.sel.name) {
-                        return field.go_type_tag.as_deref() == Some("__interface");
+                        return field.is_interface_field();
                     }
                 }
             }
@@ -296,36 +292,33 @@ impl WasmCompiler {
         if let ast::Expression::Call(call_expr) = expr {
             if let ast::Expression::Ident(fn_ident) = call_expr.func.as_ref() {
                 if let Some(fi) = self.functions.iter().find(|f| f.name == fn_ident.name) {
-                    if let Some(go_type) = fi.result_go_types.first() {
-                        return self.is_iface_go_type(go_type);
+                    if let Some(dt) = fi.result_define_types.first() {
+                        return dt.is_interface_type();
                     }
                 }
                 if let Some(fi) = self.find_func_in_pkg(&fn_ident.name) {
-                    if let Some(go_type) = fi.result_go_types.first() {
-                        return self.is_iface_go_type(go_type);
+                    if let Some(dt) = fi.result_define_types.first() {
+                        return dt.is_interface_type();
                     }
                 }
             } else if let ast::Expression::Selector(sel) = call_expr.func.as_ref() {
                 if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
                     if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                        if let Some(go_type) = fi.result_go_types.first() {
-                            return self.is_iface_go_type(go_type);
+                        if let Some(dt) = fi.result_define_types.first() {
+                            return dt.is_interface_type();
                         }
                     }
                 }
-                // Interface method call: check return type from method signatures
                 if let ast::Expression::Ident(recv_id) = sel.x.as_ref() {
                     if self.is_interface_var(&recv_id.name, locals) {
                         let method_name = &sel.sel.name;
-                        // Check all registered interface method sigs
                         for (_iface, sigs) in &self.iface_method_sigs {
                             if let Some((_params, results)) = sigs.get(method_name.as_str()) {
                                 if !results.is_empty() && results[0] == WasmType::I32 {
-                                    // Look at concrete implementations for the go_type
                                     for fi in &self.functions {
                                         if fi.name.ends_with(&format!(".{}", method_name)) && fi.recv_type.is_some() {
-                                            if let Some(go_type) = fi.result_go_types.first() {
-                                                if self.is_iface_go_type(go_type) {
+                                            if let Some(dt) = fi.result_define_types.first() {
+                                                if dt.is_interface_type() {
                                                     return true;
                                                 }
                                             }
@@ -721,7 +714,7 @@ impl WasmCompiler {
         {
             let val_local = locals.add_local(val_var, ValType::I32);
             let ok_local = locals.add_local(ok_var, ValType::I32);
-            locals.set_var_struct_type(val_var, "__interface");
+            locals.set_var_type(val_var, DefineType::Interface { name: String::new(), methods: vec![] });
 
             // Create a type_id local for the result interface variable
             let val_tid_local = locals.add_local(
@@ -788,11 +781,11 @@ impl WasmCompiler {
         let ok_local = locals.add_local(ok_var, ValType::I32);
 
         if self.struct_defs.contains_key(&lookup_type_name) {
-            locals.set_var_struct_type(val_var, &lookup_type_name);
+            locals.set_var_type(val_var, self.go_type_name_to_define_type(&lookup_type_name));
         } else {
             let resolved = self.resolve_struct_in_pkg(&lookup_type_name);
             if self.struct_defs.contains_key(&resolved) {
-                locals.set_var_struct_type(val_var, &resolved);
+                locals.set_var_type(val_var, self.go_type_name_to_define_type(&resolved));
             }
         }
 
@@ -1127,8 +1120,8 @@ impl WasmCompiler {
         }
 
         // Find all concrete types that implement this method
-        // Tuple: (type_id, func_idx, result_types, result_go_types, receiver_vt)
-        let candidates: Vec<(u32, u32, Vec<ValType>, Vec<String>, ValType)> = self
+        // Tuple: (type_id, func_idx, result_types, result_define_types, receiver_vt)
+        let candidates: Vec<(u32, u32, Vec<ValType>, Vec<DefineType>, ValType)> = self
             .functions
             .iter()
             .filter_map(|f| {
@@ -1139,7 +1132,7 @@ impl WasmCompiler {
                 let type_id = self.type_registry.get(type_name).copied()?;
                 let result_types: Vec<ValType> = f.results.iter().map(|r| r.to_val_type()).collect();
                 let recv_vt = f.params.first().map(|(_, wt)| wt.to_val_type()).unwrap_or(ValType::I32);
-                Some((type_id, f.wasm_func_idx, result_types, f.result_go_types.clone(), recv_vt))
+                Some((type_id, f.wasm_func_idx, result_types, f.result_define_types.clone(), recv_vt))
             })
             .collect();
 
@@ -1151,7 +1144,7 @@ impl WasmCompiler {
 
         // Track whether this method returns an interface type
         self.last_iface_call_returns_iface = candidates[0].3.first()
-            .map_or(false, |gt| self.is_iface_go_type(gt));
+            .map_or(false, |dt| dt.is_interface_type());
 
         // Determine result types from first candidate
         let result_vts: Vec<ValType> = candidates[0].2.clone();
@@ -1230,7 +1223,7 @@ impl WasmCompiler {
             out.push(Instruction::Else);
             {
                 // Fallback: if/else chain for types not in itab
-                for (type_id, func_idx, _result_types, _result_go_types, cand_recv_vt) in candidates.iter() {
+                for (type_id, func_idx, _result_types, _result_define_types, cand_recv_vt) in candidates.iter() {
                     let (_, cand_align) = Self::elem_size_and_align(*cand_recv_vt);
                     out.push(Instruction::LocalGet(tid_local));
                     out.push(Instruction::I32Const(*type_id as i32));
@@ -1255,7 +1248,7 @@ impl WasmCompiler {
             self.needs_func_table = true;
         } else {
             // Fallback: if/else chain on type_id (original behavior)
-            for (type_id, func_idx, _result_types, _result_go_types, cand_recv_vt) in candidates.iter() {
+            for (type_id, func_idx, _result_types, _result_define_types, cand_recv_vt) in candidates.iter() {
                 let (_, cand_align) = Self::elem_size_and_align(*cand_recv_vt);
                 out.push(Instruction::LocalGet(tid_local));
                 out.push(Instruction::I32Const(*type_id as i32));

@@ -641,7 +641,7 @@ impl WasmCompiler {
 
     pub(crate) fn is_complex64_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         if let ast::Expression::Ident(ident) = expr {
-            locals.get_var_struct_type(&ident.name) == Some("__complex64")
+            matches!(locals.get_var_type(&ident.name), Some(DefineType::Complex64))
         } else if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 if ident.name == "complex" {
@@ -658,8 +658,7 @@ impl WasmCompiler {
 
     pub(crate) fn is_complex_expr(&self, expr: &ast::Expression, locals: &LocalAlloc) -> bool {
         if let ast::Expression::Ident(ident) = expr {
-            let st = locals.get_var_struct_type(&ident.name);
-            st == Some("__complex64") || st == Some("__complex128")
+            matches!(locals.get_var_type(&ident.name), Some(DefineType::Complex64 | DefineType::Complex128))
         } else if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 return ident.name == "complex";
@@ -896,7 +895,7 @@ impl WasmCompiler {
         if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
             if let Some(struct_def) = self.struct_defs.get(&type_name) {
                 if let Some(field) = struct_def.find_field(&sel.sel.name) {
-                    return field.go_type_tag.as_deref() == Some("__slice");
+                    return field.is_slice_field();
                 }
             }
         }
@@ -907,7 +906,7 @@ impl WasmCompiler {
         if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
             if let Some(struct_def) = self.struct_defs.get(&type_name) {
                 if let Some(field) = struct_def.find_field(&sel.sel.name) {
-                    return field.go_type_tag.as_deref() == Some("__map");
+                    return field.is_map_field();
                 }
             }
         }
@@ -930,26 +929,26 @@ impl WasmCompiler {
                         return true;
                     }
                     if let Some(fi) = self.functions.iter().find(|f| f.name == ident.name && f.recv_type.is_none()) {
-                        if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                        if fi.result_define_types.first().map_or(false, |dt| dt.is_string_type()) {
                             return true;
                         }
                     }
                     if let Some(fi) = self.find_func_in_pkg(&ident.name) {
-                        if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                        if fi.result_define_types.first().map_or(false, |dt| dt.is_string_type()) {
                             return true;
                         }
                     }
                     false
                 } else if let ast::Expression::Selector(sel) = call.func.as_ref() {
                     if let ast::Expression::Ident(recv) = sel.x.as_ref() {
-                        if locals.get_var_struct_type(&recv.name) == Some("__context") {
+                        if matches!(locals.get_var_type(&recv.name), Some(DefineType::Struct { name, .. }) if name == "Context") {
                             return matches!(sel.sel.name.as_str(), "User" | "Schema" | "Database" | "QueryID" | "Config");
                         }
                         if self.is_interface_var(&recv.name, locals) {
                             let method_name = &sel.sel.name;
                             for fi in &self.functions {
                                 if fi.recv_type.is_some() && fi.name.ends_with(&format!(".{}", method_name)) {
-                                    if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                                    if fi.result_define_types.first().map_or(false, |dt| dt.is_string_type()) {
                                         return true;
                                     }
                                     return fi.results.len() == 2
@@ -961,13 +960,13 @@ impl WasmCompiler {
                     }
                     if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
                         if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                            if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                            if fi.result_define_types.first().map_or(false, |dt| dt.is_string_type()) {
                                 return true;
                             }
                             if fi.results.len() == 2
                                 && fi.results[0] == WasmType::I32
                                 && fi.results[1] == WasmType::I32
-                                && fi.result_go_types.first().map_or(false, |t| t == "string")
+                                && fi.result_define_types.first().map_or(false, |dt| dt.is_string_type())
                             {
                                 return true;
                             }
@@ -977,7 +976,7 @@ impl WasmCompiler {
                         let method_suffix = format!(".{}", sel.sel.name);
                         for fi in &self.functions {
                             if fi.recv_type.is_some() && fi.name.ends_with(&method_suffix) {
-                                if fi.result_go_types.first().map_or(false, |t| t == "string") {
+                                if fi.result_define_types.first().map_or(false, |dt| dt.is_string_type()) {
                                     return true;
                                 }
                             }
@@ -989,7 +988,7 @@ impl WasmCompiler {
                 }
             }
             ast::Expression::Ident(ident) => {
-                locals.get_var_struct_type(&ident.name) == Some("__string")
+                locals.is_var_type_string(&ident.name)
                     || locals.gc_string_locals.contains_key(&ident.name)
                     || self.global_vars.contains_key(&format!("{}_1", ident.name))
                     || self.global_vars.contains_key(&format!("{}_1", self.resolve_global_var_name(&ident.name)))
@@ -1024,7 +1023,7 @@ impl WasmCompiler {
                 if let Some(type_name) = self.infer_struct_type_from_expr(sel.x.as_ref(), locals) {
                     if let Some(sdef) = self.struct_defs.get(&type_name) {
                         if let Some(field) = sdef.find_field(&sel.sel.name) {
-                            return field.go_type_tag.as_deref() == Some("__string");
+                            return field.is_string_field();
                         }
                     }
                 }
@@ -1092,7 +1091,7 @@ impl WasmCompiler {
     pub(crate) fn get_struct_type_of_expr<'b>(&self, expr: &ast::Expression, locals: &'b LocalAlloc) -> Option<&'b str> {
         match expr {
             ast::Expression::Ident(ident) => {
-                let st = locals.get_var_struct_type(&ident.name)?;
+                let st = locals.get_var_struct_name(&ident.name)?;
                 if self.struct_defs.contains_key(st) {
                     Some(st)
                 } else {
@@ -1117,9 +1116,7 @@ impl WasmCompiler {
         }
         let sdef = self.struct_defs.get(lhs_type)?;
         for field in &sdef.fields {
-            if field.go_type_tag.as_deref() == Some("__slice")
-                || field.go_type_tag.as_deref() == Some("__map")
-            {
+            if field.is_slice_or_map_field() {
                 return None;
             }
         }
@@ -1164,7 +1161,7 @@ impl WasmCompiler {
 
             out.push(Instruction::Block(BlockType::Empty));
             for field in &sdef.fields {
-                if field.go_type_tag.as_deref() == Some("__string") && self.gc_builtin_types.go_string.is_some() {
+                if field.is_string_field() && self.gc_builtin_types.go_string.is_some() {
                     let go_string_idx = self.gc_builtin_types.go_string.unwrap();
                     let byte_array_idx = self.gc_builtin_types.byte_array.unwrap();
                     let gs_vt = Self::gc_ref_val_type(go_string_idx);
@@ -1286,7 +1283,7 @@ impl WasmCompiler {
             out.push(Instruction::Block(BlockType::Empty));
             for field in &sdef.fields {
                 let offset = field.offset as u64;
-                if field.go_type_tag.as_deref() == Some("__string") {
+                if field.is_string_field() {
                     out.push(Instruction::LocalGet(lhs_ptr));
                     out.push(Instruction::I32Load(MemArg { offset, align: 2, memory_index: 0 }));
                     let l_sptr = locals.add_local(&format!("__scf_lp_{}", locals.locals.len()), ValType::I32);
@@ -1650,7 +1647,7 @@ impl WasmCompiler {
                 ) {
                     if let Some(sdef) = self.struct_defs.get(&lhs_st) {
                         let uncomparable: Vec<&str> = sdef.fields.iter()
-                            .filter(|f| matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map")))
+                            .filter(|f| f.is_slice_or_map_field())
                             .map(|f| f.name.as_str())
                             .collect();
                         if !uncomparable.is_empty() {
@@ -2069,8 +2066,9 @@ impl WasmCompiler {
                 } else {
 
                 let is_struct_var = if let ast::Expression::Ident(id) = &*op.x {
-                    locals.get_var_struct_type(&id.name).map_or(false, |t| {
-                        self.struct_defs.contains_key(t) || t == "__slice" || t == "__map"
+                    locals.get_var_type(&id.name).map_or(false, |dt| {
+                        matches!(dt, DefineType::Slice(_) | DefineType::Map(_, _))
+                            || dt.resolved_name().map_or(false, |n| self.struct_defs.contains_key(n))
                     })
                 } else {
                     false
@@ -2080,8 +2078,8 @@ impl WasmCompiler {
                 // &slice[i] or &array[i]: compute element address in-place
                 let is_index_addr = if let ast::Expression::Index(idx) = &*op.x {
                     if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
-                        locals.get_var_struct_type(&id.name).map_or(false, |t| {
-                            t == "__slice" || t == "__array"
+                        locals.get_var_type(&id.name).map_or(false, |dt| {
+                            matches!(dt, DefineType::Slice(_) | DefineType::Array { .. })
                         }) || locals.array_info.contains_key(&id.name)
                             || locals.slice_elem_types.contains_key(&id.name)
                     } else { false }
@@ -2489,10 +2487,15 @@ impl WasmCompiler {
         }
 
         if let Some(type_name) = struct_type_name {
+            let type_name = if self.struct_defs.contains_key(&type_name) {
+                type_name
+            } else {
+                self.resolve_struct_in_pkg(&type_name)
+            };
             if let Some(struct_def) = self.struct_defs.get(&type_name).cloned() {
                 if let Some(gc_type_idx) = struct_def.gc_type_idx {
                     if let Some(field) = struct_def.find_field(&sel.sel.name) {
-                        if field.go_type_tag.as_deref() == Some("__string") {
+                        if field.is_string_field() {
                             if let Some(_go_string_idx) = self.gc_builtin_types.go_string {
                                 out.push(Instruction::StructGet {
                                     struct_type_index: gc_type_idx,
@@ -2518,7 +2521,7 @@ impl WasmCompiler {
                             return Ok(GoType::Int32);
                         }
 
-                        if field.go_type_tag.as_deref() == Some("__interface") {
+                        if field.is_interface_field() {
                             let ref_local = locals.add_local(
                                 &format!("__sel_iface_ref_{}", locals.locals.len()),
                                 Self::gc_ref_val_type(gc_type_idx),
@@ -2544,7 +2547,7 @@ impl WasmCompiler {
                         return Ok(GoType::Int32);
                     }
                 } else if let Some(field) = struct_def.find_field(&sel.sel.name) {
-                    if field.go_type_tag.as_deref() == Some("__string") {
+                    if field.is_string_field() {
                         let base_offset = field.offset as u64;
                         let base_local = locals.add_local(
                             &format!("__sel_str_base_{}", locals.locals.len()),
@@ -2570,7 +2573,7 @@ impl WasmCompiler {
                         return Ok(GoType::Int32);
                     }
 
-                    if field.go_type_tag.as_deref() == Some("__interface") {
+                    if field.is_interface_field() {
                         let base_offset = field.offset as u64;
                         let base_local = locals.add_local(
                             &format!("__sel_iface_base_{}", locals.locals.len()),
@@ -2639,7 +2642,7 @@ impl WasmCompiler {
 
         // Check if this is a method value (x.Method used as a value, not called)
         if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
-            let recv_type = locals.get_var_struct_type(&recv_ident.name)
+            let recv_type = locals.get_var_struct_name(&recv_ident.name)
                 .map(|s| s.to_string());
             if let Some(type_name) = recv_type {
                 let method_qname = format!("{}.{}", type_name, sel.sel.name);
@@ -3080,7 +3083,7 @@ impl WasmCompiler {
         } else {
             None
         };
-        locals.set_var_struct_type(&tmp_name, "__map");
+        locals.set_var_type(&tmp_name, DefineType::Map(Box::new(DefineType::Null), Box::new(DefineType::Null)));
         let nested = self.build_nested_map_type_info(map_type);
         locals.map_types.insert(tmp_name.clone(), MapTypeInfo {
             key_vt,
@@ -3275,10 +3278,7 @@ impl WasmCompiler {
                 indices.push(idx);
                 let has_companion = idx + 1 < sd.fields.len()
                     && sd.fields[idx + 1].name == format!("{}_{}", sd.fields[idx].name, 1)
-                    && matches!(
-                        sd.fields[idx].go_type_tag.as_deref(),
-                        Some("__string") | Some("__interface")
-                    );
+                    && (sd.fields[idx].is_string_field() || sd.fields[idx].is_interface_field());
                 if has_companion {
                     idx += 2;
                 } else {
@@ -3324,7 +3324,7 @@ impl WasmCompiler {
                 let inner_type_name = if let Some(ref key) = kv.key {
                     if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
                         struct_def.as_ref().and_then(|sd| sd.find_field(&key_ident.name)).and_then(|_| {
-                            locals.get_var_struct_type(&key_ident.name).map(|s| s.to_string())
+                            locals.get_var_struct_name(&key_ident.name).map(|s| s.to_string())
                         })
                     } else { None }
                 } else if let Some(ref sd) = struct_def {
@@ -3445,12 +3445,12 @@ impl WasmCompiler {
                 }
             }
 
-            // Determine offset, type, and go_type_tag from struct layout
-            let (offset, field_wasm_type, field_go_type_tag) = if let Some(ref key) = kv.key {
+            // Determine offset, type, and field_type from struct layout
+            let (offset, field_wasm_type, field_type) = if let Some(ref key) = kv.key {
                 if let ast::Element::Expr(ast::Expression::Ident(key_ident)) = key {
                     if let Some(ref sd) = struct_def {
                         if let Some(field) = sd.find_field(&key_ident.name) {
-                            (field.offset as u64, Some(field.wasm_type), field.go_type_tag.clone())
+                            (field.offset as u64, Some(field.wasm_type), field.field_type.clone())
                         } else {
                             return Err(Error::InternalError(format!(
                                 "unknown field '{}' in struct literal",
@@ -3473,7 +3473,7 @@ impl WasmCompiler {
                     (
                         sd.fields[fi].offset as u64,
                         Some(sd.fields[fi].wasm_type),
-                        sd.fields[fi].go_type_tag.clone(),
+                        sd.fields[fi].field_type.clone(),
                     )
                 } else {
                     return Err(Error::InternalError(format!(
@@ -3490,7 +3490,7 @@ impl WasmCompiler {
             };
 
             // String fields need special handling: store both ptr and len
-            if field_go_type_tag.as_deref() == Some("__string") {
+            if matches!(&field_type, Some(DefineType::String)) {
                 self.compile_expression(elem_expr, out, locals)?;
                 if let Some(go_string_idx) = self.gc_builtin_types.go_string {
                     self.emit_gc_string_to_linear(go_string_idx, out, locals)?;
@@ -3523,7 +3523,7 @@ impl WasmCompiler {
             }
 
             // Interface fields need special handling: store both data_ptr and type_id
-            if field_go_type_tag.as_deref() == Some("__interface") {
+            if matches!(&field_type, Some(DefineType::Interface { .. })) {
                 if let ast::Expression::Ident(iface_ident) = elem_expr {
                     if iface_ident.name == "nil" {
                         out.push(Instruction::LocalGet(ptr_local));
@@ -3549,7 +3549,7 @@ impl WasmCompiler {
                         // Concrete type being assigned to interface field: box it
                         self.compile_expression(elem_expr, out, locals)?;
                         let rhs_vt = self.infer_val_type(elem_expr, locals);
-                        let concrete_type = locals.get_var_struct_type(&iface_ident.name)
+                        let concrete_type = locals.get_var_struct_name(&iface_ident.name)
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| self.infer_concrete_type_name(elem_expr, locals));
                         let type_id = self.get_or_create_type_id(&concrete_type);
@@ -3669,25 +3669,23 @@ impl WasmCompiler {
                     } else { None };
 
                     if let Some(field) = field_info {
-                        if let Some(ref tag) = field.go_type_tag {
-                            if self.struct_defs.contains_key(tag) {
-                                if let Some(inner_sd) = self.struct_defs.get(tag).cloned() {
-                                    if let Some(inner_gc_idx) = inner_sd.gc_type_idx {
-                                        let inner_comp = ast::CompositeLit {
-                                            typ: Box::new(ast::Expression::Ident(ast::Ident {
-                                                pos: 0,
-                                                name: tag.clone(),
-                                            })),
-                                            val: lit.clone(),
-                                        };
-                                        out.push(Instruction::LocalGet(ref_local));
-                                        self.compile_gc_struct_lit(&inner_comp, inner_gc_idx, &inner_sd, out, locals)?;
-                                        out.push(Instruction::StructSet {
-                                            struct_type_index: gc_type_idx,
-                                            field_index: field.field_index,
-                                        });
-                                        continue;
-                                    }
+                        if let Some(tag) = field.struct_type_name() {
+                            if let Some(inner_sd) = self.struct_defs.get(&tag).cloned() {
+                                if let Some(inner_gc_idx) = inner_sd.gc_type_idx {
+                                    let inner_comp = ast::CompositeLit {
+                                        typ: Box::new(ast::Expression::Ident(ast::Ident {
+                                            pos: 0,
+                                            name: tag.clone(),
+                                        })),
+                                        val: lit.clone(),
+                                    };
+                                    out.push(Instruction::LocalGet(ref_local));
+                                    self.compile_gc_struct_lit(&inner_comp, inner_gc_idx, &inner_sd, out, locals)?;
+                                    out.push(Instruction::StructSet {
+                                        struct_type_index: gc_type_idx,
+                                        field_index: field.field_index,
+                                    });
+                                    continue;
                                 }
                             }
                         }
@@ -3719,9 +3717,8 @@ impl WasmCompiler {
 
             let field_index = field.field_index;
             let field_wt = field.wasm_type;
-            let go_type_tag = field.go_type_tag.clone();
 
-            if go_type_tag.as_deref() == Some("__string") {
+            if field.is_string_field() {
                 if self.gc_builtin_types.go_string.is_some() {
                     out.push(Instruction::LocalGet(ref_local));
                     self.compile_expression(elem_expr, out, locals)?;
@@ -3759,7 +3756,7 @@ impl WasmCompiler {
                 continue;
             }
 
-            if go_type_tag.as_deref() == Some("__interface") {
+            if field.is_interface_field() {
                 if let ast::Expression::Ident(iface_ident) = elem_expr {
                     if iface_ident.name == "nil" {
                         out.push(Instruction::LocalGet(ref_local));
@@ -3831,8 +3828,8 @@ impl WasmCompiler {
 
         // Detect __slice header variables so we can load data_ptr/len/cap from header
         let is_slice_header = if let ast::Expression::Ident(ident) = &*slice.left {
-            locals.get_var_struct_type(&ident.name) == Some("__slice")
-                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
+            locals.is_var_type_slice(&ident.name)
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map_or(false, |dt| matches!(dt, DefineType::Slice(_)))
         } else {
             false
         };
@@ -4140,7 +4137,7 @@ impl WasmCompiler {
 
         // Map indexing
         if let ast::Expression::Ident(ident) = left {
-            if locals.get_var_struct_type(&ident.name) == Some("__map") {
+            if locals.is_var_type_map(&ident.name) {
                 self.compile_map_get(&ident.name.clone(), &idx.index, out, locals)?;
                 return Ok(GoType::Int32);
             }
@@ -4149,7 +4146,7 @@ impl WasmCompiler {
         // Chained map indexing: m[k1][k2] where m is map[K]map[K2]V2
         if let ast::Expression::Index(outer_idx) = left {
             if let Some(ast::Expression::Ident(outer_ident)) = outer_idx.left.as_deref() {
-                if locals.get_var_struct_type(&outer_ident.name) == Some("__map") {
+                if locals.is_var_type_map(&outer_ident.name) {
                     if let Some(inner_mti) = locals.map_types.get(&outer_ident.name)
                         .and_then(|mti| mti.nested_map_val_type.clone())
                     {
@@ -4157,7 +4154,7 @@ impl WasmCompiler {
                         let tmp_name = format!("__chained_map_{}", locals.locals.len());
                         let tmp_local = locals.add_local(&tmp_name, ValType::I32);
                         out.push(Instruction::LocalSet(tmp_local));
-                        locals.set_var_struct_type(&tmp_name, "__map");
+                        locals.set_var_type(&tmp_name, DefineType::Map(Box::new(DefineType::Null), Box::new(DefineType::Null)));
                         locals.map_types.insert(tmp_name.clone(), *inner_mti);
                         self.compile_map_get(&tmp_name, &idx.index, out, locals)?;
                         return Ok(GoType::Int32);
@@ -4350,7 +4347,7 @@ impl WasmCompiler {
         if let ast::Expression::Index(outer_idx) = left {
             if let Some(outer_left) = outer_idx.left.as_deref() {
                 if let ast::Expression::Ident(outer_ident) = outer_left {
-                    if locals.get_var_struct_type(&outer_ident.name) == Some("__slice") {
+                    if locals.is_var_type_slice(&outer_ident.name) {
                         let outer_elem_vt = locals.slice_elem_types
                             .get(&outer_ident.name).copied().unwrap_or(ValType::I64);
                         if outer_elem_vt == ValType::I32 {
@@ -4397,8 +4394,8 @@ impl WasmCompiler {
         }
 
         let is_slice_header = if let ast::Expression::Ident(ident) = left {
-            locals.get_var_struct_type(&ident.name) == Some("__slice")
-                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
+            locals.is_var_type_slice(&ident.name)
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map_or(false, |dt| matches!(dt, DefineType::Slice(_)))
         } else {
             false
         };
@@ -4593,8 +4590,8 @@ impl WasmCompiler {
         }
 
         let is_slice_header = if let ast::Expression::Ident(ident) = left {
-            locals.get_var_struct_type(&ident.name) == Some("__slice")
-                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice")
+            locals.is_var_type_slice(&ident.name)
+                || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map_or(false, |dt| matches!(dt, DefineType::Slice(_)))
         } else {
             false
         };
@@ -4680,6 +4677,11 @@ impl WasmCompiler {
         let struct_type_name = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
 
         if let Some(type_name) = struct_type_name {
+            let type_name = if self.struct_defs.contains_key(&type_name) {
+                type_name
+            } else {
+                self.resolve_struct_in_pkg(&type_name)
+            };
             if let Some(struct_def) = self.struct_defs.get(&type_name) {
                 if let Some(field) = struct_def.find_field(&sel.sel.name) {
                     let offset = field.offset as u64;
@@ -4745,9 +4747,8 @@ impl WasmCompiler {
 
                         let sub_type = inner_field_name.and_then(|n| {
                             struct_def.and_then(|sd| sd.find_field(&n))
-                                .and_then(|f| f.go_type_tag.as_ref())
-                                .and_then(|tag| self.struct_defs.get(tag))
-                                .cloned()
+                                .and_then(|f| f.struct_type_name())
+                                .and_then(|tag| self.struct_defs.get(&tag).cloned())
                         });
 
                         let sub_off = if let Some(ref ikey) = inner_kv.key {
@@ -4835,13 +4836,13 @@ impl WasmCompiler {
     pub(crate) fn infer_selector_struct_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Option<String> {
         match expr {
             ast::Expression::Ident(ident) => {
-                locals.get_var_struct_type(&ident.name).map(|s| s.to_string())
+                locals.get_var_struct_name(&ident.name).map(|s| s.to_string())
             }
             ast::Expression::Selector(sel) => {
                 let parent_type = self.infer_selector_struct_type(sel.x.as_ref(), locals)?;
                 let sdef = self.struct_defs.get(&parent_type)?;
                 let field = sdef.fields.iter().find(|f| f.name == sel.sel.name)?;
-                field.go_type_tag.clone()
+                field.struct_type_name()
             }
             _ => None,
         }
@@ -4849,20 +4850,21 @@ impl WasmCompiler {
 
     pub(crate) fn infer_deref_type(&self, expr: &ast::Expression, locals: &LocalAlloc) -> ValType {
         if let ast::Expression::Ident(ident) = expr {
-            if let Some(type_name) = locals.get_var_struct_type(&ident.name) {
-                if self.struct_defs.contains_key(type_name)
-                    || type_name == "__context"
-                    || type_name == "__slice"
-                    || type_name == "__string"
+            if let Some(dt) = locals.get_var_type(&ident.name) {
+                if matches!(dt, DefineType::Slice(_) | DefineType::String)
+                    || dt.resolved_name().map_or(false, |n| self.struct_defs.contains_key(n) || n == "Context")
                 {
                     return ValType::I32;
                 }
-                return match type_name {
-                    "__ptr_i64" => ValType::I64,
-                    "__ptr_f32" => ValType::F32,
-                    "__ptr_f64" => ValType::F64,
-                    _ => ValType::I32,
-                };
+                if let DefineType::Ref(inner) = dt {
+                    return match inner.as_ref() {
+                        DefineType::Int64 | DefineType::Uint64 | DefineType::Int | DefineType::Uint => ValType::I64,
+                        DefineType::Float32 => ValType::F32,
+                        DefineType::Float64 => ValType::F64,
+                        _ => ValType::I32,
+                    };
+                }
+                return ValType::I32;
             }
         }
         ValType::I32
@@ -5060,13 +5062,13 @@ impl WasmCompiler {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 if let Some(fi) = self.find_func_in_pkg(&ident.name) {
-                    return fi.result_go_types.clone();
+                    return fi.result_define_types.iter().map(|dt| dt.to_string()).collect();
                 }
             }
             if let ast::Expression::Selector(sel) = call.func.as_ref() {
                 if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
                     if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                        return fi.result_go_types.clone();
+                        return fi.result_define_types.iter().map(|dt| dt.to_string()).collect();
                     }
                 }
             }
@@ -5076,7 +5078,7 @@ impl WasmCompiler {
 
     pub(crate) fn resolve_selector_method_name(&self, sel: &ast::Selector, locals: &LocalAlloc) -> Option<String> {
         if let ast::Expression::Ident(recv_ident) = sel.x.as_ref() {
-            if let Some(type_name) = locals.get_var_struct_type(&recv_ident.name) {
+            if let Some(type_name) = locals.get_var_struct_name(&recv_ident.name) {
                 let unresolved = format!("{}.{}", type_name, sel.sel.name);
                 if self.functions.iter().any(|f| f.name == unresolved) {
                     return Some(unresolved);

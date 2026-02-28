@@ -29,7 +29,7 @@ pub(crate) struct FuncInfo {
     pub(crate) name: String,
     pub(crate) params: Vec<(String, WasmType)>,
     pub(crate) results: Vec<WasmType>,
-    pub(crate) result_go_types: Vec<String>,
+    pub(crate) result_define_types: Vec<DefineType>,
     pub(crate) is_exported: bool,
     pub(crate) recv_type: Option<String>,
     pub(crate) is_variadic: bool,
@@ -63,9 +63,53 @@ pub(crate) struct StructFieldDef {
     pub(crate) name: String,
     pub(crate) wasm_type: WasmType,
     offset: u32,
-    pub(crate) go_type_tag: Option<String>,
+    pub(crate) field_type: Option<DefineType>,
     pub(crate) field_index: u32,
-    pub(crate) slice_elem_type_tag: Option<String>,
+}
+
+impl StructFieldDef {
+    pub(crate) fn is_string_field(&self) -> bool {
+        matches!(&self.field_type, Some(DefineType::String))
+    }
+    pub(crate) fn is_slice_field(&self) -> bool {
+        matches!(&self.field_type, Some(DefineType::Slice(_)))
+    }
+    pub(crate) fn is_map_field(&self) -> bool {
+        matches!(&self.field_type, Some(DefineType::Map(_, _)))
+    }
+    pub(crate) fn is_interface_field(&self) -> bool {
+        matches!(&self.field_type, Some(DefineType::Interface { .. }))
+    }
+    pub(crate) fn is_pointer_field(&self) -> bool {
+        matches!(&self.field_type, Some(DefineType::Ref(_)))
+    }
+    pub(crate) fn is_slice_or_map_field(&self) -> bool {
+        self.is_slice_field() || self.is_map_field()
+    }
+    pub(crate) fn struct_type_name(&self) -> Option<String> {
+        self.field_type.as_ref().and_then(|dt| dt.resolved_name().map(|s| s.to_string()))
+    }
+    pub(crate) fn slice_elem_struct_name(&self) -> Option<String> {
+        self.field_type.as_ref()
+            .and_then(|dt| dt.slice_elem_type())
+            .and_then(|inner| inner.resolved_name().map(|s| s.to_string()))
+    }
+    pub(crate) fn pointee_struct_name(&self) -> Option<String> {
+        self.field_type.as_ref()
+            .and_then(|dt| dt.pointee_type())
+            .and_then(|inner| inner.resolved_name().map(|s| s.to_string()))
+    }
+    pub(crate) fn go_type_tag_compat(&self) -> Option<&str> {
+        match &self.field_type {
+            Some(DefineType::String) => Some("__string"),
+            Some(DefineType::Slice(_)) => Some("__slice"),
+            Some(DefineType::Map(_, _)) => Some("__map"),
+            Some(DefineType::Interface { .. }) => Some("__interface"),
+            Some(DefineType::Ref(_)) => Some("__ptr"),
+            Some(dt) => dt.resolved_name(),
+            None => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -314,7 +358,7 @@ pub(crate) struct LocalAlloc {
     scope_depth: u32,
     next_scope_id: u32,
     scope_stack: Vec<u32>,
-    var_types: HashMap<String, String>,
+    var_types: HashMap<String, DefineType>,
     closure_info: HashMap<String, (u32, u32)>,
     closure_env_captures: HashMap<String, Vec<(String, u32, ValType)>>,
     method_expr_vars: std::collections::HashSet<String>,
@@ -323,13 +367,12 @@ pub(crate) struct LocalAlloc {
     nested_slice_inner_elem_types: HashMap<String, ValType>,
     string_locals: HashMap<String, (u32, u32)>,
     pub(crate) gc_string_locals: HashMap<String, u32>,
-    unsigned_vars: std::collections::HashSet<String>,
+    pub(crate) unsigned_vars: std::collections::HashSet<String>,
     map_types: HashMap<String, MapTypeInfo>,
     array_info: HashMap<String, (ValType, u32, i32, u32)>, // (elem_vt, array_length, go_elem_size, go_elem_align)
     nested_array_inner_info: HashMap<String, (ValType, u32)>, // inner (elem_type, inner_length) for [M][N]T
     rune_slices: std::collections::HashSet<String>,
     memory_backed_vars: HashMap<String, (u32, ValType)>,
-    pointer_to_struct_vars: std::collections::HashSet<String>,
     pub(crate) func_typed_params: HashMap<String, FuncTypedParamInfo>,
     pub(crate) iface_type_id_locals: HashMap<String, u32>,
 }
@@ -357,7 +400,6 @@ impl LocalAlloc {
             nested_array_inner_info: HashMap::new(),
             rune_slices: HashSet::new(),
             memory_backed_vars: HashMap::new(),
-            pointer_to_struct_vars: HashSet::new(),
             func_typed_params: HashMap::new(),
             iface_type_id_locals: HashMap::new(),
         }
@@ -450,12 +492,43 @@ impl LocalAlloc {
         self.locals.iter().map(|(_, vt, _)| (1, *vt)).collect()
     }
 
-    pub(crate) fn set_var_struct_type(&mut self, name: &str, type_name: &str) {
-        self.var_types.insert(name.to_string(), type_name.to_string());
+    pub(crate) fn set_var_type(&mut self, name: &str, dt: DefineType) {
+        self.var_types.insert(name.to_string(), dt);
     }
 
-    pub(crate) fn get_var_struct_type(&self, name: &str) -> Option<&str> {
-        self.var_types.get(name).map(|s| s.as_str())
+    pub(crate) fn get_var_type(&self, name: &str) -> Option<&DefineType> {
+        self.var_types.get(name)
+    }
+
+    pub(crate) fn get_var_struct_name(&self, name: &str) -> Option<&str> {
+        self.var_types.get(name).and_then(|dt| match dt {
+            DefineType::Struct { name, .. } | DefineType::Spec { name, .. } => Some(name.as_str()),
+            DefineType::Ref(inner) => match inner.as_ref() {
+                DefineType::Struct { name, .. } | DefineType::Spec { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    pub(crate) fn is_pointer_to_struct(&self, name: &str) -> bool {
+        matches!(self.get_var_type(name), Some(DefineType::Ref(_)))
+    }
+
+    pub(crate) fn is_var_type_slice(&self, name: &str) -> bool {
+        matches!(self.get_var_type(name), Some(DefineType::Slice(_)))
+    }
+
+    pub(crate) fn is_var_type_map(&self, name: &str) -> bool {
+        matches!(self.get_var_type(name), Some(DefineType::Map(_, _)))
+    }
+
+    pub(crate) fn is_var_type_string(&self, name: &str) -> bool {
+        matches!(self.get_var_type(name), Some(DefineType::String))
+    }
+
+    pub(crate) fn is_var_type_interface(&self, name: &str) -> bool {
+        matches!(self.get_var_type(name), Some(DefineType::Interface { .. }))
     }
 
     pub(crate) fn all_entries(&self) -> Vec<(String, ValType)> {
@@ -521,11 +594,11 @@ pub struct WasmCompiler {
     global_vars: HashMap<String, (u32, ValType)>,
     global_array_elem_types: HashMap<String, (ValType, i32, u32)>,
     global_slice_elem_struct_types: HashMap<String, String>,
-    global_var_struct_types: HashMap<String, String>,
+    global_var_struct_types: HashMap<String, DefineType>,
     current_iota: Option<i128>,
     named_returns: Vec<(String, ValType)>,
     current_result_types: Vec<ValType>,
-    current_result_go_types: Vec<String>,
+    current_result_define_types: Vec<DefineType>,
 
     // Named type definitions: type MyInt int → "MyInt" → ("int", is_alias)
     type_aliases: HashMap<String, (String, bool)>,
@@ -686,7 +759,7 @@ impl WasmCompiler {
             current_iota: None,
             named_returns: Vec::new(),
             current_result_types: Vec::new(),
-            current_result_go_types: Vec::new(),
+            current_result_define_types: Vec::new(),
 
             type_aliases: HashMap::new(),
             named_composite_types: HashMap::new(),
@@ -786,6 +859,10 @@ impl WasmCompiler {
 
     pub(crate) fn is_map_var(&self, name: &str) -> bool {
         matches!(self.resolve_var_type(name), Some(DefineType::Map(_, _)))
+    }
+
+    pub(crate) fn is_pointer_var(&self, name: &str) -> bool {
+        matches!(self.resolve_var_type(name), Some(DefineType::Ref(_)))
     }
 
     pub(crate) fn is_array_var(&self, name: &str) -> bool {
@@ -1188,8 +1265,8 @@ impl WasmCompiler {
         let subtypes: Vec<SubType> = struct_names.iter().map(|name| {
             let sd = self.struct_defs.get(name).unwrap();
             let fields: Vec<FieldType> = sd.fields.iter().map(|f| {
-                let storage = if let Some(ref tag) = f.go_type_tag {
-                    if let Some(&gc_idx) = name_to_gc_idx.get(tag.as_str()) {
+                let storage = if let Some(tag) = f.go_type_tag_compat() {
+                    if let Some(&gc_idx) = name_to_gc_idx.get(tag) {
                         StorageType::Val(Self::gc_ref_val_type(gc_idx))
                     } else {
                         wasm_type_to_storage(f.wasm_type)
@@ -1224,8 +1301,8 @@ impl WasmCompiler {
             if let Some(sd) = self.struct_defs.get_mut(name) {
                 sd.gc_type_idx = Some(gc_idx);
                 for f in &mut sd.fields {
-                    if let Some(ref tag) = f.go_type_tag {
-                        if let Some(&ref_gc_idx) = name_to_gc_idx.get(tag.as_str()) {
+                    if let Some(tag) = f.go_type_tag_compat() {
+                        if let Some(&ref_gc_idx) = name_to_gc_idx.get(tag) {
                             f.wasm_type = WasmType::Ref(ref_gc_idx);
                         }
                     }
@@ -1247,8 +1324,8 @@ impl WasmCompiler {
         self.next_type_idx += 1;
 
         let gc_fields: Vec<FieldType> = sd.fields.iter().map(|f| {
-            let storage = if let Some(ref tag) = f.go_type_tag {
-                if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag.as_str()) {
+            let storage = if let Some(tag) = f.go_type_tag_compat() {
+                if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag) {
                     StorageType::Val(Self::gc_ref_val_type(ref_gc_idx))
                 } else {
                     match f.wasm_type {
@@ -1277,8 +1354,8 @@ impl WasmCompiler {
         if let Some(sd) = self.struct_defs.get_mut(name) {
             sd.gc_type_idx = Some(gc_idx);
             for f in &mut sd.fields {
-                if let Some(ref tag) = f.go_type_tag {
-                    if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag.as_str()) {
+                if let Some(tag) = f.go_type_tag_compat() {
+                    if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag) {
                         f.wasm_type = WasmType::Ref(ref_gc_idx);
                     }
                 }
@@ -1655,7 +1732,7 @@ impl WasmCompiler {
             name: name.to_string(),
             params: vec![],
             results: vec![WasmType::I32],
-            result_go_types: vec![],
+            result_define_types: vec![],
             is_exported: true,
             recv_type: None,
             is_variadic: false,
@@ -1774,7 +1851,7 @@ impl WasmCompiler {
     }
 
     fn resolve_udf_field_type(&self, sf: &StructFieldDef) -> String {
-        if let Some(ref tag) = sf.go_type_tag {
+        if let Some(tag) = sf.go_type_tag_compat() {
             if tag == "time.Time" {
                 return "timestamp".to_string();
             }
@@ -1905,9 +1982,7 @@ impl WasmCompiler {
                 "string" => (8, true, vec![CmpField { offset: 0, kind: CmpFieldKind::String }]),
                 _ => {
                     if let Some(sdef) = self.struct_defs.get(type_name).or_else(|| self.struct_defs.get(resolved.as_str())) {
-                        let has_noncomparable = sdef.fields.iter().any(|f| {
-                            matches!(f.go_type_tag.as_deref(), Some("__slice") | Some("__map"))
-                        });
+                        let has_noncomparable = sdef.fields.iter().any(|f| f.is_slice_or_map_field());
                         if has_noncomparable {
                             (sdef.total_size, false, vec![])
                         } else {
@@ -1919,14 +1994,14 @@ impl WasmCompiler {
                                     continue;
                                 }
                                 let offset = field.offset;
-                                if field.go_type_tag.as_deref() == Some("__string") {
+                                if field.is_string_field() {
                                     fields.push(CmpField { offset, kind: CmpFieldKind::String });
                                     skip_next = true;
-                                } else if field.go_type_tag.as_deref() == Some("__interface") {
+                                } else if field.is_interface_field() {
                                     fields.push(CmpField { offset, kind: CmpFieldKind::Interface });
                                     skip_next = true;
-                                } else if let Some(ref tag) = field.go_type_tag {
-                                    if let Some(&nested_tid) = self.type_registry.get(tag.as_str()) {
+                                } else if let Some(tag) = field.go_type_tag_compat() {
+                                    if let Some(&nested_tid) = self.type_registry.get(tag) {
                                         fields.push(CmpField { offset, kind: CmpFieldKind::Struct(nested_tid) });
                                     } else {
                                         fields.push(CmpField { offset, kind: CmpFieldKind::I32 });

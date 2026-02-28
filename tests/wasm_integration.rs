@@ -29781,3 +29781,30 @@ func TestFormatBool(b bool) string {
     };
     assert_eq!(n, -9999, "Atoi(\"abc\") should return error sentinel");
 }
+
+#[test]
+fn test_time_import_compiles() {
+    let source = r#"
+package main
+
+import "time"
+
+type Record struct {
+    ID        int64
+    Name      string
+    CreatedAt time.Time
+}
+
+func ProcessRecords(records []Record) []Record {
+    return records
+}
+"#;
+
+    let mut compiler = WasmCompiler::new();
+    let result = compiler.compile_source(source);
+    match &result {
+        Ok(_) => eprintln!("test_time_import_compiles: compilation succeeded"),
+        Err(e) => eprintln!("test_time_import_compiles: compilation failed: {:?}", e),
+    }
+    result.expect("time import should compile successfully");
+}

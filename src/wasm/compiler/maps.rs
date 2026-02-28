@@ -121,7 +121,7 @@ impl WasmCompiler {
                             locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, ValType::I32))
                         };
                         let key_len_local = locals.add_local(&format!("{}__str_len", ident.name), ValType::I32);
-                        locals.set_var_struct_type(&ident.name, "__string");
+                        locals.set_var_type(&ident.name, DefineType::String);
                         locals.string_locals.insert(ident.name.clone(), (key_local, key_len_local));
                         out.push(Instruction::LocalGet(entry_local));
                         out.push(Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
@@ -156,7 +156,7 @@ impl WasmCompiler {
                             locals.find(&ident.name).unwrap_or_else(|| locals.add_local(&ident.name, ValType::I32))
                         };
                         let val_len_local = locals.add_local(&format!("{}__str_len", ident.name), ValType::I32);
-                        locals.set_var_struct_type(&ident.name, "__string");
+                        locals.set_var_type(&ident.name, DefineType::String);
                         locals.string_locals.insert(ident.name.clone(), (val_local, val_len_local));
                         out.push(Instruction::LocalGet(entry_local));
                         out.push(Instruction::I32Load(MemArg { offset: val_offset, align: 2, memory_index: 0 }));
@@ -526,7 +526,7 @@ impl WasmCompiler {
         };
         let val_len_local = if mti.is_string_val {
             let vl = locals.add_local(&format!("{}__str_len", val_var), ValType::I32);
-            locals.set_var_struct_type(val_var, "__string");
+            locals.set_var_type(val_var, DefineType::String);
             locals.string_locals.insert(val_var.to_string(), (val_local, vl));
             Some(vl)
         } else {

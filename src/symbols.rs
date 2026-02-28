@@ -566,6 +566,63 @@ impl DefineType {
     pub fn is_var(&self) -> bool { matches!(self, Self::Qualified(Qualifier::Var, _)) }
     pub fn is_variadic(&self) -> bool { matches!(self, Self::Variadic(_)) }
 
+    pub fn is_string_type(&self) -> bool { matches!(self, Self::String) }
+    pub fn is_map_type(&self) -> bool { matches!(self, Self::Map(_, _)) }
+    pub fn is_pointer(&self) -> bool { matches!(self, Self::Ref(_)) }
+    pub fn is_interface_type(&self) -> bool { matches!(self, Self::Interface { .. }) }
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, Self::Uint | Self::Uint8 | Self::Uint16 | Self::Uint32 | Self::Uint64 | Self::Uintptr | Self::Byte)
+    }
+
+    pub fn struct_name(&self) -> Option<&str> {
+        match self {
+            Self::Struct { name, .. } => Some(name),
+            Self::Ref(inner) => inner.struct_name(),
+            Self::Spec { name, .. } => Some(name),
+            Self::Qualified(_, inner) => inner.struct_name(),
+            _ => None,
+        }
+    }
+
+    pub fn pointee_type(&self) -> Option<&DefineType> {
+        match self {
+            Self::Ref(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn slice_elem_type(&self) -> Option<&DefineType> {
+        match self {
+            Self::Slice(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn map_key_type(&self) -> Option<&DefineType> {
+        match self {
+            Self::Map(k, _) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub fn map_val_type(&self) -> Option<&DefineType> {
+        match self {
+            Self::Map(_, v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn resolved_name(&self) -> Option<&str> {
+        match self {
+            Self::Struct { name, .. } => Some(name),
+            Self::Spec { name, .. } => Some(name),
+            Self::Interface { name, .. } if !name.is_empty() => Some(name),
+            Self::Ref(inner) => inner.resolved_name(),
+            Self::Qualified(_, inner) => inner.resolved_name(),
+            _ => None,
+        }
+    }
+
     pub fn as_variadic(&self) -> Result<DefineType, Error> {
         match &self {
             Self::Variadic(t) => Ok(*t.clone()),

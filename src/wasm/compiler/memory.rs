@@ -68,10 +68,10 @@ impl WasmCompiler {
     }
 
     pub(crate) fn get_value_copy_size(&self, var_name: &str, locals: &LocalAlloc) -> Option<u32> {
-        if locals.pointer_to_struct_vars.contains(var_name) {
+        if locals.is_pointer_to_struct(var_name) {
             return None;
         }
-        if let Some(type_name) = locals.get_var_struct_type(var_name) {
+        if let Some(type_name) = locals.get_var_struct_name(var_name) {
             if let Some(sd) = self.struct_defs.get(type_name) {
                 return Some(sd.total_size);
             }
@@ -84,10 +84,10 @@ impl WasmCompiler {
     }
 
     pub(crate) fn get_gc_copy_info(&self, var_name: &str, locals: &LocalAlloc) -> Option<(u32, StructDef)> {
-        if locals.pointer_to_struct_vars.contains(var_name) {
+        if locals.is_pointer_to_struct(var_name) {
             return None;
         }
-        if let Some(type_name) = locals.get_var_struct_type(var_name) {
+        if let Some(type_name) = locals.get_var_struct_name(var_name) {
             if let Some(sd) = self.struct_defs.get(type_name) {
                 if let Some(gc_idx) = sd.gc_type_idx {
                     return Some((gc_idx, sd.clone()));

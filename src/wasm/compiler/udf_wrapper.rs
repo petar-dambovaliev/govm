@@ -1,5 +1,5 @@
 use crate::parser::ast;
-use crate::symbols::Error;
+use crate::symbols::{DefineType, Error};
 use crate::wasm::types::WasmType;
 use wasm_encoder::{
     BlockType, ExportKind, Function, HeapType, Instruction, MemArg, ValType,
@@ -342,7 +342,7 @@ impl WasmCompiler {
 
             match sf.wasm_type {
                 WasmType::I32 => {
-                    let go_tag = sf.go_type_tag.as_deref().unwrap_or("int32");
+                    let go_tag = sf.go_type_tag_compat().unwrap_or("int32");
                     if go_tag == "bool" {
                         // Bool: one byte per value
                         func.instruction(&Instruction::LocalGet(local_col_data_ptr));
@@ -644,7 +644,7 @@ impl WasmCompiler {
 
                 let is_string = matches!(sf.wasm_type, WasmType::Ref(idx) if Some(idx) == self.gc_builtin_types.go_string);
                 let is_timestamp = matches!(sf.wasm_type, WasmType::Ref(idx) if self.is_time_struct(idx));
-                let go_tag = sf.go_type_tag.as_deref().unwrap_or("int32");
+                let go_tag = sf.go_type_tag_compat().unwrap_or("int32");
                 let is_bool = go_tag == "bool" && sf.wasm_type == WasmType::I32;
 
                 let (type_tag, elem_size) = if is_string {
@@ -1081,7 +1081,7 @@ impl WasmCompiler {
             name: wrapper_name,
             params: vec![("header_ptr".to_string(), WasmType::I32)],
             results: vec![WasmType::I32],
-            result_go_types: vec!["int32".to_string()],
+            result_define_types: vec![DefineType::Int32],
             is_exported: true,
             recv_type: None,
             is_variadic: false,

@@ -31,8 +31,8 @@ impl WasmCompiler {
                 }
             }
             if !done {
-                let is_slice = locals.get_var_struct_type(&ident.name) == Some("__slice")
-                    || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice");
+                let is_slice = locals.is_var_type_slice(&ident.name)
+                    || matches!(self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)), Some(DefineType::Slice(_)));
                 if is_slice {
                     self.compile_expression(arg, out, locals)?;
                     out.push(Instruction::I32Load(MemArg {
@@ -43,7 +43,7 @@ impl WasmCompiler {
                     done = true;
                 }
             }
-            if !done && locals.get_var_struct_type(&ident.name) == Some("__map") {
+            if !done && locals.is_var_type_map(&ident.name) {
                 self.compile_expression(arg, out, locals)?;
                 let map_ptr = locals.add_local(
                     &format!("__len_map_{}", locals.locals.len()),
@@ -160,8 +160,8 @@ impl WasmCompiler {
                 done = true;
             }
             if !done {
-                let is_slice = locals.get_var_struct_type(&ident.name) == Some("__slice")
-                    || self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)).map(|s| s.as_str()) == Some("__slice");
+                let is_slice = locals.is_var_type_slice(&ident.name)
+                    || matches!(self.global_var_struct_types.get(&self.resolve_global_var_name(&ident.name)), Some(DefineType::Slice(_)));
                 if is_slice {
                     self.compile_expression(arg, out, locals)?;
                     out.push(Instruction::I32Load(MemArg {
