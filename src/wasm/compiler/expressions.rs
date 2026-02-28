@@ -5062,13 +5062,13 @@ impl WasmCompiler {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 if let Some(fi) = self.find_func_in_pkg(&ident.name) {
-                    return fi.result_define_types.iter().map(|dt| dt.to_string()).collect();
+                    return fi.result_define_types.iter().map(|dt| dt.go_type_string()).collect();
                 }
             }
             if let ast::Expression::Selector(sel) = call.func.as_ref() {
                 if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
                     if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                        return fi.result_define_types.iter().map(|dt| dt.to_string()).collect();
+                        return fi.result_define_types.iter().map(|dt| dt.go_type_string()).collect();
                     }
                 }
             }

@@ -623,6 +623,35 @@ impl DefineType {
         }
     }
 
+    pub fn go_type_string(&self) -> String {
+        match self {
+            Self::Int => "int".to_string(),
+            Self::Int8 => "int8".to_string(),
+            Self::Int16 => "int16".to_string(),
+            Self::Int32 => "int32".to_string(),
+            Self::Int64 => "int64".to_string(),
+            Self::Uint => "uint".to_string(),
+            Self::Uint8 | Self::Byte => "uint8".to_string(),
+            Self::Uint16 => "uint16".to_string(),
+            Self::Uint32 | Self::Uintptr => "uint32".to_string(),
+            Self::Uint64 => "uint64".to_string(),
+            Self::Float32 => "float32".to_string(),
+            Self::Float64 => "float64".to_string(),
+            Self::Bool => "bool".to_string(),
+            Self::String => "string".to_string(),
+            Self::Complex64 => "complex64".to_string(),
+            Self::Complex128 => "complex128".to_string(),
+            Self::Rune => "rune".to_string(),
+            Self::Struct { name, .. } | Self::Spec { name, .. } => name.clone(),
+            Self::Interface { name, .. } => name.clone(),
+            Self::Slice(inner) => format!("[]{}", inner.go_type_string()),
+            Self::Map(k, v) => format!("map[{}]{}", k.go_type_string(), v.go_type_string()),
+            Self::Ref(inner) => format!("*{}", inner.go_type_string()),
+            Self::Array { inner_type, len } => format!("[{}]{}", len, inner_type.go_type_string()),
+            _ => String::new(),
+        }
+    }
+
     pub fn as_variadic(&self) -> Result<DefineType, Error> {
         match &self {
             Self::Variadic(t) => Ok(*t.clone()),
