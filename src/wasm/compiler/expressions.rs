@@ -2088,8 +2088,8 @@ impl WasmCompiler {
                 if is_index_addr {
                     if let ast::Expression::Index(idx) = &*op.x {
                         let is_gc_struct_elem = if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
-                            locals.slice_elem_struct_types.get(&id.name)
-                                .and_then(|st| self.struct_defs.get(st))
+                            locals.get_slice_elem_struct_name(&id.name)
+                                .and_then(|st| self.struct_defs.get(&st))
                                 .map_or(false, |sd| sd.gc_type_idx.is_some())
                         } else { false };
 
@@ -4999,11 +4999,11 @@ impl WasmCompiler {
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg) = sel.x.as_ref() {
                     let qualified = format!("{}.{}", pkg.name, sel.sel.name);
-                    if let Some(t) = self.constant_types.get(&sel.sel.name) {
-                        return Some(t.clone());
+                    if let Some(dt) = self.constant_types.get(&sel.sel.name) {
+                        return Some(dt.go_type_string());
                     }
-                    if let Some(t) = self.constant_types.get(&qualified) {
-                        return Some(t.clone());
+                    if let Some(dt) = self.constant_types.get(&qualified) {
+                        return Some(dt.go_type_string());
                     }
                 }
                 None
@@ -5044,12 +5044,12 @@ impl WasmCompiler {
         }
     }
 
-    pub(crate) fn count_go_level_returns(go_types: &[String], gc_strings: bool) -> usize {
+    pub(crate) fn count_go_level_returns_dt(define_types: &[DefineType], gc_strings: bool) -> usize {
         let mut count = 0;
         let mut i = 0;
-        while i < go_types.len() {
+        while i < define_types.len() {
             count += 1;
-            if !gc_strings && go_types[i] == "string" {
+            if !gc_strings && matches!(define_types[i], DefineType::String) {
                 i += 2;
             } else {
                 i += 1;
@@ -5058,17 +5058,17 @@ impl WasmCompiler {
         count
     }
 
-    pub(crate) fn call_return_go_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<String> {
+    pub(crate) fn call_return_define_types(&self, expr: &ast::Expression, locals: &LocalAlloc) -> Vec<DefineType> {
         if let ast::Expression::Call(call) = expr {
             if let ast::Expression::Ident(ident) = call.func.as_ref() {
                 if let Some(fi) = self.find_func_in_pkg(&ident.name) {
-                    return fi.result_define_types.iter().map(|dt| dt.go_type_string()).collect();
+                    return fi.result_define_types.clone();
                 }
             }
             if let ast::Expression::Selector(sel) = call.func.as_ref() {
                 if let Some(qualified) = self.resolve_selector_method_name(sel, locals) {
                     if let Some(fi) = self.functions.iter().find(|f| f.name == qualified) {
-                        return fi.result_define_types.iter().map(|dt| dt.go_type_string()).collect();
+                        return fi.result_define_types.clone();
                     }
                 }
             }

@@ -116,9 +116,18 @@ impl WasmCompiler {
             Error::InternalError(format!("struct def for '{}' not found", input_struct_name))
         })?;
 
-        let input_gc_type_idx = input_sd.gc_type_idx.ok_or_else(|| {
-            Error::InternalError(format!("GC type for struct '{}' not found", input_struct_name))
-        })?;
+        let input_gc_type_idx = match input_sd.gc_type_idx {
+            Some(idx) => idx,
+            None => {
+                if let Some(&idx) = self.gc_struct_types.get(&input_struct_name) {
+                    idx
+                } else {
+                    return Err(Error::InternalError(format!(
+                        "GC type for struct '{}' not found", input_struct_name
+                    )));
+                }
+            }
+        };
 
         let input_gc_vt = Self::gc_ref_val_type(input_gc_type_idx);
 
@@ -342,8 +351,8 @@ impl WasmCompiler {
 
             match sf.wasm_type {
                 WasmType::I32 => {
-                    let go_tag = sf.go_type_tag_compat().unwrap_or("int32");
-                    if go_tag == "bool" {
+                    let is_bool = matches!(&sf.field_type, Some(DefineType::Bool));
+                    if is_bool {
                         // Bool: one byte per value
                         func.instruction(&Instruction::LocalGet(local_col_data_ptr));
                         func.instruction(&Instruction::LocalGet(local_i));
@@ -644,8 +653,7 @@ impl WasmCompiler {
 
                 let is_string = matches!(sf.wasm_type, WasmType::Ref(idx) if Some(idx) == self.gc_builtin_types.go_string);
                 let is_timestamp = matches!(sf.wasm_type, WasmType::Ref(idx) if self.is_time_struct(idx));
-                let go_tag = sf.go_type_tag_compat().unwrap_or("int32");
-                let is_bool = go_tag == "bool" && sf.wasm_type == WasmType::I32;
+                let is_bool = matches!(&sf.field_type, Some(DefineType::Bool)) && sf.wasm_type == WasmType::I32;
 
                 let (type_tag, elem_size) = if is_string {
                     (TYPE_TAG_STRING, 0) // strings handled specially

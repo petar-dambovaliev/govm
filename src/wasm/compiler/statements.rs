@@ -492,7 +492,7 @@ impl WasmCompiler {
             if assign.right.len() == 1 && assign.left.len() > 1 {
                 if let ast::Expression::Call(_) = &assign.right[0] {
                     let ret_types = self.call_return_val_types(&assign.right[0], locals);
-                    let go_types = self.call_return_go_types(&assign.right[0], locals);
+                    let dt_types = self.call_return_define_types(&assign.right[0], locals);
                     if ret_types.is_empty() {
                         let call_desc = if let ast::Expression::Call(c) = &assign.right[0] {
                             format!("{:?}", c.func)
@@ -504,7 +504,7 @@ impl WasmCompiler {
                         )));
                     }
                     let gc_strings = self.gc_builtin_types.go_string.is_some();
-                    let go_count = Self::count_go_level_returns(&go_types, gc_strings);
+                    let go_count = Self::count_go_level_returns_dt(&dt_types, gc_strings);
                     if go_count != assign.left.len() {
                         return Err(Error::InternalError(format!(
                             "assignment mismatch: {} variables but function returns {} values",
@@ -512,7 +512,7 @@ impl WasmCompiler {
                             go_count,
                         )));
                     }
-                    return self.compile_multi_return_define(assign, &ret_types, &go_types, out, locals);
+                    return self.compile_multi_return_define(assign, &ret_types, &dt_types, out, locals);
                 }
             }
 
@@ -605,9 +605,7 @@ impl WasmCompiler {
                                     }
                                 } else if let ast::Expression::Index(idx_expr) = &*addr_op.x {
                                     if let Some(ast::Expression::Ident(arr_ident)) = idx_expr.left.as_deref() {
-                                        if let Some(elem_struct_type) = locals.slice_elem_struct_types
-                                            .get(&arr_ident.name).cloned()
-                                        {
+                                        if let Some(elem_struct_type) = locals.get_slice_elem_struct_name(&arr_ident.name) {
                                             if self.struct_defs.contains_key(&elem_struct_type) {
                                                 locals.set_var_type(&ident.name, DefineType::Ref(Box::new(self.go_type_name_to_define_type(&elem_struct_type))));
                                             } else {
@@ -643,13 +641,10 @@ impl WasmCompiler {
                                 if let Some(sd) = self.struct_defs.get(&parent_type) {
                                     if let Some(field) = sd.find_field(&sel.sel.name) {
                                         if field.is_slice_field() {
-                                            locals.set_var_type(&ident.name, DefineType::Slice(Box::new(DefineType::Null)));
-                                            if let Some(elem_tag) = field.slice_elem_struct_name() {
-                                                locals.slice_elem_struct_types.insert(
-                                                    ident.name.clone(),
-                                                    elem_tag,
-                                                );
-                                            }
+                                            let inner = field.slice_elem_struct_name()
+                                                .map(|s| self.go_type_name_to_define_type(&s))
+                                                .unwrap_or(DefineType::Null);
+                                            locals.set_var_type(&ident.name, DefineType::Slice(Box::new(inner)));
                                         } else if let Some(tag) = field.struct_type_name() {
                                             if self.struct_defs.contains_key(&tag) {
                                                 locals.set_var_type(&ident.name, DefineType::Ref(Box::new(self.go_type_name_to_define_type(&tag))));
@@ -665,7 +660,7 @@ impl WasmCompiler {
                         }
 
                         if is_string_rhs {
-                            self.track_local_var_type(&ident.name, "string", local_idx, locals);
+                            self.track_local_var_type(&ident.name, &DefineType::String, local_idx, locals);
                         }
 
                         // Track type alias from arithmetic expressions with typed constants
@@ -725,7 +720,7 @@ impl WasmCompiler {
                                             if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                                                 let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
                                                 if self.struct_defs.contains_key(&resolved_elem) {
-                                                    locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
+                                                    locals.set_var_type(&ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
                                                 }
                                             }
                                         }
@@ -808,9 +803,9 @@ impl WasmCompiler {
                                 }
                             }
 
-                            let call_go_types = self.call_return_go_types(&assign.right[i], locals);
-                            if let Some(go_type) = call_go_types.first() {
-                                is_iface_from_call = self.track_local_var_type(&ident.name, go_type, local_idx, locals);
+                            let call_dt_types = self.call_return_define_types(&assign.right[i], locals);
+                            if let Some(dt) = call_dt_types.first() {
+                                is_iface_from_call = self.track_local_var_type(&ident.name, dt, local_idx, locals);
                             }
                             if self.is_string_expr(&assign.right[i], locals) {
                                 locals.set_var_type(&ident.name, DefineType::String);
@@ -854,7 +849,7 @@ impl WasmCompiler {
                                     }
                                     let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
                                     if self.struct_defs.contains_key(&resolved_elem) {
-                                        locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
+                                        locals.set_var_type(&ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
                                     }
                                 }
                             } else if let ast::Expression::TypeMap(map_type) = comp.typ.as_ref() {
@@ -895,8 +890,10 @@ impl WasmCompiler {
                                     if let Some(&inner_vt) = locals.nested_slice_inner_elem_types.get(&src_ident.name) {
                                         locals.nested_slice_inner_elem_types.insert(ident.name.clone(), inner_vt);
                                     }
-                                    if let Some(st) = locals.slice_elem_struct_types.get(&src_ident.name).cloned() {
-                                        locals.slice_elem_struct_types.insert(ident.name.clone(), st);
+                                    if let Some(src_dt) = locals.get_var_type(&src_ident.name).cloned() {
+                                        if matches!(&src_dt, DefineType::Slice(_)) {
+                                            locals.set_var_type(&ident.name, src_dt);
+                                        }
                                     }
                                 }
                             }
@@ -921,7 +918,7 @@ impl WasmCompiler {
                                         .and_then(|mti| mti.val_struct_type.clone());
                                     if let Some(st) = map_val_struct {
                                         locals.set_var_type(&ident.name, self.go_type_name_to_define_type(&st));
-                                    } else if let Some(st) = locals.slice_elem_struct_types.get(&src_ident.name).cloned() {
+                                    } else if let Some(st) = locals.get_slice_elem_struct_name(&src_ident.name) {
                                         locals.set_var_type(&ident.name, self.go_type_name_to_define_type(&st));
                                     }
                                 }
@@ -1075,11 +1072,11 @@ impl WasmCompiler {
             if assign.right.len() == 1 && assign.left.len() > 1 {
                 if let ast::Expression::Call(c) = &assign.right[0] {
                     let ret_types = self.call_return_val_types(&assign.right[0], locals);
-                    let go_types = self.call_return_go_types(&assign.right[0], locals);
+                    let dt_types = self.call_return_define_types(&assign.right[0], locals);
                     let gc_strings = self.gc_builtin_types.go_string.is_some();
-                    let go_count = Self::count_go_level_returns(&go_types, gc_strings);
+                    let go_count = Self::count_go_level_returns_dt(&dt_types, gc_strings);
                     if go_count == assign.left.len() {
-                        return self.compile_multi_return_define(assign, &ret_types, &go_types, out, locals);
+                        return self.compile_multi_return_define(assign, &ret_types, &dt_types, out, locals);
                     }
                 }
             }
@@ -2291,8 +2288,8 @@ impl WasmCompiler {
             if matches!(call.func.as_ref(), ast::Expression::TypeSlice(_)) {
                 true
             } else {
-                let go_types = self.call_return_go_types(&range.expr, locals);
-                go_types.len() == 1 && go_types[0].starts_with("[]")
+                let dt_types = self.call_return_define_types(&range.expr, locals);
+                dt_types.len() == 1 && matches!(dt_types[0], DefineType::Slice(_))
             }
         } else {
             false
@@ -2661,8 +2658,23 @@ impl WasmCompiler {
                             None
                         };
 
+                        let range_dt = self.resolve_expr_type(&range.expr, locals);
+                        let elem_dt_full = range_dt.as_ref().and_then(|dt| match dt {
+                            DefineType::Slice(inner) => Some(inner.as_ref().clone()),
+                            _ => None,
+                        });
+                        let elem_dt = elem_dt_full.as_ref().filter(|dt| {
+                            dt.resolved_name().map_or(false, |n| self.struct_defs.contains_key(n))
+                        }).cloned();
+
                         let elem_vt = if let Some((arr_evtype, _, ..)) = arr_info_opt {
                             arr_evtype
+                        } else if let Some(ref edt) = elem_dt {
+                            if edt.resolved_name().map_or(false, |n| self.struct_defs.contains_key(n)) {
+                                ValType::I32
+                            } else {
+                                self.define_type_to_val_type(edt)
+                            }
                         } else if let ast::Expression::Ident(range_ident) = &range.expr {
                             locals
                                 .slice_elem_types
@@ -2691,8 +2703,22 @@ impl WasmCompiler {
                             })
                         };
 
+                        let is_struct_elem = elem_dt.as_ref()
+                            .and_then(|dt| dt.resolved_name())
+                            .map_or(false, |n| self.struct_defs.contains_key(n));
+
+                        if is_struct_elem {
+                            if let Some(ref edt) = elem_dt {
+                                locals.set_var_type(&ident.name, edt.clone());
+                            }
+                        }
+
                         let (elem_size, align) = if let Some((_, _, go_es, go_ea)) = arr_info_opt {
                             (go_es, go_ea)
+                        } else if is_struct_elem {
+                            let sn = elem_dt.as_ref().unwrap().resolved_name().unwrap();
+                            let sd = self.struct_defs.get(sn).unwrap();
+                            (sd.total_size as i32, 2u32)
                         } else {
                             match elem_vt {
                                 ValType::I32 | ValType::F32 => (4i32, 2u32),
@@ -2705,8 +2731,12 @@ impl WasmCompiler {
                         out.push(Instruction::I32Const(elem_size));
                         out.push(Instruction::I32Mul);
                         out.push(Instruction::I32Add);
-                        Self::emit_go_typed_load(elem_size, align, 0, elem_vt, out);
-                        out.push(Instruction::LocalSet(value_local));
+                        if is_struct_elem {
+                            out.push(Instruction::LocalSet(value_local));
+                        } else {
+                            Self::emit_go_typed_load(elem_size, align, 0, elem_vt, out);
+                            out.push(Instruction::LocalSet(value_local));
+                        }
                     }
                 }
             }
@@ -2853,9 +2883,13 @@ impl WasmCompiler {
 
         if non_default_cases.is_empty() {
             if let Some(def) = default_case {
+                locals.push_scope();
+                self.symbols.enter_scope();
                 for stmt in def.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                self.symbols.leave_scope();
+                locals.pop_scope();
             }
             if has_init {
                 self.symbols.leave_scope();
@@ -2984,9 +3018,13 @@ impl WasmCompiler {
                 if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
                     *depth += 1;
                 }
+                locals.push_scope();
+                self.symbols.enter_scope();
                 for stmt in def.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                self.symbols.leave_scope();
+                locals.pop_scope();
                 if let Some((_, depth, _, _)) = self.loop_depth.last_mut() {
                     *depth -= 1;
                 }
@@ -3074,9 +3112,13 @@ impl WasmCompiler {
             }
 
             if let Some(def) = default_case {
+                locals.push_scope();
+                self.symbols.enter_scope();
                 for stmt in def.body.iter() {
                     self.compile_statement(stmt, out, locals, result_types)?;
                 }
+                self.symbols.leave_scope();
+                locals.pop_scope();
             }
 
             let blocks_to_close = if default_case.is_some() {
@@ -3470,7 +3512,7 @@ impl WasmCompiler {
                                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                                     let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
                                     if self.struct_defs.contains_key(&resolved_elem) {
-                                        locals.slice_elem_struct_types.insert(ident.name.clone(), resolved_elem);
+                                        locals.set_var_type(&ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
                                     }
                                 }
                             } else if let ast::Expression::TypeMap(map_type) = typ {
@@ -4140,19 +4182,18 @@ impl WasmCompiler {
         }
     }
 
-    /// Shared type-tracking for a local variable based on its known Go type.
-    /// Returns `true` if the Go type is an interface type.
+    /// Shared type-tracking for a local variable based on its DefineType.
+    /// Returns `true` if the type is an interface type.
     pub(crate) fn track_local_var_type(
         &mut self,
         name: &str,
-        go_type: &str,
+        dt: &DefineType,
         local_idx: u32,
         locals: &mut LocalAlloc,
     ) -> bool {
-        let dt = self.go_type_name_to_define_type(go_type);
-        self.define_var(name, dt);
+        self.define_var(name, dt.clone());
 
-        if go_type == "string" {
+        if matches!(dt, DefineType::String) {
             locals.set_var_type(name, DefineType::String);
             if self.gc_builtin_types.go_string.is_some() {
                 locals.gc_string_locals.insert(name.to_string(), local_idx);
@@ -4166,8 +4207,8 @@ impl WasmCompiler {
             return false;
         }
 
-        if self.is_iface_go_type(go_type) {
-            locals.set_var_type(name, DefineType::Interface { name: go_type.to_string(), methods: vec![] });
+        if dt.is_interface_type() {
+            locals.set_var_type(name, dt.clone());
             if !locals.iface_type_id_locals.contains_key(name) {
                 let tid_local = locals.add_local(
                     &format!("{}__type_id", name),
@@ -4178,24 +4219,7 @@ impl WasmCompiler {
             return true;
         }
 
-        let base_type = go_type.strip_prefix('*').unwrap_or(go_type);
-        let resolved = self.resolve_struct_in_pkg(base_type);
-        if self.struct_defs.contains_key(&resolved) {
-            if go_type.starts_with('*') {
-                locals.set_var_type(name, DefineType::Ref(Box::new(self.go_type_name_to_define_type(&resolved))));
-            } else {
-                locals.set_var_type(name, self.go_type_name_to_define_type(&resolved));
-            }
-        } else if go_type.starts_with("[]") {
-            locals.set_var_type(name, DefineType::Slice(Box::new(DefineType::Null)));
-        } else if self.type_aliases.contains_key(go_type)
-            || self.current_package.as_ref().map_or(false, |pkg| {
-                self.type_aliases.contains_key(&format!("{}.{}", pkg, go_type))
-            })
-        {
-            locals.set_var_type(name, self.go_type_name_to_define_type(go_type));
-        }
-
+        locals.set_var_type(name, dt.clone());
         false
     }
 
@@ -4206,7 +4230,7 @@ impl WasmCompiler {
     pub(crate) fn assign_local_from_temp(
         &mut self,
         name: &str,
-        go_type: &str,
+        dt: &DefineType,
         wasm_vt: ValType,
         temp_locals: &[(u32, ValType)],
         is_define: bool,
@@ -4223,7 +4247,7 @@ impl WasmCompiler {
             locals.find(name).unwrap_or_else(|| locals.add_local(name, wasm_vt))
         };
 
-        let is_iface = self.track_local_var_type(name, go_type, local_idx, locals);
+        let is_iface = self.track_local_var_type(name, dt, local_idx, locals);
 
         if temp_locals.len() == 2 {
             if let Some(&(ptr_local, len_local)) = locals.string_locals.get(name) {
@@ -4257,7 +4281,7 @@ impl WasmCompiler {
         &mut self,
         assign: &ast::AssignStmt,
         ret_types: &[ValType],
-        go_types: &[String],
+        define_types: &[DefineType],
         out: &mut Vec<Instruction<'static>>,
         locals: &mut LocalAlloc,
     ) -> Result<(), Error> {
@@ -4275,8 +4299,8 @@ impl WasmCompiler {
         let gc_string = self.gc_builtin_types.go_string.is_some();
         let mut go_to_wasm: Vec<(usize, usize)> = Vec::new();
         let mut wasm_idx = 0;
-        for go_type in go_types.iter() {
-            let slot_count = if !gc_string && go_type == "string" { 2 } else { 1 };
+        for dt in define_types.iter() {
+            let slot_count = if !gc_string && matches!(dt, DefineType::String) { 2 } else { 1 };
             go_to_wasm.push((wasm_idx, slot_count));
             wasm_idx += slot_count;
         }
@@ -4289,10 +4313,10 @@ impl WasmCompiler {
                 }
                 let (slot_start, slot_count) = go_to_wasm.get(i).copied().unwrap_or((i, 1));
                 let vt = ret_types[slot_start];
-                let go_type = go_types.get(i).map(|s| s.as_str()).unwrap_or("");
+                let dt = define_types.get(i).cloned().unwrap_or(DefineType::Null);
                 let temps = &all_temps[slot_start..slot_start + slot_count];
 
-                self.assign_local_from_temp(&ident.name, go_type, vt, temps, is_define, out, locals);
+                self.assign_local_from_temp(&ident.name, &dt, vt, temps, is_define, out, locals);
             }
         }
 

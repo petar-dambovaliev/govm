@@ -246,10 +246,10 @@ impl WasmCompiler {
             ast::Expression::Selector(sel) => {
                 if let ast::Expression::Ident(pkg_ident) = sel.x.as_ref() {
                     let qualified = format!("{}.{}", pkg_ident.name, sel.sel.name);
-                    if let Some(type_name) = self.constant_types.get(&sel.sel.name)
+                    if let Some(dt) = self.constant_types.get(&sel.sel.name)
                         .or_else(|| self.constant_types.get(&qualified))
                     {
-                        return Some(self.go_type_name_to_define_type(type_name));
+                        return Some(dt.clone());
                     }
                 }
                 let parent_dt = self.resolve_expr_type(sel.x.as_ref(), locals)?;
@@ -265,12 +265,34 @@ impl WasmCompiler {
                             return Some(self.go_type_name_to_define_type(st));
                         }
                     }
-                    if let Some(st) = locals.slice_elem_struct_types.get(&ident.name) {
-                        return Some(self.go_type_name_to_define_type(st));
+                    if let Some(st) = locals.get_slice_elem_struct_name(&ident.name) {
+                        return Some(self.go_type_name_to_define_type(&st));
                     }
                     let qualified = self.qualify_pkg_name(&ident.name);
-                    if let Some(st) = self.global_slice_elem_struct_types.get(&qualified) {
-                        return Some(self.go_type_name_to_define_type(st));
+                    if let Some(dt) = self.global_var_struct_types.get(&qualified) {
+                        if let DefineType::Slice(inner) = dt {
+                            if let Some(sn) = inner.struct_name() {
+                                return Some(self.go_type_name_to_define_type(sn));
+                            }
+                        }
+                    }
+                }
+                if let Some(left_expr) = idx.left.as_deref() {
+                    let parent_dt = self.resolve_expr_type(left_expr, locals)?;
+                    match &parent_dt {
+                        DefineType::Slice(inner) => {
+                            if let Some(sn) = inner.resolved_name() {
+                                return Some(self.go_type_name_to_define_type(sn));
+                            }
+                            return Some(*inner.clone());
+                        }
+                        DefineType::Map(_, v) => {
+                            if let Some(sn) = v.resolved_name() {
+                                return Some(self.go_type_name_to_define_type(sn));
+                            }
+                            return Some(*v.clone());
+                        }
+                        _ => {}
                     }
                 }
                 None
@@ -473,7 +495,17 @@ impl WasmCompiler {
     ) {
         match underlying {
             ast::Expression::TypeSlice(slice_type) => {
-                locals.set_var_type(var_name, DefineType::Slice(Box::new(DefineType::Null)));
+                let inner_dt = if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
+                    let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
+                    if self.struct_defs.contains_key(&resolved_elem) {
+                        self.go_type_name_to_define_type(&resolved_elem)
+                    } else {
+                        DefineType::Null
+                    }
+                } else {
+                    DefineType::Null
+                };
+                locals.set_var_type(var_name, DefineType::Slice(Box::new(inner_dt)));
                 let elem_vt = self.infer_array_elem_vt(&slice_type.typ);
                 locals.slice_elem_types.insert(var_name.to_string(), elem_vt);
                 if let ast::Expression::TypeSlice(inner_st) = slice_type.typ.as_ref() {
@@ -481,10 +513,6 @@ impl WasmCompiler {
                     locals.nested_slice_inner_elem_types.insert(var_name.to_string(), inner_vt);
                 }
                 if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
-                    let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
-                    if self.struct_defs.contains_key(&resolved_elem) {
-                        locals.slice_elem_struct_types.insert(var_name.to_string(), resolved_elem);
-                    }
                     if el_id.name == "rune" || el_id.name == "int32" {
                         locals.rune_slices.insert(var_name.to_string());
                     }
@@ -743,10 +771,17 @@ impl WasmCompiler {
                     if op.op == Operator::And {
                         if let ast::Expression::Index(idx) = op.x.as_ref() {
                             if let Some(ast::Expression::Ident(id)) = idx.left.as_deref() {
-                                if let Some(st) = locals.slice_elem_struct_types.get(&id.name)
-                                    .or_else(|| self.global_slice_elem_struct_types.get(&self.qualify_pkg_name(&id.name)))
-                                {
-                                    if let Some(sd) = self.struct_defs.get(st) {
+                                let elem_struct = locals.get_slice_elem_struct_name(&id.name)
+                                    .or_else(|| {
+                                        let q = self.qualify_pkg_name(&id.name);
+                                        self.global_var_struct_types.get(&q).and_then(|dt| {
+                                            if let DefineType::Slice(inner) = dt {
+                                                inner.struct_name().map(|s| s.to_string())
+                                            } else { None }
+                                        })
+                                    });
+                                if let Some(st) = elem_struct {
+                                    if let Some(sd) = self.struct_defs.get(&st) {
                                         if let Some(gc_idx) = sd.gc_type_idx {
                                             return Self::gc_ref_val_type(gc_idx);
                                         }

@@ -80,9 +80,6 @@ impl StructFieldDef {
     pub(crate) fn is_interface_field(&self) -> bool {
         matches!(&self.field_type, Some(DefineType::Interface { .. }))
     }
-    pub(crate) fn is_pointer_field(&self) -> bool {
-        matches!(&self.field_type, Some(DefineType::Ref(_)))
-    }
     pub(crate) fn is_slice_or_map_field(&self) -> bool {
         self.is_slice_field() || self.is_map_field()
     }
@@ -93,22 +90,6 @@ impl StructFieldDef {
         self.field_type.as_ref()
             .and_then(|dt| dt.slice_elem_type())
             .and_then(|inner| inner.resolved_name().map(|s| s.to_string()))
-    }
-    pub(crate) fn pointee_struct_name(&self) -> Option<String> {
-        self.field_type.as_ref()
-            .and_then(|dt| dt.pointee_type())
-            .and_then(|inner| inner.resolved_name().map(|s| s.to_string()))
-    }
-    pub(crate) fn go_type_tag_compat(&self) -> Option<&str> {
-        match &self.field_type {
-            Some(DefineType::String) => Some("__string"),
-            Some(DefineType::Slice(_)) => Some("__slice"),
-            Some(DefineType::Map(_, _)) => Some("__map"),
-            Some(DefineType::Interface { .. }) => Some("__interface"),
-            Some(DefineType::Ref(_)) => Some("__ptr"),
-            Some(dt) => dt.resolved_name(),
-            None => None,
-        }
     }
 }
 
@@ -363,7 +344,6 @@ pub(crate) struct LocalAlloc {
     closure_env_captures: HashMap<String, Vec<(String, u32, ValType)>>,
     method_expr_vars: std::collections::HashSet<String>,
     slice_elem_types: HashMap<String, ValType>,
-    slice_elem_struct_types: HashMap<String, String>,
     nested_slice_inner_elem_types: HashMap<String, ValType>,
     string_locals: HashMap<String, (u32, u32)>,
     pub(crate) gc_string_locals: HashMap<String, u32>,
@@ -390,7 +370,6 @@ impl LocalAlloc {
             closure_env_captures: HashMap::new(),
             method_expr_vars: HashSet::new(),
             slice_elem_types: HashMap::new(),
-            slice_elem_struct_types: HashMap::new(),
             nested_slice_inner_elem_types: HashMap::new(),
             string_locals: HashMap::new(),
             gc_string_locals: HashMap::new(),
@@ -531,6 +510,13 @@ impl LocalAlloc {
         matches!(self.get_var_type(name), Some(DefineType::Interface { .. }))
     }
 
+    pub(crate) fn get_slice_elem_struct_name(&self, name: &str) -> Option<String> {
+        match self.get_var_type(name) {
+            Some(DefineType::Slice(inner)) => inner.struct_name().map(|s| s.to_string()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn all_entries(&self) -> Vec<(String, ValType)> {
         self.params
             .iter()
@@ -590,10 +576,9 @@ pub struct WasmCompiler {
     last_iface_call_returns_iface: bool,
     pending_closures: Vec<(u32, Function)>,
     constants: HashMap<String, ConstValue>,
-    constant_types: HashMap<String, String>,
+    constant_types: HashMap<String, DefineType>,
     global_vars: HashMap<String, (u32, ValType)>,
     global_array_elem_types: HashMap<String, (ValType, i32, u32)>,
-    global_slice_elem_struct_types: HashMap<String, String>,
     global_var_struct_types: HashMap<String, DefineType>,
     current_iota: Option<i128>,
     named_returns: Vec<(String, ValType)>,
@@ -754,7 +739,6 @@ impl WasmCompiler {
             constant_types: HashMap::new(),
             global_vars: HashMap::new(),
             global_array_elem_types: HashMap::new(),
-            global_slice_elem_struct_types: HashMap::new(),
             global_var_struct_types: HashMap::new(),
             current_iota: None,
             named_returns: Vec::new(),
@@ -1042,13 +1026,18 @@ impl WasmCompiler {
             "complex128" => DefineType::Complex128,
             "error" => DefineType::Interface { name: "error".to_string(), methods: vec![] },
             "any" => DefineType::Interface { name: "any".to_string(), methods: vec![] },
-            _ if self.iface_defs.contains_key(name) => {
-                DefineType::Interface { name: name.to_string(), methods: vec![] }
+            _ => {
+                let resolved = self.resolve_struct_in_pkg(name);
+                if self.iface_defs.contains_key(&resolved) {
+                    DefineType::Interface { name: resolved, methods: vec![] }
+                } else if self.struct_defs.contains_key(&resolved) {
+                    DefineType::Struct { name: resolved, fields: vec![], methods: vec![] }
+                } else if self.type_aliases.contains_key(&resolved) {
+                    DefineType::Spec { name: resolved, inner: Box::new(DefineType::Null), is_transparent: true, methods: vec![] }
+                } else {
+                    DefineType::Struct { name: name.to_string(), fields: vec![], methods: vec![] }
+                }
             }
-            _ if self.struct_defs.contains_key(name) => {
-                DefineType::Struct { name: name.to_string(), fields: vec![], methods: vec![] }
-            }
-            _ => DefineType::Struct { name: name.to_string(), fields: vec![], methods: vec![] },
         }
     }
 
@@ -1108,7 +1097,35 @@ impl WasmCompiler {
             | "byte" | "rune" | "bool" | "uintptr" => ValType::I32,
             "float32" => ValType::F32,
             "float64" => ValType::F64,
-            _ => ValType::I32, // structs are pointers (overridden to GC ref when gc_struct_types is populated)
+            _ => ValType::I32,
+        }
+    }
+
+    pub(crate) fn define_type_to_val_type(&self, dt: &DefineType) -> ValType {
+        match dt {
+            DefineType::Int | DefineType::Int64 | DefineType::Uint | DefineType::Uint64 => ValType::I64,
+            DefineType::Int32 | DefineType::Uint32 | DefineType::Int16 | DefineType::Uint16
+            | DefineType::Int8 | DefineType::Uint8 | DefineType::Byte | DefineType::Rune
+            | DefineType::Bool | DefineType::Uintptr => ValType::I32,
+            DefineType::Float32 => ValType::F32,
+            DefineType::Float64 => ValType::F64,
+            DefineType::String => {
+                if let Some(idx) = self.gc_builtin_types.go_string {
+                    Self::gc_ref_val_type(idx)
+                } else {
+                    ValType::I32
+                }
+            }
+            DefineType::Struct { name, .. } | DefineType::Spec { name, .. } => {
+                if let Some(&idx) = self.gc_struct_types.get(name) {
+                    Self::gc_ref_val_type(idx)
+                } else {
+                    ValType::I32
+                }
+            }
+            DefineType::Slice(_) | DefineType::Map(_, _) | DefineType::Ref(_)
+            | DefineType::Interface { .. } => ValType::I32,
+            _ => ValType::I64,
         }
     }
 
@@ -1265,8 +1282,8 @@ impl WasmCompiler {
         let subtypes: Vec<SubType> = struct_names.iter().map(|name| {
             let sd = self.struct_defs.get(name).unwrap();
             let fields: Vec<FieldType> = sd.fields.iter().map(|f| {
-                let storage = if let Some(tag) = f.go_type_tag_compat() {
-                    if let Some(&gc_idx) = name_to_gc_idx.get(tag) {
+                let storage = if let Some(name) = f.field_type.as_ref().and_then(|dt| dt.resolved_name()) {
+                    if let Some(&gc_idx) = name_to_gc_idx.get(name) {
                         StorageType::Val(Self::gc_ref_val_type(gc_idx))
                     } else {
                         wasm_type_to_storage(f.wasm_type)
@@ -1301,8 +1318,8 @@ impl WasmCompiler {
             if let Some(sd) = self.struct_defs.get_mut(name) {
                 sd.gc_type_idx = Some(gc_idx);
                 for f in &mut sd.fields {
-                    if let Some(tag) = f.go_type_tag_compat() {
-                        if let Some(&ref_gc_idx) = name_to_gc_idx.get(tag) {
+                    if let Some(name) = f.field_type.as_ref().and_then(|dt| dt.resolved_name()) {
+                        if let Some(&ref_gc_idx) = name_to_gc_idx.get(name) {
                             f.wasm_type = WasmType::Ref(ref_gc_idx);
                         }
                     }
@@ -1324,8 +1341,8 @@ impl WasmCompiler {
         self.next_type_idx += 1;
 
         let gc_fields: Vec<FieldType> = sd.fields.iter().map(|f| {
-            let storage = if let Some(tag) = f.go_type_tag_compat() {
-                if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag) {
+            let storage = if let Some(fname) = f.field_type.as_ref().and_then(|dt| dt.resolved_name()) {
+                if let Some(&ref_gc_idx) = self.gc_struct_types.get(fname) {
                     StorageType::Val(Self::gc_ref_val_type(ref_gc_idx))
                 } else {
                     match f.wasm_type {
@@ -1354,8 +1371,8 @@ impl WasmCompiler {
         if let Some(sd) = self.struct_defs.get_mut(name) {
             sd.gc_type_idx = Some(gc_idx);
             for f in &mut sd.fields {
-                if let Some(tag) = f.go_type_tag_compat() {
-                    if let Some(&ref_gc_idx) = self.gc_struct_types.get(tag) {
+                if let Some(fname) = f.field_type.as_ref().and_then(|dt| dt.resolved_name()) {
+                    if let Some(&ref_gc_idx) = self.gc_struct_types.get(fname) {
                         f.wasm_type = WasmType::Ref(ref_gc_idx);
                     }
                 }
@@ -1476,12 +1493,18 @@ impl WasmCompiler {
     }
 
     pub(crate) fn resolve_struct_in_pkg(&self, name: &str) -> String {
-        if self.struct_defs.contains_key(name) {
+        if self.struct_defs.contains_key(name)
+            || self.type_aliases.contains_key(name)
+            || self.iface_defs.contains_key(name)
+        {
             return name.to_string();
         }
         if let Some(ref pkg) = self.current_package {
             let qualified = format!("{}.{}", pkg, name);
-            if self.struct_defs.contains_key(&qualified) {
+            if self.struct_defs.contains_key(&qualified)
+                || self.type_aliases.contains_key(&qualified)
+                || self.iface_defs.contains_key(&qualified)
+            {
                 return qualified;
             }
         }
@@ -1490,7 +1513,10 @@ impl WasmCompiler {
                 continue;
             }
             let qualified = format!("{}.{}", pkg, name);
-            if self.struct_defs.contains_key(&qualified) {
+            if self.struct_defs.contains_key(&qualified)
+                || self.type_aliases.contains_key(&qualified)
+                || self.iface_defs.contains_key(&qualified)
+            {
                 return qualified;
             }
         }
@@ -1851,11 +1877,13 @@ impl WasmCompiler {
     }
 
     fn resolve_udf_field_type(&self, sf: &StructFieldDef) -> String {
-        if let Some(tag) = sf.go_type_tag_compat() {
-            if tag == "time.Time" {
-                return "timestamp".to_string();
+        if let Some(ref dt) = sf.field_type {
+            if let Some(name) = dt.resolved_name() {
+                if name == "time.Time" {
+                    return "timestamp".to_string();
+                }
             }
-            if tag == "bool" {
+            if matches!(dt, DefineType::Bool) {
                 return "bool".to_string();
             }
         }
@@ -2000,8 +2028,8 @@ impl WasmCompiler {
                                 } else if field.is_interface_field() {
                                     fields.push(CmpField { offset, kind: CmpFieldKind::Interface });
                                     skip_next = true;
-                                } else if let Some(tag) = field.go_type_tag_compat() {
-                                    if let Some(&nested_tid) = self.type_registry.get(tag) {
+                                } else if let Some(name) = field.field_type.as_ref().and_then(|dt| dt.resolved_name()) {
+                                    if let Some(&nested_tid) = self.type_registry.get(name) {
                                         fields.push(CmpField { offset, kind: CmpFieldKind::Struct(nested_tid) });
                                     } else {
                                         fields.push(CmpField { offset, kind: CmpFieldKind::I32 });

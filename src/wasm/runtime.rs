@@ -481,12 +481,7 @@ impl UdfRuntime {
                 } else if val.is_infinite() {
                     if val.is_sign_positive() { "+Inf".to_string() } else { "-Inf".to_string() }
                 } else {
-                    let formatted = format!("{}", val);
-                    if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
-                        format!("{}.0", formatted)
-                    } else {
-                        formatted
-                    }
+                    format!("{}", val)
                 };
                 host_write_string(&mut caller, s.as_bytes())
             },

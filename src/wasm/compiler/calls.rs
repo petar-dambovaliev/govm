@@ -2516,22 +2516,10 @@ impl WasmCompiler {
                 } else {
                     // Non-ident receiver: method chaining (e.g., b.Add(10).Add(20))
                     let recv_type = self.infer_struct_type_from_expr(sel.x.as_ref(), locals);
-                    if let Some(type_name) = recv_type {
-                        self.compile_expression(sel.x.as_ref(), out, locals)?;
-                        for arg in &call.args {
-                            self.compile_expression(arg, out, locals)?;
-                        }
-                        let func_idx = self.find_method_func(&type_name, &sel.sel.name)
-                            .map(|f| f.wasm_func_idx);
-                        if let Some(idx) = func_idx {
-                            out.push(Instruction::Call(idx));
-                        } else {
-                            return Err(Error::InternalError(format!(
-                                "undefined method: {}.{}",
-                                type_name, sel.sel.name
-                            )));
-                        }
-                    } else if self.is_interface_field_selector(sel.x.as_ref(), locals) {
+                    let is_iface_recv = recv_type.as_ref().map_or(false, |tn| {
+                        self.iface_defs.contains_key(tn) || tn == "error" || tn == "any"
+                    });
+                    if is_iface_recv || self.is_interface_field_selector(sel.x.as_ref(), locals) {
                         self.compile_expression(sel.x.as_ref(), out, locals)?;
                         let tid_tmp = locals.add_local(
                             &format!("__imc_fsel_tid_{}", locals.locals.len()),
@@ -2547,6 +2535,21 @@ impl WasmCompiler {
                             tid_tmp, data_tmp, &sel.sel.name, &call.args, out, locals,
                         )?;
                         return Ok(GoType::Int32);
+                    } else if let Some(type_name) = recv_type {
+                        self.compile_expression(sel.x.as_ref(), out, locals)?;
+                        for arg in &call.args {
+                            self.compile_expression(arg, out, locals)?;
+                        }
+                        let func_idx = self.find_method_func(&type_name, &sel.sel.name)
+                            .map(|f| f.wasm_func_idx);
+                        if let Some(idx) = func_idx {
+                            out.push(Instruction::Call(idx));
+                        } else {
+                            return Err(Error::InternalError(format!(
+                                "undefined method: {}.{}",
+                                type_name, sel.sel.name
+                            )));
+                        }
                     } else {
                         self.compile_expression(sel.x.as_ref(), out, locals)?;
                         for arg in &call.args {

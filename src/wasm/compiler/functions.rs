@@ -309,7 +309,7 @@ impl WasmCompiler {
                     if let ast::Expression::Ident(el_id) = slice_type.typ.as_ref() {
                         let resolved_elem = self.resolve_struct_in_pkg(&el_id.name);
                         if self.struct_defs.contains_key(&resolved_elem) {
-                            locals.slice_elem_struct_types.insert(name_ident.name.clone(), resolved_elem);
+                            locals.set_var_type(&name_ident.name, DefineType::Slice(Box::new(self.go_type_name_to_define_type(&resolved_elem))));
                         }
                     }
                 }
@@ -425,10 +425,10 @@ impl WasmCompiler {
 
         // Collect named return variables
         let mut named_returns: Vec<(String, ValType)> = Vec::new();
-        let mut named_return_tracking: Vec<(String, String, u32)> = Vec::new();
+        let mut named_return_tracking: Vec<(String, DefineType, u32)> = Vec::new();
         for field in &decl.typ.result.list {
             let field_wasm_types = self.field_to_wasm_types(field);
-            let go_type_name = self.expr_type_name(&field.typ);
+            let dt = self.expr_to_define_type(&field.typ).unwrap_or(DefineType::Null);
             for (i, ident) in field.name.iter().enumerate() {
                 let vt = if i < field_wasm_types.len() {
                     field_wasm_types[i].to_val_type()
@@ -438,7 +438,7 @@ impl WasmCompiler {
                     ValType::I64
                 };
                 let local_idx = locals.add_local(&ident.name, vt);
-                named_return_tracking.push((ident.name.clone(), go_type_name.clone(), local_idx));
+                named_return_tracking.push((ident.name.clone(), dt.clone(), local_idx));
                 named_returns.push((ident.name.clone(), vt));
             }
         }
@@ -564,8 +564,8 @@ impl WasmCompiler {
 
         if let Some(body) = &decl.body {
             let saved_constants = self.constants.clone();
-            for (name, go_type, local_idx) in &named_return_tracking {
-                self.track_local_var_type(name, go_type, *local_idx, &mut locals);
+            for (name, dt, local_idx) in &named_return_tracking {
+                self.track_local_var_type(name, dt, *local_idx, &mut locals);
             }
             self.named_returns = named_returns.clone();
             self.current_result_types = result_types.clone();

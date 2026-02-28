@@ -1,10 +1,6 @@
 use super::*;
 
 impl WasmCompiler {
-    pub(crate) fn is_iface_go_type(&self, go_type: &str) -> bool {
-        go_type == "error" || go_type == "any" || self.iface_defs.contains_key(go_type)
-    }
-
     pub(crate) fn emit_nil_iface_box(
         &mut self,
         out: &mut Vec<Instruction<'static>>,
