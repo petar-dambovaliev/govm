@@ -22,12 +22,16 @@ chrono = "0.4.31"
 rust_decimal = "1.33.1"
 tokio = {version = "1", features = ["full"]}
 async-channel = "2"
+wasm-encoder = "0.243"
+wasmtime = "41.0.3"
 
 [profile.dev]
 panic = "unwind"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
+wasmprinter = "0.243"
+wasmparser = "0.243"
 
 [[bench]]
 name = "fibonacci"
