@@ -1,62 +1,32 @@
-//! Minimal WASM module emission (MVP stack + `call` to imports).
+//! WASM module emission using [`crate::wasm::module_build::WasmModuleBuilder`] and
+//! [`crate::wasm::func_context::WasmFuncContext`] (8bit-tag–style stacked bodies).
 //!
-//! Instruction patterns mirror the UDF `WasmCompiler` / `wasm-encoder` usage:
-//! `Function::new`, `Instruction::*`, sections in link order.
+//! Instruction patterns match the UDF branch: `Instruction::*` via `wasm-encoder`.
 
-use crate::wasm::layout::MEMORY_MIN_PAGES;
-use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Instruction, MemorySection, MemoryType, Module, TypeSection, ValType,
-};
+use crate::wasm::module_build::WasmModuleBuilder;
+use wasm_encoder::ValType;
 
-/// Build a tiny module: memory (2 pages), import `env.rt_alloc(i32)->i32`, export `memory`
-/// and `demo` (calls `rt_alloc(16)`, returns pointer).
+/// Build the smoke module: memory (2 pages), import `env.rt_alloc`, export `memory` + `demo`.
 pub fn build_smoke_module() -> Vec<u8> {
-    let mut module = Module::new();
-    let mut types = TypeSection::new();
-    // type index 0: rt_alloc
-    types
-        .ty()
-        .function(vec![ValType::I32], vec![ValType::I32]);
-    // type index 1: demo () -> i32
-    types.ty().function(vec![], vec![ValType::I32]);
+    let mut b = WasmModuleBuilder::new();
+    let alloc_idx = b.add_rt_alloc_import();
+    debug_assert_eq!(alloc_idx, 0);
 
-    let mut imports = ImportSection::new();
-    imports.import("env", "rt_alloc", EntityType::Function(0));
+    let demo_ty = b.add_func_type(vec![], vec![ValType::I32]);
+    b.add_default_memory();
+    b.export_memory("memory", 0);
 
-    let mut functions = FunctionSection::new();
-    functions.function(1);
+    let demo_idx = b.define_function(demo_ty);
+    b.begin_func_body(vec![]);
+    {
+        let f = b.active();
+        f.i32_const(16);
+        f.call(alloc_idx);
+    }
+    b.end_func_body();
 
-    let mut memory = MemorySection::new();
-    memory.memory(MemoryType {
-        minimum: MEMORY_MIN_PAGES,
-        maximum: Some(256),
-        memory64: false,
-        shared: false,
-        page_size_log2: None,
-    });
-
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    // func index 0 = import rt_alloc, 1 = demo
-    exports.export("demo", ExportKind::Func, 1);
-
-    let mut demo = Function::new(vec![]);
-    demo.instruction(&Instruction::I32Const(16));
-    demo.instruction(&Instruction::Call(0));
-    demo.instruction(&Instruction::End);
-
-    let mut code = CodeSection::new();
-    code.function(&demo);
-
-    module.section(&types);
-    module.section(&imports);
-    module.section(&functions);
-    module.section(&memory);
-    module.section(&exports);
-    module.section(&code);
-
-    module.finish()
+    b.export_func("demo", demo_idx);
+    b.finish()
 }
 
 #[cfg(test)]
@@ -77,5 +47,33 @@ mod tests {
         let wat = wasmprinter::print_bytes(&bytes).expect("print");
         assert!(wat.contains("rt_alloc"));
         assert!(wat.contains("(export \"demo\""));
+    }
+
+    #[test]
+    fn module_builder_two_functions_preserves_code_order() {
+        let mut b = WasmModuleBuilder::new();
+        let rt = b.add_rt_alloc_import();
+        let t_i32 = b.add_func_type(vec![], vec![ValType::I32]);
+        b.add_default_memory();
+
+        let inner_idx = b.define_function(t_i32);
+        b.begin_func_body(vec![]);
+        {
+            let f = b.active();
+            f.i32_const(8);
+            f.call(rt);
+        }
+        b.end_func_body();
+
+        let outer_idx = b.define_function(t_i32);
+        b.begin_func_body(vec![]);
+        b.active().call(inner_idx);
+        b.end_func_body();
+
+        let bytes = b.finish();
+        wasmparser::Validator::new()
+            .validate_all(&bytes)
+            .expect("two-function module validates");
+        assert!(outer_idx > inner_idx);
     }
 }
