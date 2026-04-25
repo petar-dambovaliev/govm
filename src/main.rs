@@ -5,7 +5,6 @@ pub mod wasm;
 
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::module::parse_local_dependencies;
-use crate::wasm::host_heap::HostHeapBump;
 use clap::Args;
 use clap::{Parser as ClapParser, Subcommand};
 use gno_rs::gomod::{add_dependency, list_dependencies, remove_dependency};
@@ -60,40 +59,7 @@ enum ModSubCommand {
 }
 
 struct HostState {
-    heap: HostHeapBump,
     output: Vec<u8>,
-}
-
-fn host_rt_alloc(mut caller: Caller<'_, HostState>, size: i32) -> i32 {
-    let align = if size <= 0 {
-        0u32
-    } else {
-        (size as u32).saturating_add(7) & !7
-    };
-    let base = caller.data().heap.next_offset();
-    let need_end = base.saturating_add(align) as usize;
-
-    let mem = caller
-        .get_export("memory")
-        .and_then(|e| e.into_memory())
-        .expect("memory export");
-
-    let current_len = mem.data_size(&caller);
-    if need_end > current_len {
-        let grow_by = need_end - current_len;
-        let pages =
-            (grow_by + crate::wasm::WASM_PAGE_SIZE as usize - 1) / crate::wasm::WASM_PAGE_SIZE as usize;
-        if mem.grow(&mut caller, pages as u64).is_err() {
-            return -1;
-        }
-    }
-
-    let current_len = mem.data_size(&caller);
-    caller
-        .data_mut()
-        .heap
-        .reserve(size, current_len)
-        .unwrap_or(-1)
 }
 
 fn host_print_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
@@ -152,7 +118,7 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
 
     let mut linker = Linker::new(&engine);
     linker
-        .func_wrap("env", "rt_alloc", host_rt_alloc)
+        .func_wrap("env", "rt_gc_collect", |_caller: Caller<'_, HostState>| {})
         .map_err(|e| e.to_string())?;
     linker
         .func_wrap("env", "print_string", host_print_string)
@@ -164,7 +130,6 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
     let mut store = Store::new(
         &engine,
         HostState {
-            heap: HostHeapBump::new(),
             output: Vec::new(),
         },
     );

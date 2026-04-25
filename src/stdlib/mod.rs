@@ -41,8 +41,25 @@ pub fn get_native_func(name: &str) -> Option<NativeEmitter> {
             c.wasm.active().local_get(0);
             c.wasm.active().emit(&Instruction::F32ReinterpretI32);
         }),
+        _ if is_intrinsic(name) => Some(|c: &mut Compiler| {
+            c.wasm.active().emit(&Instruction::Unreachable);
+        }),
         _ => None,
     }
+}
+
+pub fn is_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "__mem_load_i32"
+            | "__mem_store_i32"
+            | "__mem_load_i64"
+            | "__mem_store_i64"
+            | "__memory_size"
+            | "__memory_grow"
+            | "__global_get_i32"
+            | "__global_set_i32"
+    )
 }
 
 pub const STDLIB_PREFIX: &str = "$$stdlib/";

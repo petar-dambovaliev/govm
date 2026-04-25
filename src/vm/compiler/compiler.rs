@@ -32,6 +32,7 @@ pub struct Compiler {
     pub(crate) label_contexts: AHashMap<(usize, usize), String>,
     pub(crate) wasm_func_map: AHashMap<String, u32>,
     str_concat_func_idx: Option<u32>,
+    rt_alloc_persistent_func_idx: Option<u32>,
     next_closure_id: usize,
     anonymous_struct: usize,
     pub(crate) iota: usize,
@@ -82,6 +83,7 @@ impl Compiler {
             label_contexts: AHashMap::new(),
             wasm_func_map: AHashMap::new(),
             str_concat_func_idx: None,
+            rt_alloc_persistent_func_idx: None,
             next_closure_id: 0,
             anonymous_struct: 0,
             iota: 0,
@@ -257,9 +259,11 @@ impl Compiler {
                     Operator::Or => Some(lhs | rhs),
                     Operator::And => Some(lhs & rhs),
                     Operator::Xor => Some(lhs ^ rhs),
+                    Operator::AndNot => Some(lhs & !rhs),
                     _ => None,
                 }
             }
+            Expression::Paren(p) => self.try_eval_const_i64(pkg, &p.expr),
             _ => None,
         }
     }
@@ -348,6 +352,76 @@ impl Compiler {
                 self.wasm.active().emit(&Instruction::I32TruncF32S);
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn alloc_func_idx(&self, persistent: bool) -> Result<u32, Error> {
+        if persistent {
+            self.rt_alloc_persistent_func_idx
+                .or_else(|| self.wasm.rt_alloc_func_idx())
+                .ok_or_else(|| Error::InternalError("RtAllocPersistent not registered".into()))
+        } else {
+            self.wasm.rt_alloc_func_idx()
+                .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))
+        }
+    }
+
+    fn try_compile_intrinsic(
+        &mut self,
+        pkg: &str,
+        name: &str,
+        call: &Call,
+    ) -> Result<Option<DefineType>, Error> {
+        match name {
+            "__mem_load_i32" => {
+                self.compile_expression(pkg, &call.args[0])?;
+                self.wasm.active().i32_load(0);
+                Ok(Some(DefineType::Int))
+            }
+            "__mem_store_i32" => {
+                self.compile_expression(pkg, &call.args[0])?;
+                self.compile_expression(pkg, &call.args[1])?;
+                self.wasm.active().i32_store(0);
+                Ok(Some(DefineType::Null))
+            }
+            "__mem_load_i64" => {
+                self.compile_expression(pkg, &call.args[0])?;
+                self.wasm.active().i64_load(0);
+                Ok(Some(DefineType::Int64))
+            }
+            "__mem_store_i64" => {
+                self.compile_expression(pkg, &call.args[0])?;
+                self.compile_expression(pkg, &call.args[1])?;
+                self.wasm.active().i64_store(0);
+                Ok(Some(DefineType::Null))
+            }
+            "__memory_size" => {
+                self.wasm.active().emit(&Instruction::MemorySize(0));
+                Ok(Some(DefineType::Int))
+            }
+            "__memory_grow" => {
+                self.compile_expression(pkg, &call.args[0])?;
+                self.wasm.active().emit(&Instruction::MemoryGrow(0));
+                Ok(Some(DefineType::Int))
+            }
+            "__global_get_i32" => {
+                let idx = self.try_eval_const_i64(pkg, &call.args[0])
+                    .ok_or_else(|| Error::TypeError(
+                        "__global_get_i32: first arg must be a compile-time constant".into(),
+                    ))? as u32;
+                self.wasm.active().global_get(idx);
+                Ok(Some(DefineType::Int))
+            }
+            "__global_set_i32" => {
+                let idx = self.try_eval_const_i64(pkg, &call.args[0])
+                    .ok_or_else(|| Error::TypeError(
+                        "__global_set_i32: first arg must be a compile-time constant".into(),
+                    ))? as u32;
+                self.compile_expression(pkg, &call.args[1])?;
+                self.wasm.active().global_set(idx);
+                Ok(Some(DefineType::Null))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -440,9 +514,9 @@ impl Compiler {
             let val_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(val_local);
             let size = crate::wasm::layout::field_byte_size(concrete_dt);
-            let rt_alloc_idx = self.wasm.rt_alloc_func_idx().expect("rt_alloc not registered");
+            let alloc_idx = self.alloc_func_idx(true).expect("allocator not registered");
             self.wasm.active().i32_const(size as i32);
-            self.wasm.active().call(rt_alloc_idx);
+            self.wasm.active().call(alloc_idx);
             let ptr_local = self.func_ctx().next_wasm_local + 1;
             self.wasm.active().local_tee(ptr_local);
             self.wasm.active().local_get(val_local);
@@ -720,12 +794,22 @@ impl Compiler {
 
         self.register_builtin_types(&pkg);
 
-        self.wasm.add_rt_alloc_import();
+        self.wasm.add_gc_collect_import();
         self.wasm.add_print_string_import();
         self.wasm.add_println_string_import();
         self.wasm.add_default_memory();
         self.wasm.export_memory("memory", 0);
         self.wasm.add_stack_pointer_global();
+        self.wasm.add_heap_globals();
+
+        self.compile_stdlib_package("runtime")?;
+
+        if let Some(&idx) = self.wasm_func_map.get("RtAlloc") {
+            self.wasm.set_rt_alloc_func_idx(idx);
+        }
+        if let Some(&idx) = self.wasm_func_map.get("RtAllocPersistent") {
+            self.rt_alloc_persistent_func_idx = Some(idx);
+        }
 
         self.ensure_str_concat_func()?;
 
@@ -894,6 +978,13 @@ impl Compiler {
             self.wasm.export_func("main", func_idx);
         } else {
             return Err(Error::ReferenceError("main function not found".to_string()));
+        }
+
+        if let Some(idx) = self.wasm.heap_bump_global_idx() {
+            self.wasm.export_global("__heap_bump", idx);
+        }
+        if let Some(idx) = self.wasm.sp_global_idx() {
+            self.wasm.export_global("__sp", idx);
         }
 
         let wasm = std::mem::replace(&mut self.wasm, WasmModuleBuilder::new());
@@ -2104,8 +2195,7 @@ impl Compiler {
                             self.wasm.active().i32_store(0);
                         } else if self.func_ctx().escaped_vars.contains(name.as_str()) {
                             let size = crate::wasm::layout::field_byte_size(dt);
-                            let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
-                                .expect("rt_alloc not registered");
+                            let rt_alloc_idx = self.alloc_func_idx(true)?;
                             self.wasm.active().i32_const(size as i32);
                             self.wasm.active().call(rt_alloc_idx);
                             let addr_local = self.func_ctx().next_wasm_local;
@@ -2257,10 +2347,8 @@ impl Compiler {
                         self.wasm.active().local_get(tmp);
                         self.wasm.active().i32_store(0);
                     } else if self.func_ctx().escaped_vars.contains(name.as_str()) {
-                        // Escaping var: allocate on heap at declaration time
                         let size = crate::wasm::layout::field_byte_size(&rt);
-                        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
-                            .expect("rt_alloc not registered");
+                        let rt_alloc_idx = self.alloc_func_idx(true)?;
                         let val_tmp = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(val_tmp);
                         self.wasm.active().i32_const(size as i32);
@@ -2514,6 +2602,15 @@ impl Compiler {
             .unwrap()
             .ret_types
             .push((rt, false));
+
+        // Restore heap watermark before returning.
+        if let (Some(saved_wm), Some(&scope_reset_idx)) = (
+            self.func_ctx().saved_heap_wm_local,
+            self.wasm_func_map.get("RtScopeReset"),
+        ) {
+            self.wasm.active().local_get(saved_wm);
+            self.wasm.active().call(scope_reset_idx);
+        }
 
         // Restore $sp before returning.
         if let (Some(saved_sp), Some(sp_idx)) = (self.func_ctx().saved_sp_local, self.wasm.sp_global_idx()) {
@@ -3202,6 +3299,7 @@ impl Compiler {
                     }
                 }
             }
+            Expression::Paren(p) => self.compile_expression(pkg, &p.expr),
             _ => Err(self.unsupported(&format!("expression: {:#?}", expr))),
         }
     }
@@ -3423,7 +3521,24 @@ impl Compiler {
         self.wasm.active().global_get(sp_idx);
         self.wasm.active().local_set(closure_saved_sp);
 
+        if let Some(&wm_idx) = self.wasm_func_map.get("RtWatermark") {
+            let saved_wm = self.func_ctx().next_wasm_local;
+            self.func_ctx().next_wasm_local += 1;
+            self.func_ctx().saved_heap_wm_local = Some(saved_wm);
+            self.wasm.active().call(wm_idx);
+            self.wasm.active().local_set(saved_wm);
+        }
+
         self.compile_block_statement(pkg, &fl.body.list)?;
+
+        // Restore heap watermark before closure end.
+        if let (Some(saved_wm), Some(&scope_reset_idx)) = (
+            self.func_ctx().saved_heap_wm_local,
+            self.wasm_func_map.get("RtScopeReset"),
+        ) {
+            self.wasm.active().local_get(saved_wm);
+            self.wasm.active().call(scope_reset_idx);
+        }
 
         // Restore $sp before closure end.
         let closure_sp = self.func_ctx().saved_sp_local.expect("closure saved_sp not set");
@@ -3608,6 +3723,10 @@ impl Compiler {
                     self.emit_type_conversion(&src, &target_dt);
                     return Ok(target_dt);
                 }
+            }
+
+            if let Some(rt) = self.try_compile_intrinsic(pkg, &name.name, call)? {
+                return Ok(rt);
             }
 
             if builtin::resolve(&name.name).is_some() {
@@ -3990,9 +4109,8 @@ impl Compiler {
         self.wasm.active().local_set(new_cap_local);
         self.wasm.active().emit(&Instruction::End);
 
-        // Allocate new data block
-        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
-            .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+        // Allocate new data block (persistent -- append data outlives scope)
+        let rt_alloc_idx = self.alloc_func_idx(true)?;
         self.wasm.active().local_get(new_cap_local);
         self.wasm.active().i32_const(e_size as i32);
         self.wasm.active().emit(&Instruction::I32Mul);
@@ -4423,21 +4541,88 @@ impl Compiler {
                 }
                 Some(_) => Err(self.unsupported("binary !")),
             },
-            Operator::And if op.y.is_none() => {
-                if let Expression::Ident(id) = op.x.as_ref() {
-                    let mv = self.func_ctx().mem_vars.get(&id.name).cloned()
-                        .ok_or_else(|| Error::InternalError(
-                            format!("&{}: variable not in linear memory", id.name)
-                        ))?;
-                    self.wasm.active().local_get(mv.addr_local);
-                    let resolved_dt = self.symbols.resolve(pkg, &id.name)
-                        .map(|r| r.get_type().0.unwrap_qualifiers())
-                        .unwrap_or(DefineType::Int);
-                    Ok(DefineType::Ref(Box::new(resolved_dt)))
-                } else {
-                    Err(self.unsupported("address-of non-identifier"))
+            Operator::And | Operator::Or | Operator::Xor | Operator::AndNot
+            | Operator::Shl | Operator::Shr => match &op.y {
+                Some(y) => {
+                    let rt_left = self.compile_expression(pkg, op.x.as_ref())?;
+                    let rt_right = self.compile_expression(pkg, y.as_ref())?;
+                    let result_type = self.coerce_binary_operands_wasm(&rt_left, &rt_right)?;
+                    let vt = Self::define_type_to_wasm(&result_type);
+                    match (op.op, vt) {
+                        (Operator::And, ValType::I32) => self.wasm.active().emit(&Instruction::I32And),
+                        (Operator::Or, ValType::I32) => self.wasm.active().emit(&Instruction::I32Or),
+                        (Operator::Xor, ValType::I32) => self.wasm.active().emit(&Instruction::I32Xor),
+                        (Operator::Shl, ValType::I32) => self.wasm.active().emit(&Instruction::I32Shl),
+                        (Operator::Shr, ValType::I32) => {
+                            if rt_left.is_unsigned_int() {
+                                self.wasm.active().emit(&Instruction::I32ShrU);
+                            } else {
+                                self.wasm.active().emit(&Instruction::I32ShrS);
+                            }
+                        }
+                        (Operator::AndNot, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32Const(-1));
+                            self.wasm.active().emit(&Instruction::I32Xor);
+                            self.wasm.active().emit(&Instruction::I32And);
+                        }
+                        (Operator::And, ValType::I64) => self.wasm.active().emit(&Instruction::I64And),
+                        (Operator::Or, ValType::I64) => self.wasm.active().emit(&Instruction::I64Or),
+                        (Operator::Xor, ValType::I64) => self.wasm.active().emit(&Instruction::I64Xor),
+                        (Operator::Shl, ValType::I64) => self.wasm.active().emit(&Instruction::I64Shl),
+                        (Operator::Shr, ValType::I64) => {
+                            if rt_left.is_unsigned_int() {
+                                self.wasm.active().emit(&Instruction::I64ShrU);
+                            } else {
+                                self.wasm.active().emit(&Instruction::I64ShrS);
+                            }
+                        }
+                        (Operator::AndNot, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64Const(-1));
+                            self.wasm.active().emit(&Instruction::I64Xor);
+                            self.wasm.active().emit(&Instruction::I64And);
+                        }
+                        _ => {
+                            return Err(self.unsupported(&format!(
+                                "bitwise op {:?} for {:?}", op.op, vt
+                            )));
+                        }
+                    }
+                    Ok(result_type)
                 }
-            }
+                None if op.op == Operator::And => {
+                    // unary &x (address-of) -- fall through to address-of handler below
+                    if let Expression::Ident(id) = op.x.as_ref() {
+                        let mv = self.func_ctx().mem_vars.get(&id.name).cloned()
+                            .ok_or_else(|| Error::InternalError(
+                                format!("&{}: variable not in linear memory", id.name)
+                            ))?;
+                        self.wasm.active().local_get(mv.addr_local);
+                        let resolved_dt = self.symbols.resolve(pkg, &id.name)
+                            .map(|r| r.get_type().0.unwrap_qualifiers())
+                            .unwrap_or(DefineType::Int);
+                        Ok(DefineType::Ref(Box::new(resolved_dt)))
+                    } else {
+                        Err(self.unsupported("address-of non-identifier"))
+                    }
+                }
+                None if op.op == Operator::Xor => {
+                    let dt = self.compile_expression(pkg, op.x.as_ref())?;
+                    let vt = Self::define_type_to_wasm(&dt);
+                    match vt {
+                        ValType::I32 => {
+                            self.wasm.active().emit(&Instruction::I32Const(-1));
+                            self.wasm.active().emit(&Instruction::I32Xor);
+                        }
+                        ValType::I64 => {
+                            self.wasm.active().emit(&Instruction::I64Const(-1));
+                            self.wasm.active().emit(&Instruction::I64Xor);
+                        }
+                        _ => return Err(self.unsupported(&format!("unary ^ for {:?}", vt))),
+                    }
+                    Ok(dt)
+                }
+                None => Err(self.unsupported(&format!("unary {:?}", op.op))),
+            },
             _ => Err(self.unsupported(&format!("operator: {:?}", op.op))),
         }
     }

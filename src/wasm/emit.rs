@@ -1,16 +1,15 @@
 //! WASM module emission using [`crate::wasm::module_build::WasmModuleBuilder`] and
-//! [`crate::wasm::func_context::WasmFuncContext`] (8bit-tag–style stacked bodies).
+//! [`crate::wasm::func_context::WasmFuncContext`] (8bit-tag--stacked bodies).
 //!
 //! Instruction patterns match the UDF branch: `Instruction::*` via `wasm-encoder`.
 
 use crate::wasm::module_build::WasmModuleBuilder;
 use wasm_encoder::ValType;
 
-/// Build the smoke module: memory (2 pages), import `env.rt_alloc`, export `memory` + `demo`.
+/// Build the smoke module: memory (2 pages), export `memory` + `demo`.
+/// `demo` returns a constant pointer (no host allocator needed).
 pub fn build_smoke_module() -> Vec<u8> {
     let mut b = WasmModuleBuilder::new();
-    let alloc_idx = b.add_rt_alloc_import();
-    debug_assert_eq!(alloc_idx, 0);
 
     let demo_ty = b.add_func_type(vec![], vec![ValType::I32]);
     b.add_default_memory();
@@ -20,8 +19,7 @@ pub fn build_smoke_module() -> Vec<u8> {
     b.begin_func_body(demo_idx, vec![]);
     {
         let f = b.active();
-        f.i32_const(16);
-        f.call(alloc_idx);
+        f.i32_const(65536);
     }
     b.end_func_body();
 
@@ -45,14 +43,12 @@ mod tests {
     fn smoke_module_roundtrip_print() {
         let bytes = build_smoke_module();
         let wat = wasmprinter::print_bytes(&bytes).expect("print");
-        assert!(wat.contains("rt_alloc"));
         assert!(wat.contains("(export \"demo\""));
     }
 
     #[test]
     fn module_builder_two_functions_preserves_code_order() {
         let mut b = WasmModuleBuilder::new();
-        let rt = b.add_rt_alloc_import();
         let t_i32 = b.add_func_type(vec![], vec![ValType::I32]);
         b.add_default_memory();
 
@@ -60,8 +56,7 @@ mod tests {
         b.begin_func_body(inner_idx, vec![]);
         {
             let f = b.active();
-            f.i32_const(8);
-            f.call(rt);
+            f.i32_const(42);
         }
         b.end_func_body();
 

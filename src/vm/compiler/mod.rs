@@ -130,6 +130,8 @@ pub(crate) struct FuncContext {
     pub frame_base_local: Option<u32>,
     /// Names of address-taken variables that escape and need heap allocation at declaration time.
     pub escaped_vars: HashSet<String>,
+    /// WASM local holding the saved heap watermark for scope-based freeing.
+    pub saved_heap_wm_local: Option<u32>,
 }
 
 impl FuncContext {
@@ -144,6 +146,7 @@ impl FuncContext {
             mem_vars: AHashMap::new(),
             frame_base_local: None,
             escaped_vars: HashSet::new(),
+            saved_heap_wm_local: None,
         }
     }
 }

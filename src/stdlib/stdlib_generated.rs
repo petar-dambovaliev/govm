@@ -61,6 +61,8 @@ pub fn get_stdlib_sources(pkg: &str) -> Option<&'static [&'static str]> {
             include_str!("math/bits/bits_tables.go"),
         ]),
         "runtime" => Some(&[
+            include_str!("runtime/alloc.go"),
+            include_str!("runtime/intrinsics.go"),
             include_str!("runtime/runtime.go"),
         ]),
         "strconv" => Some(&[

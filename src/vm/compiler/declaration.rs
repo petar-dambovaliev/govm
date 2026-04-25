@@ -81,8 +81,8 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                 c.wasm.active().i32_store(0);
             } else if c.func_ctx().escaped_vars.contains(&name.name) {
                 let size = field_byte_size(&rt);
-                let rt_alloc_idx = c.wasm.rt_alloc_func_idx()
-                    .expect("rt_alloc not registered");
+                let rt_alloc_idx = c.alloc_func_idx(true)
+                    .expect("RtAllocPersistent not registered");
                 let val_tmp = c.func_ctx().next_wasm_local;
                 c.wasm.active().local_set(val_tmp);
                 c.wasm.active().i32_const(size as i32);
@@ -372,6 +372,20 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.wasm.active().global_get(sp_idx);
     c.wasm.active().local_set(saved_sp);
 
+    // Save heap watermark for scope-based freeing (skip for runtime allocator functions).
+    let is_runtime_func = crate::stdlib::is_intrinsic(&f.name.name)
+        || matches!(f.name.name.as_str(), "RtAlloc" | "RtAllocPersistent" | "RtFree"
+            | "RtWatermark" | "RtScopeReset");
+    if !is_runtime_func {
+        if let Some(&wm_idx) = c.wasm_func_map.get("RtWatermark") {
+            let saved_wm = c.func_ctx().next_wasm_local;
+            c.func_ctx().next_wasm_local += 1;
+            c.func_ctx().saved_heap_wm_local = Some(saved_wm);
+            c.wasm.active().call(wm_idx);
+            c.wasm.active().local_set(saved_wm);
+        }
+    }
+
     // Escape analysis: determine which variables need linear memory allocation.
     if let Some(body) = &f.body {
         let addr_taken = analysis::analyze_address_taken_vars(&body.list);
@@ -431,6 +445,15 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     let mut terminates = None;
     if let Some(body) = &f.body {
         terminates = c.compile_block_statement(pkg, &body.list)?;
+    }
+
+    // Restore heap watermark before implicit return.
+    if let (Some(saved_wm), Some(&scope_reset_idx)) = (
+        c.func_ctx().saved_heap_wm_local,
+        c.wasm_func_map.get("RtScopeReset"),
+    ) {
+        c.wasm.active().local_get(saved_wm);
+        c.wasm.active().call(scope_reset_idx);
     }
 
     // Restore $sp before implicit return (fallthrough for void functions or unreachable).

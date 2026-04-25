@@ -4,7 +4,7 @@
 //! out the same responsibilities for the experimental `src/wasm` path.
 
 use crate::wasm::func_context::WasmFuncContext;
-use crate::wasm::layout::{MEMORY_MIN_PAGES, STACK_TOP};
+use crate::wasm::layout::{HEAP_BASE, MEMORY_MIN_PAGES, STACK_TOP};
 use std::borrow::Cow;
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
@@ -30,6 +30,9 @@ pub struct WasmModuleBuilder {
     print_string_func_idx: Option<u32>,
     println_string_func_idx: Option<u32>,
     sp_global_idx: Option<u32>,
+    heap_bump_global_idx: Option<u32>,
+    free_list_head_global_idx: Option<u32>,
+    heap_persistent_bytes_global_idx: Option<u32>,
     next_global_idx: u32,
     /// Funcref table entries: (table_offset, func_idx) for interface vtables.
     vtable_entries: Vec<(u32, u32)>,
@@ -62,6 +65,9 @@ impl WasmModuleBuilder {
             print_string_func_idx: None,
             println_string_func_idx: None,
             sp_global_idx: None,
+            heap_bump_global_idx: None,
+            free_list_head_global_idx: None,
+            heap_persistent_bytes_global_idx: None,
             next_global_idx: 0,
             vtable_entries: Vec::new(),
             vtable_size: 0,
@@ -69,25 +75,26 @@ impl WasmModuleBuilder {
         }
     }
 
-    /// `(i32) -> i32` import `env.rt_alloc` — same ABI as [`crate::wasm::runtime::host_rt_alloc`].
-    pub fn add_rt_alloc_import(&mut self) -> u32 {
+    pub fn rt_alloc_func_idx(&self) -> Option<u32> {
+        self.rt_alloc_func_idx
+    }
+
+    pub fn set_rt_alloc_func_idx(&mut self, idx: u32) {
+        self.rt_alloc_func_idx = Some(idx);
+    }
+
+    /// `() -> ()` import `env.rt_gc_collect` -- triggers host-side mark-sweep GC.
+    pub fn add_gc_collect_import(&mut self) -> u32 {
         let ty = self.next_type_idx;
-        self.types
-            .ty()
-            .function(vec![ValType::I32], vec![ValType::I32]);
+        self.types.ty().function(vec![], vec![]);
         self.next_type_idx += 1;
 
         let func_idx = self.next_func_idx;
         self.imports
-            .import("env", "rt_alloc", EntityType::Function(ty));
+            .import("env", "rt_gc_collect", EntityType::Function(ty));
         self.next_func_idx += 1;
         self.num_imports += 1;
-        self.rt_alloc_func_idx = Some(func_idx);
         func_idx
-    }
-
-    pub fn rt_alloc_func_idx(&self) -> Option<u32> {
-        self.rt_alloc_func_idx
     }
 
     /// `(i32, i32) -> ()` import `env.print_string` — writes bytes from linear memory to stdout.
@@ -146,6 +153,36 @@ impl WasmModuleBuilder {
         self.next_global_idx += 1;
         self.sp_global_idx = Some(idx);
         idx
+    }
+
+    /// Add heap-management globals. Must be called after `add_stack_pointer_global`.
+    /// - `$heap_bump`: ephemeral allocations grow upward from HEAP_BASE.
+    /// - `$free_list_head`: free list for freed persistent blocks.
+    /// - `$heap_persistent_bytes`: total persistent bytes allocated.
+    /// - `$heap_pers_top`: persistent allocations grow downward from top of memory.
+    ///   Initialized to 0; `RtAllocPersistent` sets it on first use via `memory.size * 65536`.
+    pub fn add_heap_globals(&mut self) {
+        self.heap_bump_global_idx = Some(
+            self.add_mutable_global(ValType::I32, HEAP_BASE as i64),
+        );
+        self.free_list_head_global_idx = Some(
+            self.add_mutable_global(ValType::I32, 0),
+        );
+        self.heap_persistent_bytes_global_idx = Some(
+            self.add_mutable_global(ValType::I32, 0),
+        );
+    }
+
+    pub fn heap_bump_global_idx(&self) -> Option<u32> {
+        self.heap_bump_global_idx
+    }
+
+    pub fn free_list_head_global_idx(&self) -> Option<u32> {
+        self.free_list_head_global_idx
+    }
+
+    pub fn heap_persistent_bytes_global_idx(&self) -> Option<u32> {
+        self.heap_persistent_bytes_global_idx
     }
 
     pub fn add_mutable_global(&mut self, val_type: ValType, init_value: i64) -> u32 {
@@ -211,6 +248,10 @@ impl WasmModuleBuilder {
 
     pub fn export_func(&mut self, name: &str, func_idx: u32) {
         self.exports.export(name, ExportKind::Func, func_idx);
+    }
+
+    pub fn export_global(&mut self, name: &str, global_idx: u32) {
+        self.exports.export(name, ExportKind::Global, global_idx);
     }
 
     /// Append an entry to the **function** section; returns the **function index** for `call` / exports.

@@ -2,18 +2,31 @@
 //!
 //! Initial memory uses two 64 KiB pages (128 KiB). The **lower half** is reserved
 //! for guest data/stack/conventions; the **upper half** starting at [`HEAP_BASE`]
-//! is the only region the host bump allocator uses for [`crate::wasm::host_heap`].
+//! is managed by the guest-side allocator in `runtime/alloc.go`.
 
 use crate::vm::symbols::{ContextType, DefineType};
 
 /// Size of one WASM page (64 KiB).
 pub const WASM_PAGE_SIZE: u32 = 65536;
 
-/// Minimum memory size (pages). Two pages ⇒ 128 KiB total; [`HEAP_BASE`] is the midpoint.
+/// Minimum memory size (pages). Two pages => 128 KiB total; [`HEAP_BASE`] is the midpoint.
 pub const MEMORY_MIN_PAGES: u64 = 2;
 
-/// Byte offset where the host-managed heap starts (upper half of initial memory).
+/// Byte offset where the guest-managed heap starts (upper half of initial memory).
 pub const HEAP_BASE: i32 = (MEMORY_MIN_PAGES as i32 / 2) * (WASM_PAGE_SIZE as i32);
+
+/// Every heap allocation is prefixed with an 8-byte header: [size:u32 | flags:u32].
+pub const OBJ_HEADER_SIZE: u32 = 8;
+pub const HEADER_SIZE_OFFSET: u32 = 0;
+pub const HEADER_FLAGS_OFFSET: u32 = 4;
+
+pub const FLAG_MARK: u32 = 1;
+pub const FLAG_FREE: u32 = 2;
+pub const FLAG_PERSISTENT: u32 = 4;
+
+/// GC root table sits at the very start of linear memory.
+pub const GC_ROOT_TABLE_BASE: u32 = 0;
+pub const GC_ROOT_TABLE_MAX: u32 = 1024;
 
 /// Byte size of a single field in a heap-allocated struct.
 pub fn field_byte_size(dt: &DefineType) -> u32 {
