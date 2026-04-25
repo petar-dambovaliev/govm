@@ -24,6 +24,7 @@ pub enum CallType {
         method_index: usize,
         method_dt: DefineType,
         iface_expr: Expression,
+        iface_name: String,
     },
 }
 
@@ -70,7 +71,7 @@ impl CallType {
                         DefineType::Ref(inner) => {
                             find_sel(c, pkg, sel, *inner, method_name)
                         }
-                        DefineType::Interface { methods, .. } => {
+                        DefineType::Interface { name: ref iname, methods, .. } => {
                             let m = find_method(&method_name, methods);
 
                             match m {
@@ -79,6 +80,7 @@ impl CallType {
                                         method_index: i,
                                         method_dt: m,
                                         iface_expr: *sel.x.clone(),
+                                        iface_name: iname.clone(),
                                     },
                                     pkg.to_string(),
                                 )),

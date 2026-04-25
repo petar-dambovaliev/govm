@@ -33,6 +33,16 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
             let mut rt = c.compile_expression(pkg, value)?;
 
             if rt.is_nil() {
+                if Compiler::is_interface_type(&declared_tp) {
+                    c.wasm.active().i32_const(0);
+                }
+                rt = declared_tp.clone();
+            }
+
+            // Box concrete values into interfaces BEFORE defining the symbol
+            if Compiler::is_interface_type(&declared_tp) && !Compiler::is_interface_type(&rt) && !rt.is_nil() {
+                let tname = Compiler::type_name_for_tag(&rt);
+                c.box_to_interface(&rt, &tname);
                 rt = declared_tp.clone();
             }
 
@@ -83,6 +93,12 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                 c.wasm.active().i32_store(0);
                 c.mem_vars.insert(name.name.clone(), MemVar { addr_local, size });
                 c.next_wasm_local = addr_local + 1;
+            } else if Compiler::is_interface_type(&rt) {
+                let base = c.next_wasm_local;
+                c.next_wasm_local += 2;
+                c.locals.insert(symbol.index, base);
+                c.wasm.active().local_set(base + 1); // data_ptr
+                c.wasm.active().local_set(base);      // type_tag
             } else if Compiler::is_string_type(&rt) {
                 let base = c.next_wasm_local;
                 c.next_wasm_local += 2;
@@ -202,10 +218,18 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                 t.is_invar(),
             );
 
-            let local_idx = c.next_wasm_local;
-            c.next_wasm_local += 1;
-            c.locals.insert(sym.index, local_idx);
-            wasm_params.push(Compiler::define_type_to_wasm(&t));
+            if Compiler::is_fat_type(&t) {
+                let base = c.next_wasm_local;
+                c.next_wasm_local += 2;
+                c.locals.insert(sym.index, base);
+                wasm_params.push(ValType::I32);
+                wasm_params.push(ValType::I32);
+            } else {
+                let local_idx = c.next_wasm_local;
+                c.next_wasm_local += 1;
+                c.locals.insert(sym.index, local_idx);
+                wasm_params.push(Compiler::define_type_to_wasm(&t));
+            }
         }
     }
 

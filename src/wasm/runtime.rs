@@ -1319,4 +1319,312 @@ func main() int {
         .expect("should compile and run");
         assert_eq!(result, 300);
     }
+
+    #[test]
+    fn go_multi_return_basic() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func swap(a int, b int) (int, int) {
+    return b, a
+}
+
+func main() int {
+    x, y := swap(1, 2)
+    return x*10 + y
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 21);
+    }
+
+    #[test]
+    fn go_multi_return_discard() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func pair() (int, int) {
+    return 7, 42
+}
+
+func main() int {
+    _, b := pair()
+    return b
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn go_multi_return_assign() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func pair() (int, int) {
+    return 3, 5
+}
+
+func main() int {
+    a := 0
+    b := 0
+    a, b = pair()
+    return a*10 + b
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 35);
+    }
+
+    #[test]
+    fn go_multi_return_three() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func triple(x int) (int, int, int) {
+    return x, x*2, x*3
+}
+
+func main() int {
+    a, b, c := triple(10)
+    return a + b + c
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 60);
+    }
+
+    #[test]
+    fn go_multi_return_discard_first() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func pair() (int, int) {
+    return 99, 11
+}
+
+func main() int {
+    a, _ := pair()
+    return a
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 99);
+    }
+
+    // ── Interface tests ──
+
+    #[test]
+    fn go_interface_method_call() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type Num struct {
+    n int
+}
+
+func (x Num) Value() int {
+    return x.n
+}
+
+func main() int {
+    var v Valuer = Num{n: 42}
+    return v.Value()
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn go_interface_multiple_types() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type A struct { x int }
+type B struct { y int }
+
+func (a A) Value() int { return a.x }
+func (b B) Value() int { return b.y * 10 }
+
+func get(v Valuer) int {
+    return v.Value()
+}
+
+func main() int {
+    var v1 Valuer = A{x: 3}
+    var v2 Valuer = B{y: 4}
+    return get(v1) + get(v2)
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 43);
+    }
+
+    #[test]
+    fn go_interface_type_assert() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type Num struct { n int }
+
+func (x Num) Value() int { return x.n }
+
+func main() int {
+    var v Valuer = Num{n: 7}
+    n := v.(Num)
+    return n.n
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 7);
+    }
+
+    #[test]
+    fn go_interface_type_assert_comma_ok() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type Num struct { n int }
+type Other struct { x int }
+
+func (x Num) Value() int { return x.n }
+func (x Other) Value() int { return x.x }
+
+func main() int {
+    var v Valuer = Num{n: 5}
+    _, ok := v.(Num)
+    if ok {
+        return 1
+    }
+    return 0
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn go_interface_type_assert_comma_ok_fail() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type Num struct { n int }
+type Other struct { x int }
+
+func (x Num) Value() int { return x.n }
+func (x Other) Value() int { return x.x }
+
+func main() int {
+    var v Valuer = Other{x: 9}
+    _, ok := v.(Num)
+    if ok {
+        return 1
+    }
+    return 0
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn go_interface_nil() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+func main() int {
+    var v Valuer
+    if v == nil {
+        return 1
+    }
+    return 0
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn go_interface_type_switch() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Valuer interface {
+    Value() int
+}
+
+type A struct { x int }
+type B struct { y int }
+
+func (a A) Value() int { return a.x }
+func (b B) Value() int { return b.y }
+
+func classify(v Valuer) int {
+    switch v.(type) {
+    case A:
+        return 1
+    case B:
+        return 2
+    }
+    return 0
+}
+
+func main() int {
+    var v1 Valuer = A{x: 10}
+    var v2 Valuer = B{y: 20}
+    return classify(v1)*10 + classify(v2)
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 12);
+    }
 }

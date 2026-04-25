@@ -51,12 +51,32 @@ pub struct Compiler {
     pub(crate) frame_base_local: Option<u32>,
     /// Names of address-taken variables that escape and need heap allocation at declaration time.
     pub(crate) escaped_vars: std::collections::HashSet<String>,
+    /// Concrete type name -> unique integer tag (starting from 1; 0 = nil interface).
+    pub(crate) type_tags: AHashMap<String, u32>,
+    pub(crate) next_type_tag: u32,
+    /// Interface name -> vtable metadata for call_indirect dispatch.
+    pub(crate) iface_vtables: AHashMap<String, IfaceVtable>,
 }
 
 #[derive(Clone)]
 pub(crate) struct MemVar {
     pub addr_local: u32,
     pub size: u32,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct IfaceMethodEntry {
+    pub name: String,
+    pub type_idx: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IfaceVtable {
+    pub table_base: u32,
+    pub method_entries: Vec<IfaceMethodEntry>,
+    pub num_types: u32,
+    pub type_order: Vec<String>,
 }
 
 const BUILTIN: &str = "0xbuiltin";
@@ -85,6 +105,9 @@ impl Compiler {
             mem_vars: AHashMap::new(),
             frame_base_local: None,
             escaped_vars: std::collections::HashSet::new(),
+            type_tags: AHashMap::new(),
+            next_type_tag: 1,
+            iface_vtables: AHashMap::new(),
         }
     }
 
@@ -134,6 +157,81 @@ impl Compiler {
 
     pub(crate) fn is_string_type(dt: &DefineType) -> bool {
         matches!(dt.unwrap_qualifiers(), DefineType::String)
+    }
+
+    pub(crate) fn is_interface_type(dt: &DefineType) -> bool {
+        matches!(dt.unwrap_qualifiers(), DefineType::Interface { .. })
+    }
+
+    /// Returns true for types represented as two WASM values (string or interface).
+    pub(crate) fn is_fat_type(dt: &DefineType) -> bool {
+        Self::is_string_type(dt) || Self::is_interface_type(dt)
+    }
+
+    pub(crate) fn get_or_assign_type_tag(&mut self, type_name: &str) -> u32 {
+        if let Some(&tag) = self.type_tags.get(type_name) {
+            return tag;
+        }
+        let tag = self.next_type_tag;
+        self.next_type_tag += 1;
+        self.type_tags.insert(type_name.to_string(), tag);
+        tag
+    }
+
+    fn is_heap_resident(dt: &DefineType) -> bool {
+        matches!(
+            dt.unwrap_qualifiers(),
+            DefineType::Struct { .. }
+                | DefineType::Slice(_)
+                | DefineType::Ref(_)
+                | DefineType::Interface { .. }
+        )
+    }
+
+    /// Box a concrete value (on top of the WASM stack) into an interface fat pointer.
+    /// After this call, the stack has (type_tag: i32, data_ptr: i32).
+    pub(crate) fn box_to_interface(&mut self, concrete_dt: &DefineType, type_name: &str) {
+        let tag = self.get_or_assign_type_tag(type_name);
+
+        if Self::is_heap_resident(concrete_dt) {
+            // Value is already a heap pointer -- just add the tag underneath
+            let ptr_local = self.next_wasm_local;
+            self.wasm.active().local_set(ptr_local);
+            self.wasm.active().i32_const(tag as i32);
+            self.wasm.active().local_get(ptr_local);
+        } else {
+            // Value type: heap-allocate a box, store the value, use the pointer
+            let val_local = self.next_wasm_local;
+            self.wasm.active().local_set(val_local);
+            let size = crate::wasm::layout::field_byte_size(concrete_dt);
+            let rt_alloc_idx = self.wasm.rt_alloc_func_idx().expect("rt_alloc not registered");
+            self.wasm.active().i32_const(size as i32);
+            self.wasm.active().call(rt_alloc_idx);
+            let ptr_local = self.next_wasm_local + 1;
+            self.wasm.active().local_tee(ptr_local);
+            self.wasm.active().local_get(val_local);
+            self.wasm.active().i32_store(0);
+            // Stack: push (tag, data_ptr)
+            self.wasm.active().i32_const(tag as i32);
+            self.wasm.active().local_get(ptr_local);
+        }
+    }
+
+    /// Get the concrete type name from a DefineType for type tagging purposes.
+    pub(crate) fn type_name_for_tag(dt: &DefineType) -> String {
+        let inner = dt.unwrap_qualifiers();
+        match &inner {
+            DefineType::Struct { name, .. } => name.clone(),
+            DefineType::Int | DefineType::Int32 => "int".to_string(),
+            DefineType::Int64 => "int64".to_string(),
+            DefineType::Bool => "bool".to_string(),
+            DefineType::Float32 => "float32".to_string(),
+            DefineType::Float64 => "float64".to_string(),
+            DefineType::String => "string".to_string(),
+            DefineType::Byte | DefineType::Uint8 => "byte".to_string(),
+            DefineType::Ref(inner) => format!("*{}", Self::type_name_for_tag(inner)),
+            _ => format!("{:?}", inner),
+        }
     }
 
     fn emit_builtin_value(&mut self, name: &str, dt: &DefineType) {
@@ -490,10 +588,25 @@ impl Compiler {
             let ordered =
                 compute_init_order(&all_decls).map_err(|e| Error::InternalError(e))?;
 
+            // Pass 1: compile type declarations so interfaces and structs are fully defined
             for decl in &ordered {
-                self.compile_declaration(&cur_pkg, decl)?;
+                if matches!(decl, Declaration::Type(_)) {
+                    self.compile_declaration(&cur_pkg, decl)?;
+                }
+            }
+
+            // Build vtable metadata after types are compiled but before function bodies
+            self.build_interface_vtable_metadata(&cur_pkg);
+
+            // Pass 2: compile remaining declarations (functions, variables, consts)
+            for decl in &ordered {
+                if !matches!(decl, Declaration::Type(_)) {
+                    self.compile_declaration(&cur_pkg, decl)?;
+                }
             }
         }
+
+        self.finalize_interface_vtables(&pkg);
 
         let main_pkg = main
             .parent()
@@ -1197,8 +1310,150 @@ impl Compiler {
                 self.compile_statement(pkg, inner)?;
                 Ok(None)
             }
+            Statement::TypeSwitch(ts) => {
+                self.compile_type_switch_statement(pkg, ts)?;
+                Ok(None)
+            }
             _ => Err(self.unsupported(&format!("statement: {:#?}", stmt))),
         }
+    }
+
+    fn compile_type_switch_statement(
+        &mut self,
+        pkg: &str,
+        ts: &crate::parser::ast::TypeSwitchStmt,
+    ) -> Result<(), Error> {
+        self.symbols.enter_scope();
+
+        if let Some(init) = &ts.init {
+            self.compile_statement(pkg, init)?;
+        }
+
+        // Extract the tag statement which gives us the interface expression
+        // and optionally a binding variable name.
+        // Tag is either: `x.(type)` wrapped in ExprStmt, or `v := x.(type)` wrapped in AssignStmt
+        let (bind_name, iface_expr) = match ts.tag.as_deref() {
+            Some(Statement::Expr(expr_stmt)) => {
+                if let Expression::TypeAssert(ta) = &expr_stmt.expr {
+                    (None, &ta.left)
+                } else {
+                    return Err(Error::SyntaxError("type switch tag must be a type assertion".into()));
+                }
+            }
+            Some(Statement::Assign(assign)) => {
+                if assign.right.len() == 1 {
+                    if let Expression::TypeAssert(ta) = &assign.right[0] {
+                        let name = match &assign.left[0] {
+                            Expression::Ident(id) => Some(id.name.clone()),
+                            _ => None,
+                        };
+                        (name, &ta.left)
+                    } else {
+                        return Err(Error::SyntaxError("type switch tag must be a type assertion".into()));
+                    }
+                } else {
+                    return Err(Error::SyntaxError("type switch tag must have one RHS".into()));
+                }
+            }
+            _ => return Err(Error::SyntaxError("type switch missing tag".into())),
+        };
+
+        let iface_dt = self.compile_expression(pkg, iface_expr)?;
+        if !Self::is_interface_type(&iface_dt) {
+            return Err(Error::TypeError(format!(
+                "type switch on non-interface type {:?}", iface_dt
+            )));
+        }
+
+        let data_local = self.next_wasm_local;
+        self.wasm.active().local_set(data_local);
+        let tag_local = self.next_wasm_local + 1;
+        self.wasm.active().local_set(tag_local);
+        let saved_next = self.next_wasm_local;
+        self.next_wasm_local = tag_local + 2;
+
+        let cases = &ts.block.body;
+        let num_cases = cases.len();
+
+        // Emit nested if/else blocks for each case
+        for (ci, clause) in cases.iter().enumerate() {
+            let is_default = clause.list.is_empty();
+            let is_last = ci == num_cases - 1;
+
+            if is_default {
+                // Default case: just emit the body
+                self.symbols.enter_scope();
+                if let Some(ref name) = bind_name {
+                    // In default case, the binding has the interface type
+                    let sym = self.symbols.define(
+                        pkg, name,
+                        DefineType::Qualified(Qualifier::Var, Box::new(iface_dt.clone())),
+                        false,
+                    );
+                    let base = self.next_wasm_local;
+                    self.next_wasm_local += 2;
+                    self.locals.insert(sym.index, base);
+                    self.wasm.active().local_get(tag_local);
+                    self.wasm.active().local_set(base);
+                    self.wasm.active().local_get(data_local);
+                    self.wasm.active().local_set(base + 1);
+                }
+                for stmt in clause.body.iter() {
+                    self.compile_statement(pkg, stmt)?;
+                }
+                self.symbols.leave_scope();
+            } else {
+                // Compare tag with each type in the case list
+                // For simplicity, support single-type cases
+                let case_type_expr = &clause.list[0];
+                let case_dt = self.expression_to_define_type(pkg, case_type_expr)
+                    .ok_or_else(|| Error::TypeError("cannot resolve type in type switch case".into()))?;
+                let case_name = Self::type_name_for_tag(&case_dt);
+                let case_tag = self.get_or_assign_type_tag(&case_name);
+
+                self.wasm.active().local_get(tag_local);
+                self.wasm.active().i32_const(case_tag as i32);
+                self.wasm.active().emit(&Instruction::I32Eq);
+
+                if is_last {
+                    self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+                } else {
+                    self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+                }
+
+                self.symbols.enter_scope();
+                if let Some(ref name) = bind_name {
+                    let sym = self.symbols.define(
+                        pkg, name,
+                        DefineType::Qualified(Qualifier::Var, Box::new(case_dt.clone())),
+                        false,
+                    );
+                    let v_local = self.next_wasm_local;
+                    self.next_wasm_local += 1;
+                    self.locals.insert(sym.index, v_local);
+                    self.wasm.active().local_get(data_local);
+                    self.wasm.active().local_set(v_local);
+                }
+                for stmt in clause.body.iter() {
+                    self.compile_statement(pkg, stmt)?;
+                }
+                self.symbols.leave_scope();
+
+                if !is_last {
+                    self.wasm.active().emit(&Instruction::Else);
+                }
+            }
+        }
+
+        // Close all if/else blocks (one End per non-default case)
+        let non_default_count = cases.iter().filter(|c| !c.list.is_empty()).count();
+        for _ in 0..non_default_count {
+            self.wasm.active().emit(&Instruction::End);
+        }
+
+        self.next_wasm_local = saved_next;
+        self.symbols.leave_scope();
+        Ok(())
     }
 
     fn compile_for_statement(
@@ -1491,6 +1746,186 @@ impl Compiler {
             )));
         }
 
+        // Comma-ok type assertion: v, ok := x.(T)
+        if assign.left.len() == 2 && assign.right.len() == 1 {
+            if let Expression::TypeAssert(ta) = &assign.right[0] {
+                if ta.right.is_some() {
+                    self.compile_type_assert_comma_ok(pkg, assign, ta)?;
+                    return Ok(None);
+                }
+            }
+        }
+
+        if assign.left.len() > 1 && assign.right.len() == 1 {
+            let rhs = &assign.right[0];
+            let rhs_dt = self.compile_expression(pkg, rhs)?;
+
+            let tuple_types = match rhs_dt {
+                DefineType::Tuple(ref types) => types.clone(),
+                _ => {
+                    return Err(Error::TypeError(format!(
+                        "assignment mismatch: {} variables but 1 value (type {:?})",
+                        assign.left.len(),
+                        rhs_dt
+                    )));
+                }
+            };
+
+            if tuple_types.len() != assign.left.len() {
+                return Err(Error::TypeError(format!(
+                    "assignment mismatch: {} variables but {} return values",
+                    assign.left.len(),
+                    tuple_types.len()
+                )));
+            }
+
+            // Stash all N values from the stack into scratch locals (reverse order:
+            // last return value is on top of the WASM stack).
+            let stash_base = self.next_wasm_local;
+            let mut stash_locals: Vec<(u32, bool)> = Vec::with_capacity(tuple_types.len());
+            let mut slot = stash_base;
+            for dt in &tuple_types {
+                let is_str = Self::is_string_type(dt);
+                stash_locals.push((slot, is_str));
+                slot += if is_str { 2 } else { 1 };
+            }
+            self.next_wasm_local = slot;
+
+            for &(local, is_str) in stash_locals.iter().rev() {
+                if is_str {
+                    self.wasm.active().local_set(local + 1); // len
+                    self.wasm.active().local_set(local);      // ptr
+                } else {
+                    self.wasm.active().local_set(local);
+                }
+            }
+
+            // Now unpack: iterate LHS in order, pushing the stashed value and assigning.
+            for (i, left) in assign.left.iter().enumerate() {
+                let dt = &tuple_types[i];
+                let (stash_local, is_str) = stash_locals[i];
+
+                match &assign.op {
+                    Operator::Define => {
+                        let name = match left {
+                            Expression::Ident(ident) => &ident.name,
+                            _ => {
+                                return Err(Error::SyntaxError(format!(
+                                    "non-identifier on left side of :=: {:#?}",
+                                    left
+                                )))
+                            }
+                        };
+
+                        if name == "_" {
+                            continue;
+                        }
+
+                        let symbol = self.symbols.define(
+                            pkg,
+                            name.as_str(),
+                            DefineType::Qualified(Qualifier::Var, Box::new(dt.clone())),
+                            dt.is_invar(),
+                        );
+
+                        if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
+                            self.wasm.active().local_get(mv.addr_local);
+                            self.wasm.active().local_get(stash_local);
+                            self.wasm.active().i32_store(0);
+                        } else if self.escaped_vars.contains(name.as_str()) {
+                            let size = crate::wasm::layout::field_byte_size(dt);
+                            let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                                .expect("rt_alloc not registered");
+                            self.wasm.active().i32_const(size as i32);
+                            self.wasm.active().call(rt_alloc_idx);
+                            let addr_local = self.next_wasm_local;
+                            self.next_wasm_local += 1;
+                            self.wasm.active().local_tee(addr_local);
+                            self.wasm.active().local_get(stash_local);
+                            self.wasm.active().i32_store(0);
+                            self.mem_vars.insert(name.to_string(), MemVar { addr_local, size });
+                        } else if is_str {
+                            let base = self.next_wasm_local;
+                            self.next_wasm_local += 2;
+                            self.locals.insert(symbol.index, base);
+                            self.wasm.active().local_get(stash_local);
+                            self.wasm.active().local_set(base);
+                            self.wasm.active().local_get(stash_local + 1);
+                            self.wasm.active().local_set(base + 1);
+                        } else if dt.is_func() {
+                            if let DefineType::Func { name: fname, .. } = dt {
+                                if let Some(&fidx) = self.wasm_func_map.get(fname) {
+                                    self.closure_var_func.insert(symbol.index, fidx);
+                                }
+                            }
+                        } else {
+                            let local_idx = self.next_wasm_local;
+                            self.next_wasm_local += 1;
+                            self.locals.insert(symbol.index, local_idx);
+                            self.wasm.active().local_get(stash_local);
+                            self.wasm.active().local_set(local_idx);
+                        }
+                    }
+                    Operator::Assign => {
+                        if let Expression::Ident(ident) = left {
+                            if ident.name == "_" {
+                                continue;
+                            }
+                        }
+
+                        if let Expression::Ident(ident) = left {
+                            let name = &ident.name;
+
+                            if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
+                                self.wasm.active().local_get(mv.addr_local);
+                                self.wasm.active().local_get(stash_local);
+                                self.wasm.active().i32_store(0);
+                                continue;
+                            }
+
+                            let resolved = self.symbols.resolve(pkg, name).ok_or(
+                                Error::ReferenceError(format!("assign: `{name}` is not defined")),
+                            )?;
+
+                            match resolved {
+                                Resolved::Local((symbol, sym_dt, _)) => {
+                                    if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                                        if Self::is_string_type(&sym_dt) {
+                                            self.wasm.active().local_get(stash_local);
+                                            self.wasm.active().local_set(local_idx);
+                                            self.wasm.active().local_get(stash_local + 1);
+                                            self.wasm.active().local_set(local_idx + 1);
+                                        } else {
+                                            self.wasm.active().local_get(stash_local);
+                                            self.wasm.active().local_set(local_idx);
+                                        }
+                                    } else {
+                                        return Err(Error::InternalError(format!(
+                                            "no WASM local for symbol '{}' (idx={})",
+                                            name, symbol.index
+                                        )));
+                                    }
+                                }
+                                _ => {
+                                    return Err(
+                                        self.unsupported("enclosed variable assignment in WASM")
+                                    )
+                                }
+                            }
+                        } else {
+                            return Err(self.unsupported(&format!(
+                                "non-ident multi-return assignment target: {:#?}",
+                                left
+                            )));
+                        }
+                    }
+                    _ => return Err(self.unsupported(&format!("assign op in multi-return: {:?}", assign.op))),
+                }
+            }
+
+            return Ok(None);
+        }
+
         for (left, right) in assign.left.iter().zip(assign.right.iter()) {
             match &assign.op {
                 Operator::AddAssign
@@ -1569,6 +2004,12 @@ impl Compiler {
                                 self.closure_var_func.insert(symbol.index, fidx);
                             }
                         }
+                    } else if Self::is_interface_type(&rt) {
+                        let base = self.next_wasm_local;
+                        self.next_wasm_local += 2;
+                        self.locals.insert(symbol.index, base);
+                        self.wasm.active().local_set(base + 1); // data_ptr
+                        self.wasm.active().local_set(base);      // type_tag
                     } else if Self::is_string_type(&rt) {
                         let base = self.next_wasm_local;
                         self.next_wasm_local += 2;
@@ -1710,10 +2151,10 @@ impl Compiler {
 
                     if name == "_" {
                         let rt = self.compile_expression(pkg, right)?;
-                        if Self::is_string_type(&rt) {
+                        if Self::is_fat_type(&rt) {
                             self.wasm.active().drop();
                             self.wasm.active().drop();
-                                } else {
+                        } else {
                             self.wasm.active().drop();
                         }
                         continue;
@@ -1733,24 +2174,32 @@ impl Compiler {
                         Error::ReferenceError(format!("assign: `{name}` is not defined")),
                     )?;
 
-                    self.compile_expression(pkg, right)?;
+                    let existing_dt = resolved.get_type().0;
+
+                    let rt = self.compile_expression(pkg, right)?;
+
+                    // Box concrete value into interface if the target is interface
+                    if Self::is_interface_type(&existing_dt) && !Self::is_interface_type(&rt) && !rt.is_nil() {
+                        let tname = Self::type_name_for_tag(&rt);
+                        self.box_to_interface(&rt, &tname);
+                    }
 
                     match resolved {
                         Resolved::Local((symbol, dt, _)) => {
                             if let Some(&local_idx) = self.locals.get(&symbol.index) {
-                                if Self::is_string_type(&dt) {
+                                if Self::is_fat_type(&dt) {
                                     self.wasm.active().local_set(local_idx + 1);
                                     self.wasm.active().local_set(local_idx);
-                            } else {
+                                } else {
                                     self.wasm.active().local_set(local_idx);
                                 }
                             } else {
                                 return Err(Error::InternalError(format!(
                                     "no WASM local for symbol '{}' (idx={})",
                                     name, symbol.index
-                            )));
+                                )));
+                            }
                         }
-                    }
                         _ => {
                             return Err(
                                 self.unsupported("enclosed variable assignment in WASM")
@@ -2060,7 +2509,7 @@ impl Compiler {
                 match self.symbols.resolve(pkg, &ident.name) {
                     Some(Resolved::Local((symbol, dt, _))) => {
                         if let Some(&local_idx) = self.locals.get(&symbol.index) {
-                            if Self::is_string_type(&dt) {
+                            if Self::is_fat_type(&dt) {
                                 self.wasm.active().local_get(local_idx);
                                 self.wasm.active().local_get(local_idx + 1);
                             } else {
@@ -2073,10 +2522,10 @@ impl Compiler {
                     }
                     Some(Resolved::Enclosed((symbol, dt, _))) => {
                         if let Some(&local_idx) = self.locals.get(&symbol.index) {
-                            if Self::is_string_type(&dt) {
+                            if Self::is_fat_type(&dt) {
                                 self.wasm.active().local_get(local_idx);
                                 self.wasm.active().local_get(local_idx + 1);
-                    } else {
+                            } else {
                                 self.wasm.active().local_get(local_idx);
                             }
                         } else {
@@ -2427,6 +2876,51 @@ impl Compiler {
 
                 Ok(slice_dt)
             }
+            Expression::TypeAssert(ta) => {
+                // Compile the interface expression: (type_tag, data_ptr) on stack
+                let iface_dt = self.compile_expression(pkg, &ta.left)?;
+                if !Self::is_interface_type(&iface_dt) {
+                    return Err(Error::TypeError(format!(
+                        "type assertion on non-interface type {:?}", iface_dt
+                    )));
+                }
+
+                let data_local = self.next_wasm_local;
+                self.wasm.active().local_set(data_local);
+                let tag_local = self.next_wasm_local + 1;
+                self.wasm.active().local_set(tag_local);
+
+                match &ta.right {
+                    Some(type_expr) => {
+                        // x.(ConcreteType) - single value form: trap on mismatch
+                        let target_dt = self.expression_to_define_type(pkg, type_expr)
+                            .ok_or_else(|| Error::TypeError(
+                                "cannot resolve type in type assertion".to_string()
+                            ))?;
+                        let target_name = Self::type_name_for_tag(&target_dt);
+                        let target_tag = self.get_or_assign_type_tag(&target_name);
+
+                        // Compare tag
+                        self.wasm.active().local_get(tag_local);
+                        self.wasm.active().i32_const(target_tag as i32);
+                        self.wasm.active().emit(&Instruction::I32Ne);
+                        self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+                        self.wasm.active().emit(&Instruction::Unreachable);
+                        self.wasm.active().emit(&Instruction::End);
+
+                        // Push the unboxed data_ptr
+                        self.wasm.active().local_get(data_local);
+
+                        Ok(target_dt)
+                    }
+                    None => {
+                        // x.(type) -- used within type switch, should not be compiled directly
+                        Err(Error::SyntaxError(
+                            "x.(type) can only appear in type switch".to_string()
+                        ))
+                    }
+                }
+            }
             _ => Err(self.unsupported(&format!("expression: {:#?}", expr))),
         }
     }
@@ -2693,6 +3187,139 @@ impl Compiler {
         Ok(func_dt)
     }
 
+    /// Phase 1: Compute vtable layout and assign type tags.
+    /// Called after all type and function declarations are pre-registered
+    /// but before function bodies are compiled.
+    fn build_interface_vtable_metadata(&mut self, pkg: &str) {
+        let mut interfaces: Vec<(String, Vec<DefineType>)> = Vec::new();
+        let mut structs: Vec<(String, DefineType)> = Vec::new();
+
+        for ctx in &self.symbols.contexts {
+            for sym_scope in &ctx.symbols {
+                for (name, dt, _pkg) in sym_scope {
+                    let inner = dt.unwrap_qualifiers();
+                    match &inner {
+                        DefineType::Interface { name: iname, methods } => {
+                            if !methods.is_empty() {
+                                interfaces.push((iname.clone(), methods.clone()));
+                            }
+                        }
+                        DefineType::Struct { .. } => {
+                            structs.push((name.clone(), dt.clone()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if interfaces.is_empty() {
+            return;
+        }
+
+
+        let mut table_offset: u32 = 0;
+
+        for (iface_name, iface_methods) in &interfaces {
+            let mut implementors: Vec<String> = Vec::new();
+
+            for (sname, sdt) in &structs {
+                let sdt_inner = sdt.unwrap_qualifiers();
+                if sdt_inner.implements(pkg, &DefineType::Interface {
+                    name: iface_name.clone(),
+                    methods: iface_methods.clone(),
+                }, self) {
+                    implementors.push(sname.clone());
+                }
+            }
+
+            if implementors.is_empty() {
+                continue;
+            }
+
+            for imp in &implementors {
+                self.get_or_assign_type_tag(imp);
+            }
+
+            let num_types = implementors.len() as u32;
+            let vtable_base = table_offset;
+            let mut method_entries = Vec::with_capacity(iface_methods.len());
+
+            for method_dt in iface_methods.iter() {
+                let (method_name, _, args, rt) = method_dt.as_func();
+
+                let mut wasm_params = vec![ValType::I32]; // receiver
+                for arg in &args {
+                    let dt = match arg {
+                        ContextType::Named(_, d) | ContextType::Embedded(_, d) | ContextType::Unnamed(d) => d,
+                    };
+                    if Self::is_fat_type(dt) {
+                        wasm_params.push(ValType::I32);
+                        wasm_params.push(ValType::I32);
+                    } else {
+                        wasm_params.push(Self::define_type_to_wasm(dt));
+                    }
+                }
+                let wasm_results: Vec<ValType> = match rt.as_ref() {
+                    DefineType::Null => vec![],
+                    dt => vec![Self::define_type_to_wasm(dt)],
+                };
+
+                let type_idx = self.wasm.add_func_type(wasm_params, wasm_results);
+
+                method_entries.push(IfaceMethodEntry {
+                    name: method_name.clone(),
+                    type_idx,
+                });
+            }
+
+            table_offset += (iface_methods.len() as u32) * num_types;
+
+            self.iface_vtables.insert(iface_name.clone(), IfaceVtable {
+                table_base: vtable_base,
+                method_entries,
+                num_types,
+                type_order: implementors,
+            });
+        }
+
+        if table_offset > 0 {
+            self.wasm.set_vtable_size(table_offset);
+        }
+    }
+
+    /// Phase 2: Populate the actual WASM table entries with function indices.
+    /// Called after all function bodies are compiled (so wasm_func_map is fully populated).
+    fn finalize_interface_vtables(&mut self, pkg: &str) {
+        let vtables: Vec<(String, IfaceVtable)> = self.iface_vtables.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (iface_name, vtable) in &vtables {
+            let iface_dt = self.symbols.resolve(pkg, iface_name)
+                .map(|r| r.get_type().0);
+            let iface_methods = match iface_dt {
+                Some(DefineType::Interface { methods, .. }) => methods,
+                _ => continue,
+            };
+
+            for (method_idx, method_dt) in iface_methods.iter().enumerate() {
+                let (method_name, _, _, _) = method_dt.as_func();
+
+                for (type_slot, imp_name) in vtable.type_order.iter().enumerate() {
+                    let imp_dt = self.symbols.resolve(pkg, imp_name)
+                        .map(|r| r.get_type().0)
+                        .unwrap_or(DefineType::Null);
+                    let mangled = make_method_name(pkg, imp_dt.unwrap_qualifiers(), &method_name);
+                    if let Some(&func_idx) = self.wasm_func_map.get(&mangled) {
+                        let slot = vtable.table_base + (method_idx as u32) * vtable.num_types + (type_slot as u32);
+                        self.wasm.add_vtable_entry(slot, func_idx);
+                    }
+                }
+            }
+        }
+    }
+
     fn compile_call_expression(
         &mut self,
         pkg: &str,
@@ -2787,7 +3414,53 @@ impl Compiler {
                 self.wasm.active().call(wasm_idx);
                 Ok(rts)
             }
-            _ => Err(self.unsupported("dynamic dispatch calls")),
+            CallType::DynamicDispatch {
+                method_index,
+                method_dt,
+                iface_name,
+                ..
+            } => {
+                let (_, _, arg_types, rt) = method_dt.as_func();
+                let rts = rt.type_to_val_t();
+
+                // Stack has (type_tag, data_ptr) from the selector expression compiled in from_call
+                let data_local = self.next_wasm_local;
+                self.wasm.active().local_set(data_local);
+                let tag_local = self.next_wasm_local + 1;
+                self.wasm.active().local_set(tag_local);
+                let saved_next = self.next_wasm_local;
+                self.next_wasm_local = tag_local + 2;
+
+                // Push receiver (data_ptr) as first arg
+                self.wasm.active().local_get(data_local);
+
+                // Push user arguments
+                for (a, _t) in call.args.iter().zip(arg_types.iter()) {
+                    self.compile_expression(pkg, a)?;
+                }
+
+                // Compute table index: vtable_base + method_index * num_types + (tag - 1)
+                let vtable = self.iface_vtables.get(&iface_name).cloned().ok_or_else(|| {
+                    Error::InternalError(format!("no vtable for interface '{}'", iface_name))
+                })?;
+
+                let method_entry = &vtable.method_entries[method_index];
+                let method_type_idx = method_entry.type_idx;
+
+                self.wasm.active().i32_const(vtable.table_base as i32);
+                self.wasm.active().i32_const(method_index as i32);
+                self.wasm.active().i32_const(vtable.num_types as i32);
+                self.wasm.active().emit(&Instruction::I32Mul);
+                self.wasm.active().emit(&Instruction::I32Add);
+                self.wasm.active().local_get(tag_local);
+                self.wasm.active().i32_const(1);
+                self.wasm.active().emit(&Instruction::I32Sub);
+                self.wasm.active().emit(&Instruction::I32Add);
+
+                self.wasm.active().call_indirect(method_type_idx, 0);
+                self.next_wasm_local = saved_next;
+                Ok(rts)
+            }
         }
     }
 
@@ -3149,6 +3822,126 @@ impl Compiler {
         Ok(func_idx)
     }
 
+    /// Handle `v, ok := x.(T)` - the comma-ok form of type assertion.
+    fn compile_type_assert_comma_ok(
+        &mut self,
+        pkg: &str,
+        assign: &AssignStmt,
+        ta: &crate::parser::ast::TypeAssertion,
+    ) -> Result<(), Error> {
+        // Compile the interface expression
+        let iface_dt = self.compile_expression(pkg, &ta.left)?;
+        if !Self::is_interface_type(&iface_dt) {
+            return Err(Error::TypeError(format!(
+                "type assertion on non-interface type {:?}", iface_dt
+            )));
+        }
+
+        let data_local = self.next_wasm_local;
+        self.wasm.active().local_set(data_local);
+        let tag_local = self.next_wasm_local + 1;
+        self.wasm.active().local_set(tag_local);
+        let saved_next = self.next_wasm_local;
+        self.next_wasm_local = tag_local + 2;
+
+        let type_expr = ta.right.as_ref().unwrap();
+        let target_dt = self.expression_to_define_type(pkg, type_expr)
+            .ok_or_else(|| Error::TypeError("cannot resolve type in type assertion".to_string()))?;
+        let target_name = Self::type_name_for_tag(&target_dt);
+        let target_tag = self.get_or_assign_type_tag(&target_name);
+
+        // Compare tag: ok = (tag == target_tag)
+        self.wasm.active().local_get(tag_local);
+        self.wasm.active().i32_const(target_tag as i32);
+        self.wasm.active().emit(&Instruction::I32Eq);
+        let ok_local = self.next_wasm_local;
+        self.wasm.active().local_set(ok_local);
+        self.next_wasm_local = ok_local + 1;
+
+        // value = ok ? data_ptr : 0
+        self.wasm.active().local_get(ok_local);
+        self.wasm.active().emit(&Instruction::If(BlockType::Result(ValType::I32)));
+        self.wasm.active().local_get(data_local);
+        self.wasm.active().emit(&Instruction::Else);
+        self.wasm.active().i32_const(0);
+        self.wasm.active().emit(&Instruction::End);
+        let val_local = self.next_wasm_local;
+        self.wasm.active().local_set(val_local);
+        self.next_wasm_local = val_local + 1;
+
+        // Assign v
+        let left_v = &assign.left[0];
+        let left_ok = &assign.left[1];
+
+        match &assign.op {
+            Operator::Define => {
+                let v_name = match left_v {
+                    Expression::Ident(id) => &id.name,
+                    _ => return Err(Error::SyntaxError("non-ident in type assert comma-ok".into())),
+                };
+                let ok_name = match left_ok {
+                    Expression::Ident(id) => &id.name,
+                    _ => return Err(Error::SyntaxError("non-ident in type assert comma-ok".into())),
+                };
+
+                if v_name != "_" {
+                    let sym = self.symbols.define(
+                        pkg, v_name,
+                        DefineType::Qualified(Qualifier::Var, Box::new(target_dt.clone())),
+                        false,
+                    );
+                    let v_wasm_local = self.next_wasm_local;
+                    self.next_wasm_local += 1;
+                    self.locals.insert(sym.index, v_wasm_local);
+                    self.wasm.active().local_get(val_local);
+                    self.wasm.active().local_set(v_wasm_local);
+                }
+
+                if ok_name != "_" {
+                    let sym = self.symbols.define(
+                        pkg, ok_name,
+                        DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Bool)),
+                        false,
+                    );
+                    let ok_wasm_local = self.next_wasm_local;
+                    self.next_wasm_local += 1;
+                    self.locals.insert(sym.index, ok_wasm_local);
+                    self.wasm.active().local_get(ok_local);
+                    self.wasm.active().local_set(ok_wasm_local);
+                }
+            }
+            Operator::Assign => {
+                // Re-assign existing variables
+                if let Expression::Ident(id) = left_v {
+                    if id.name != "_" {
+                        if let Some(resolved) = self.symbols.resolve(pkg, &id.name) {
+                            let sym = resolved.get_symbol();
+                            if let Some(&local_idx) = self.locals.get(&sym.index) {
+                                self.wasm.active().local_get(val_local);
+                                self.wasm.active().local_set(local_idx);
+                            }
+                        }
+                    }
+                }
+                if let Expression::Ident(id) = left_ok {
+                    if id.name != "_" {
+                        if let Some(resolved) = self.symbols.resolve(pkg, &id.name) {
+                            let sym = resolved.get_symbol();
+                            if let Some(&local_idx) = self.locals.get(&sym.index) {
+                                self.wasm.active().local_get(ok_local);
+                                self.wasm.active().local_set(local_idx);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => return Err(Error::SyntaxError("unexpected operator in type assertion".into())),
+        }
+
+        self.next_wasm_local = saved_next;
+        Ok(())
+    }
+
     fn compile_operation_expression(
         &mut self,
         pkg: &str,
@@ -3412,7 +4205,7 @@ impl Compiler {
                 value: "0.0".to_string(),
             }),
             DefineType::Qualified(_, inner) => self.make_type_default_val(*inner),
-            DefineType::Ref(_) => Expression::Ident(Ident {
+            DefineType::Ref(_) | DefineType::Interface { .. } => Expression::Ident(Ident {
                 pos: 0,
                 name: "nil".to_string(),
             }),

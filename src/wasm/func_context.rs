@@ -165,6 +165,14 @@ impl WasmFuncContext {
     }
 
     #[inline]
+    pub fn call_indirect(&mut self, type_idx: u32, table_idx: u32) {
+        self.emit(&Instruction::CallIndirect {
+            type_index: type_idx,
+            table_index: table_idx,
+        });
+    }
+
+    #[inline]
     pub fn ret(&mut self) {
         self.emit(&Instruction::Return);
     }

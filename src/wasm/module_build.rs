@@ -5,10 +5,11 @@
 
 use crate::wasm::func_context::WasmFuncContext;
 use crate::wasm::layout::{MEMORY_MIN_PAGES, STACK_TOP};
+use std::borrow::Cow;
 use wasm_encoder::{
-    CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, FunctionSection,
-    GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, Module, TypeSection,
-    ValType,
+    CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, Module,
+    RefType, TableSection, TableType, TypeSection, ValType,
 };
 
 #[derive(Debug)]
@@ -30,6 +31,9 @@ pub struct WasmModuleBuilder {
     println_string_func_idx: Option<u32>,
     sp_global_idx: Option<u32>,
     next_global_idx: u32,
+    /// Funcref table entries: (table_offset, func_idx) for interface vtables.
+    vtable_entries: Vec<(u32, u32)>,
+    vtable_size: u32,
 }
 
 impl Default for WasmModuleBuilder {
@@ -57,6 +61,8 @@ impl WasmModuleBuilder {
             println_string_func_idx: None,
             sp_global_idx: None,
             next_global_idx: 0,
+            vtable_entries: Vec::new(),
+            vtable_size: 0,
         }
     }
 
@@ -197,19 +203,61 @@ impl WasmModuleBuilder {
         self.completed_bodies.push((func_idx, func));
     }
 
+    /// Reserve `size` slots in the funcref table for interface vtables.
+    pub fn set_vtable_size(&mut self, size: u32) {
+        self.vtable_size = size;
+    }
+
+    /// Record a vtable entry: function at `table_offset` in table 0.
+    pub fn add_vtable_entry(&mut self, table_offset: u32, func_idx: u32) {
+        self.vtable_entries.push((table_offset, func_idx));
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         self.completed_bodies.sort_by_key(|(idx, _)| *idx);
         let mut code = CodeSection::new();
         for (_, func) in &self.completed_bodies {
             code.function(func);
         }
+
+        let has_table = self.vtable_size > 0;
+
         let mut module = Module::new();
         module.section(&self.types);
         module.section(&self.imports);
         module.section(&self.functions);
+
+        if has_table {
+            let mut tables = TableSection::new();
+            tables.table(TableType {
+                element_type: RefType::FUNCREF,
+                minimum: self.vtable_size as u64,
+                maximum: Some(self.vtable_size as u64),
+                table64: false,
+                shared: false,
+            });
+            module.section(&tables);
+        }
+
         module.section(&self.memory);
         module.section(&self.globals);
         module.section(&self.exports);
+
+        if has_table && !self.vtable_entries.is_empty() {
+            let mut elements = ElementSection::new();
+            // Group contiguous runs to minimize element segments, but for simplicity
+            // emit one segment per entry.
+            for (offset, func_idx) in &self.vtable_entries {
+                let funcs = vec![*func_idx];
+                elements.active(
+                    Some(0),
+                    &ConstExpr::i32_const(*offset as i32),
+                    Elements::Functions(Cow::Owned(funcs)),
+                );
+            }
+            module.section(&elements);
+        }
+
         module.section(&code);
         module.finish()
     }
