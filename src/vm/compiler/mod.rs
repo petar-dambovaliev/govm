@@ -1,3 +1,4 @@
+pub(crate) mod analysis;
 mod call;
 pub mod compiler;
 pub mod declaration;

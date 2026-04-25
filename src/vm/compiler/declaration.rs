@@ -1,9 +1,12 @@
-use crate::parser::ast::{ConstSpec, Decl, FuncDecl, VarSpec};
-use crate::vm::compiler::compiler::Compiler;
+use crate::parser::ast::{self, ConstSpec, Decl, Expression, FuncDecl, VarSpec};
+use crate::parser::token::Operator;
+use crate::vm::compiler::analysis;
+use crate::vm::compiler::compiler::{Compiler, MemVar};
 use crate::vm::compiler::{make_method_name, FuncContext};
 use crate::vm::symbols::{ContextType, DefineType, Qualifier, Scope};
 use crate::vm::Error;
-use wasm_encoder::ValType;
+use crate::wasm::layout::field_byte_size;
+use wasm_encoder::{Instruction, ValType};
 
 pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Result<(), Error> {
     for spec in &v.specs {
@@ -60,7 +63,27 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                 )
             };
 
-            if Compiler::is_string_type(&rt) {
+            if let Some(mv) = c.mem_vars.get(&name.name).cloned() {
+                let tmp = c.next_wasm_local;
+                c.wasm.active().local_set(tmp);
+                c.wasm.active().local_get(mv.addr_local);
+                c.wasm.active().local_get(tmp);
+                c.wasm.active().i32_store(0);
+            } else if c.escaped_vars.contains(&name.name) {
+                let size = field_byte_size(&rt);
+                let rt_alloc_idx = c.wasm.rt_alloc_func_idx()
+                    .expect("rt_alloc not registered");
+                let val_tmp = c.next_wasm_local;
+                c.wasm.active().local_set(val_tmp);
+                c.wasm.active().i32_const(size as i32);
+                c.wasm.active().call(rt_alloc_idx);
+                let addr_local = c.next_wasm_local + 1;
+                c.wasm.active().local_tee(addr_local);
+                c.wasm.active().local_get(val_tmp);
+                c.wasm.active().i32_store(0);
+                c.mem_vars.insert(name.name.clone(), MemVar { addr_local, size });
+                c.next_wasm_local = addr_local + 1;
+            } else if Compiler::is_string_type(&rt) {
                 let base = c.next_wasm_local;
                 c.next_wasm_local += 2;
                 c.locals.insert(symbol.index, base);
@@ -128,8 +151,14 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     let saved_locals = c.locals.clone();
     let saved_next_local = c.next_wasm_local;
     let saved_outer_sp = c.saved_sp_local;
+    let saved_mem_vars = c.mem_vars.clone();
+    let saved_frame_base = c.frame_base_local;
+    let saved_escaped = c.escaped_vars.clone();
     c.locals.clear();
     c.next_wasm_local = 0;
+    c.mem_vars.clear();
+    c.frame_base_local = None;
+    c.escaped_vars.clear();
 
     let mut wasm_params: Vec<ValType> = Vec::new();
 
@@ -252,6 +281,62 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.wasm.active().global_get(sp_idx);
     c.wasm.active().local_set(saved_sp);
 
+    // Escape analysis: determine which variables need linear memory allocation.
+    if let Some(body) = &f.body {
+        let addr_taken = analysis::analyze_address_taken_vars(&body.list);
+        if !addr_taken.is_empty() {
+            let escaping = analysis::analyze_function_escapes(&body.list);
+            let var_infos = collect_addr_taken_var_types(&body.list, &addr_taken, c, pkg);
+
+            // Split into non-escaping (stack frame) and escaping (heap, deferred to decl site)
+            let mut frame_vars: Vec<(String, u32)> = Vec::new();
+            for (name, size) in &var_infos {
+                if escaping.contains(name.as_str()) {
+                    c.escaped_vars.insert(name.clone());
+                } else {
+                    frame_vars.push((name.clone(), *size));
+                }
+            }
+
+            if !frame_vars.is_empty() {
+                // Compute frame layout
+                let mut total_frame: u32 = 0;
+                let mut offsets: Vec<(String, u32, u32)> = Vec::new();
+                for (name, size) in &frame_vars {
+                    let aligned = (total_frame + 3) & !3;
+                    offsets.push((name.clone(), aligned, *size));
+                    total_frame = aligned + size;
+                }
+                total_frame = (total_frame + 3) & !3;
+
+                // Allocate frame: $sp -= total_frame
+                c.wasm.active().global_get(sp_idx);
+                c.wasm.active().i32_const(total_frame as i32);
+                c.wasm.active().emit(&Instruction::I32Sub);
+                c.wasm.active().global_set(sp_idx);
+
+                let fb_local = c.next_wasm_local;
+                c.next_wasm_local += 1;
+                c.wasm.active().global_get(sp_idx);
+                c.wasm.active().local_set(fb_local);
+                c.frame_base_local = Some(fb_local);
+
+                // Compute each variable's address = frame_base + offset
+                for (name, offset, size) in &offsets {
+                    let addr_local = c.next_wasm_local;
+                    c.next_wasm_local += 1;
+                    c.wasm.active().local_get(fb_local);
+                    if *offset > 0 {
+                        c.wasm.active().i32_const(*offset as i32);
+                        c.wasm.active().emit(&Instruction::I32Add);
+                    }
+                    c.wasm.active().local_set(addr_local);
+                    c.mem_vars.insert(name.clone(), MemVar { addr_local, size: *size });
+                }
+            }
+        }
+    }
+
     let mut terminates = None;
     if let Some(body) = &f.body {
         terminates = c.compile_block_statement(pkg, &body.list)?;
@@ -274,6 +359,9 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.locals = saved_locals;
     c.next_wasm_local = saved_next_local;
     c.saved_sp_local = saved_outer_sp;
+    c.mem_vars = saved_mem_vars;
+    c.frame_base_local = saved_frame_base;
+    c.escaped_vars = saved_escaped;
 
     let _ = symbol;
 
@@ -414,4 +502,84 @@ pub fn compile_const(
     }
 
     Ok(())
+}
+
+/// Walk function body to find address-taken variables and their byte sizes.
+fn collect_addr_taken_var_types(
+    stmts: &[ast::Statement],
+    addr_taken: &std::collections::HashSet<String>,
+    c: &mut Compiler,
+    pkg: &str,
+) -> Vec<(String, u32)> {
+    let mut result = Vec::new();
+    collect_var_types_from_stmts(stmts, addr_taken, c, pkg, &mut result);
+    result
+}
+
+fn collect_var_types_from_stmts(
+    stmts: &[ast::Statement],
+    addr_taken: &std::collections::HashSet<String>,
+    c: &mut Compiler,
+    pkg: &str,
+    out: &mut Vec<(String, u32)>,
+) {
+    for stmt in stmts {
+        match stmt {
+            ast::Statement::Assign(assign) if matches!(assign.op, Operator::Define) => {
+                for lhs in &assign.left {
+                    if let Expression::Ident(id) = lhs {
+                        if addr_taken.contains(&id.name) && !out.iter().any(|(n, _)| n == &id.name) {
+                            out.push((id.name.clone(), 4));
+                        }
+                    }
+                }
+            }
+            ast::Statement::Declaration(ast::DeclStmt::Variable(var_decl)) => {
+                for spec in &var_decl.specs {
+                    for name in &spec.name {
+                        if addr_taken.contains(&name.name) && !out.iter().any(|(n, _)| n == &name.name) {
+                            let size = if let Some(ref typ) = spec.typ {
+                                c.expression_to_define_type(pkg, typ)
+                                    .map(|dt| field_byte_size(&dt))
+                                    .unwrap_or(4)
+                            } else {
+                                4
+                            };
+                            out.push((name.name.clone(), size));
+                        }
+                    }
+                }
+            }
+            ast::Statement::If(if_stmt) => {
+                if let Some(init) = &if_stmt.init {
+                    collect_var_types_from_stmts(std::slice::from_ref(init.as_ref()), addr_taken, c, pkg, out);
+                }
+                collect_var_types_from_stmts(&if_stmt.body.list, addr_taken, c, pkg, out);
+                if let Some(else_) = &if_stmt.else_ {
+                    collect_var_types_from_stmts(std::slice::from_ref(else_.as_ref()), addr_taken, c, pkg, out);
+                }
+            }
+            ast::Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    collect_var_types_from_stmts(std::slice::from_ref(init.as_ref()), addr_taken, c, pkg, out);
+                }
+                collect_var_types_from_stmts(&for_stmt.body.list, addr_taken, c, pkg, out);
+            }
+            ast::Statement::Range(range_stmt) => {
+                collect_var_types_from_stmts(&range_stmt.body.list, addr_taken, c, pkg, out);
+            }
+            ast::Statement::Block(block) => {
+                collect_var_types_from_stmts(&block.list, addr_taken, c, pkg, out);
+            }
+            ast::Statement::Switch(sw) => {
+                if let Some(init) = &sw.init {
+                    collect_var_types_from_stmts(std::slice::from_ref(init.as_ref()), addr_taken, c, pkg, out);
+                }
+                for clause in &sw.block.body {
+                    collect_var_types_from_stmts(&clause.body, addr_taken, c, pkg, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }

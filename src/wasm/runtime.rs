@@ -1144,4 +1144,179 @@ func main() int {
         .expect("should compile and run");
         assert_eq!(result, 1);
     }
+
+    #[test]
+    fn go_pointer_basic() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    x := 42
+    p := &x
+    return *p
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn go_pointer_write() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    x := 1
+    p := &x
+    *p = 2
+    return x
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn go_pointer_swap() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    a := 10
+    b := 20
+    pa := &a
+    pb := &b
+    *pa = *pb
+    return a
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 20);
+    }
+
+    #[test]
+    fn go_pointer_nil_deref() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    var p *int
+    return *p
+}
+"#,
+        );
+        assert!(result.is_err(), "dereferencing nil pointer should trap");
+    }
+
+    #[test]
+    fn go_pointer_escape_return() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func newInt(v int) *int {
+    x := v
+    return &x
+}
+
+func main() int {
+    p := newInt(99)
+    return *p
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 99);
+    }
+
+    #[test]
+    fn go_pointer_pass_to_function() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func setVal(p *int, v int) {
+    *p = v
+}
+
+func main() int {
+    x := 0
+    setVal(&x, 77)
+    return x
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 77);
+    }
+
+    #[test]
+    fn go_pointer_multiple_independent() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    a := 1
+    b := 2
+    c := 3
+    pa := &a
+    pb := &b
+    pc := &c
+    *pa = *pa + *pb + *pc
+    return a
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 6);
+    }
+
+    #[test]
+    fn go_pointer_in_loop() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    sum := 0
+    p := &sum
+    for i := 0; i < 5; i++ {
+        *p = *p + i
+    }
+    return sum
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 10);
+    }
+
+    #[test]
+    fn go_pointer_reassign() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    a := 10
+    b := 20
+    p := &a
+    *p = 100
+    p = &b
+    *p = 200
+    return a + b
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 300);
+    }
 }

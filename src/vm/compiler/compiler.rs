@@ -45,6 +45,18 @@ pub struct Compiler {
     nesting_depth: u32,
     /// WASM local holding the saved `$sp` for the current function.
     pub(crate) saved_sp_local: Option<u32>,
+    /// Address-taken variables living in linear memory for the current function.
+    pub(crate) mem_vars: AHashMap<String, MemVar>,
+    /// WASM local holding the stack frame base pointer for the current function.
+    pub(crate) frame_base_local: Option<u32>,
+    /// Names of address-taken variables that escape and need heap allocation at declaration time.
+    pub(crate) escaped_vars: std::collections::HashSet<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MemVar {
+    pub addr_local: u32,
+    pub size: u32,
 }
 
 const BUILTIN: &str = "0xbuiltin";
@@ -70,6 +82,9 @@ impl Compiler {
             current_lines: Vec::new(),
             nesting_depth: 0,
             saved_sp_local: None,
+            mem_vars: AHashMap::new(),
+            frame_base_local: None,
+            escaped_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -1526,7 +1541,29 @@ impl Compiler {
                         rt.is_invar(),
                     );
 
-                    if rt.is_func() {
+                    // Memory-backed variable: store value to linear memory
+                    if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
+                        let tmp = self.next_wasm_local;
+                        self.wasm.active().local_set(tmp);
+                        self.wasm.active().local_get(mv.addr_local);
+                        self.wasm.active().local_get(tmp);
+                        self.wasm.active().i32_store(0);
+                    } else if self.escaped_vars.contains(name.as_str()) {
+                        // Escaping var: allocate on heap at declaration time
+                        let size = crate::wasm::layout::field_byte_size(&rt);
+                        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                            .expect("rt_alloc not registered");
+                        let val_tmp = self.next_wasm_local;
+                        self.wasm.active().local_set(val_tmp);
+                        self.wasm.active().i32_const(size as i32);
+                        self.wasm.active().call(rt_alloc_idx);
+                        let addr_local = self.next_wasm_local + 1;
+                        self.wasm.active().local_tee(addr_local);
+                        self.wasm.active().local_get(val_tmp);
+                        self.wasm.active().i32_store(0);
+                        self.mem_vars.insert(name.to_string(), MemVar { addr_local, size });
+                        self.next_wasm_local = addr_local + 1;
+                    } else if rt.is_func() {
                         if let DefineType::Func { name: ref fname, .. } = rt {
                             if let Some(&fidx) = self.wasm_func_map.get(fname) {
                                 self.closure_var_func.insert(symbol.index, fidx);
@@ -1537,10 +1574,9 @@ impl Compiler {
                         self.next_wasm_local += 2;
                         self.locals.insert(symbol.index, base);
 
-                        // Stack has (ptr, len) -- set len first, then ptr
                         self.wasm.active().local_set(base + 1);
                         self.wasm.active().local_set(base);
-                            } else {
+                    } else {
                         let local_idx = self.next_wasm_local;
                         self.next_wasm_local += 1;
                         self.locals.insert(symbol.index, local_idx);
@@ -1549,6 +1585,32 @@ impl Compiler {
                     }
                 }
                 Operator::Assign => {
+                    // *p = v (dereference write)
+                    if let Expression::Operation(deref) = left {
+                        if deref.op == Operator::Star && deref.y.is_none() {
+                            let ptr_dt = self.compile_expression(pkg, deref.x.as_ref())?;
+                            let _inner = match ptr_dt.unwrap_qualifiers() {
+                                DefineType::Ref(inner) => *inner,
+                                other => return Err(Error::TypeError(
+                                    format!("cannot dereference non-pointer type {:?}", other)
+                                )),
+                            };
+                            self.emit_nil_check();
+                            let addr_tmp = self.next_wasm_local;
+                            self.wasm.active().local_set(addr_tmp);
+                            let saved_next = self.next_wasm_local;
+                            self.next_wasm_local = addr_tmp + 1;
+                            self.compile_expression(pkg, right)?;
+                            let val_tmp = self.next_wasm_local;
+                            self.wasm.active().local_set(val_tmp);
+                            self.wasm.active().local_get(addr_tmp);
+                            self.wasm.active().local_get(val_tmp);
+                            self.wasm.active().i32_store(0);
+                            self.next_wasm_local = saved_next;
+                            continue;
+                        }
+                    }
+
                     if let Expression::Selector(sel) = left {
                         let obj_dt = self.compile_expression(pkg, &sel.x)?;
                         self.emit_nil_check();
@@ -1654,6 +1716,16 @@ impl Compiler {
                                 } else {
                             self.wasm.active().drop();
                         }
+                        continue;
+                    }
+
+                    if let Some(mv) = self.mem_vars.get(&name).cloned() {
+                        self.compile_expression(pkg, right)?;
+                        let tmp = self.next_wasm_local;
+                        self.wasm.active().local_set(tmp);
+                        self.wasm.active().local_get(mv.addr_local);
+                        self.wasm.active().local_get(tmp);
+                        self.wasm.active().i32_store(0);
                         continue;
                     }
 
@@ -1916,6 +1988,16 @@ impl Compiler {
                 ))
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
+                if let Some(mv) = self.mem_vars.get(&lit.value).cloned() {
+                    let resolved = self.symbols.resolve(pkg, &lit.value).ok_or(
+                        Error::ReferenceError(format!("identifier: {} not found", lit.value)),
+                    )?;
+                    let dt = resolved.get_type().0;
+                    self.wasm.active().local_get(mv.addr_local);
+                    self.wasm.active().i32_load(0);
+                    return Ok(dt);
+                }
+
                 let resolved = self.symbols.resolve(pkg, &lit.value).ok_or(
                     Error::ReferenceError(format!("identifier: {} not found", lit.value)),
                 )?;
@@ -1955,6 +2037,14 @@ impl Compiler {
                 }
             }
             Expression::Ident(ident) => {
+                if let Some(mv) = self.mem_vars.get(&ident.name).cloned() {
+                    let dt = self.symbols.resolve(pkg, &ident.name)
+                        .map(|r| r.get_type().0)
+                        .unwrap_or(DefineType::Int);
+                    self.wasm.active().local_get(mv.addr_local);
+                    self.wasm.active().i32_load(0);
+                    return Ok(dt);
+                }
 
                 if ident.name == "iota" {
                     return self.compile_expression(
@@ -2462,8 +2552,14 @@ impl Compiler {
         // Phase 2: Build WASM signature with declared params + capture params.
         let saved_locals = self.locals.clone();
         let saved_next_local = self.next_wasm_local;
+        let saved_mem_vars = self.mem_vars.clone();
+        let saved_frame_base = self.frame_base_local;
+        let saved_escaped = self.escaped_vars.clone();
         self.locals.clear();
         self.next_wasm_local = 0;
+        self.mem_vars.clear();
+        self.frame_base_local = None;
+        self.escaped_vars.clear();
 
         self.symbols.new_context(true);
 
@@ -2583,6 +2679,9 @@ impl Compiler {
         self.locals = saved_locals;
         self.next_wasm_local = saved_next_local;
         self.saved_sp_local = outer_saved_sp;
+        self.mem_vars = saved_mem_vars;
+        self.frame_base_local = saved_frame_base;
+        self.escaped_vars = saved_escaped;
 
         let func_dt = DefineType::Func {
             name: closure_name,
@@ -3157,6 +3256,18 @@ impl Compiler {
                         self.wasm.active().emit(&Instruction::I32Mul);
                         return Ok(left);
                     }
+                    if op.op == Operator::Star {
+                        let ptr_dt = self.compile_expression(pkg, op.x.as_ref())?;
+                        let inner = match ptr_dt.unwrap_qualifiers() {
+                            DefineType::Ref(inner) => *inner,
+                            other => return Err(Error::TypeError(
+                                format!("cannot dereference non-pointer type {:?}", other)
+                            )),
+                        };
+                        self.emit_nil_check();
+                        self.wasm.active().i32_load(0);
+                        return Ok(inner);
+                    }
                     Err(self.unsupported(&format!("unary op {:?}", op.op)))
                 }
             },
@@ -3228,6 +3339,21 @@ impl Compiler {
                 }
                 Some(_) => Err(self.unsupported("binary !")),
             },
+            Operator::And if op.y.is_none() => {
+                if let Expression::Ident(id) = op.x.as_ref() {
+                    let mv = self.mem_vars.get(&id.name).cloned()
+                        .ok_or_else(|| Error::InternalError(
+                            format!("&{}: variable not in linear memory", id.name)
+                        ))?;
+                    self.wasm.active().local_get(mv.addr_local);
+                    let resolved_dt = self.symbols.resolve(pkg, &id.name)
+                        .map(|r| r.get_type().0.unwrap_qualifiers())
+                        .unwrap_or(DefineType::Int);
+                    Ok(DefineType::Ref(Box::new(resolved_dt)))
+                } else {
+                    Err(self.unsupported("address-of non-identifier"))
+                }
+            }
             _ => Err(self.unsupported(&format!("operator: {:?}", op.op))),
         }
     }
@@ -3286,6 +3412,10 @@ impl Compiler {
                 value: "0.0".to_string(),
             }),
             DefineType::Qualified(_, inner) => self.make_type_default_val(*inner),
+            DefineType::Ref(_) => Expression::Ident(Ident {
+                pos: 0,
+                name: "nil".to_string(),
+            }),
             _ => Expression::BasicLit(BasicLit {
                 pos: 0,
                 kind: LitKind::Integer,
