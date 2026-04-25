@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use crate::vm::compiler::declaration::{compile_const, compile_function, compile_variable, forward_declare_function};
 use crate::vm::compiler::init_order::{compute_init_order, compute_package_order};
 use crate::vm::module::ModuleResolver;
-use crate::vm::symbols::{ContextType, DefineType, Qualifier, Resolved, SymbolTable};
+use crate::vm::symbols::{ContextType, DefineType, Qualifier, Resolved, SymbolTable, WasmBinding};
 use crate::vm::{builtin, Error};
 use crate::wasm::WasmModuleBuilder;
 use crate::wasm::layout::{
@@ -30,29 +30,14 @@ pub struct Compiler {
     pub(crate) contexts: Vec<Context>,
     pub(crate) func_contexts: Vec<FuncContext>,
     pub(crate) label_contexts: AHashMap<(usize, usize), String>,
-    /// Symbol.index -> WASM local base index (strings occupy base and base+1)
-    pub(crate) locals: AHashMap<u16, u32>,
     pub(crate) wasm_func_map: AHashMap<String, u32>,
-    pub(crate) next_wasm_local: u32,
     str_concat_func_idx: Option<u32>,
-    /// Maps a closure's WASM func_idx to the list of captured variable names and types.
-    closure_captures: AHashMap<u32, Vec<(String, DefineType)>>,
-    /// Maps a local variable's symbol index to a closure func_idx (when the variable holds a closure).
-    closure_var_func: AHashMap<u16, u32>,
     next_closure_id: usize,
     anonymous_struct: usize,
     pub(crate) iota: usize,
     current_file: Option<String>,
     current_lines: Vec<usize>,
     nesting_depth: u32,
-    /// WASM local holding the saved `$sp` for the current function.
-    pub(crate) saved_sp_local: Option<u32>,
-    /// Address-taken variables living in linear memory for the current function.
-    pub(crate) mem_vars: AHashMap<String, MemVar>,
-    /// WASM local holding the stack frame base pointer for the current function.
-    pub(crate) frame_base_local: Option<u32>,
-    /// Names of address-taken variables that escape and need heap allocation at declaration time.
-    pub(crate) escaped_vars: std::collections::HashSet<String>,
     /// Concrete type name -> unique integer tag (starting from 1; 0 = nil interface).
     pub(crate) type_tags: AHashMap<String, u32>,
     pub(crate) next_type_tag: u32,
@@ -95,28 +80,28 @@ impl Compiler {
             contexts: Vec::new(),
             func_contexts: Vec::new(),
             label_contexts: AHashMap::new(),
-            locals: AHashMap::new(),
             wasm_func_map: AHashMap::new(),
-            next_wasm_local: 0,
             str_concat_func_idx: None,
-            closure_captures: AHashMap::new(),
-            closure_var_func: AHashMap::new(),
             next_closure_id: 0,
             anonymous_struct: 0,
             iota: 0,
             current_file: None,
             current_lines: Vec::new(),
             nesting_depth: 0,
-            saved_sp_local: None,
-            mem_vars: AHashMap::new(),
-            frame_base_local: None,
-            escaped_vars: std::collections::HashSet::new(),
             type_tags: AHashMap::new(),
             next_type_tag: 1,
             iface_vtables: AHashMap::new(),
             compiled_stdlib: HashSet::new(),
             inline_constants: AHashMap::new(),
         }
+    }
+
+    pub(crate) fn func_ctx(&mut self) -> &mut FuncContext {
+        self.func_contexts.last_mut().expect("no active function context")
+    }
+
+    pub(crate) fn func_ctx_ref(&self) -> &FuncContext {
+        self.func_contexts.last().expect("no active function context")
     }
 
     fn unsupported(&self, what: &str) -> Error {
@@ -446,19 +431,19 @@ impl Compiler {
 
         if Self::is_heap_resident(concrete_dt) {
             // Value is already a heap pointer -- just add the tag underneath
-            let ptr_local = self.next_wasm_local;
+            let ptr_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(ptr_local);
             self.wasm.active().i32_const(tag as i32);
             self.wasm.active().local_get(ptr_local);
         } else {
             // Value type: heap-allocate a box, store the value, use the pointer
-            let val_local = self.next_wasm_local;
+            let val_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(val_local);
             let size = crate::wasm::layout::field_byte_size(concrete_dt);
             let rt_alloc_idx = self.wasm.rt_alloc_func_idx().expect("rt_alloc not registered");
             self.wasm.active().i32_const(size as i32);
             self.wasm.active().call(rt_alloc_idx);
-            let ptr_local = self.next_wasm_local + 1;
+            let ptr_local = self.func_ctx().next_wasm_local + 1;
             self.wasm.active().local_tee(ptr_local);
             self.wasm.active().local_get(val_local);
             self.wasm.active().i32_store(0);
@@ -497,7 +482,7 @@ impl Compiler {
     }
 
     fn emit_nil_check(&mut self) {
-        let tmp = self.next_wasm_local;
+        let tmp = self.func_ctx().next_wasm_local;
         self.wasm.active().local_tee(tmp);
         self.wasm.active().emit(&Instruction::I32Eqz);
         self.wasm.active().emit(&Instruction::If(BlockType::Empty));
@@ -558,8 +543,8 @@ impl Compiler {
         match base_dt {
             DefineType::String => {
                 // Stack: [str_ptr, str_len]. Stash both, then store at base+offset and base+offset+4.
-                let tmp_len = self.next_wasm_local;
-                let tmp_ptr = self.next_wasm_local + 1;
+                let tmp_len = self.func_ctx().next_wasm_local;
+                let tmp_ptr = self.func_ctx().next_wasm_local + 1;
                 self.wasm.active().local_set(tmp_len);
                 self.wasm.active().local_set(tmp_ptr);
                 self.wasm.active().local_get(base_local);
@@ -570,28 +555,28 @@ impl Compiler {
                 self.wasm.active().i32_store((offset + 4) as u64);
             }
             DefineType::Int64 | DefineType::Uint64 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(base_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().i64_store(offset as u64);
             }
             DefineType::Float64 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(base_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().f64_store(offset as u64);
             }
             DefineType::Float32 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(base_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().f32_store(offset as u64);
             }
             _ => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(base_local);
                 self.wasm.active().local_get(tmp);
@@ -605,7 +590,7 @@ impl Compiler {
         match base_dt {
             DefineType::String => {
                 // Stack has struct ptr. Dup it, load ptr at offset, then load len at offset+4.
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().i32_load(offset);
@@ -633,8 +618,8 @@ impl Compiler {
         let base_dt = elem_dt.unwrap_qualifiers();
         match base_dt {
             DefineType::String => {
-                let tmp_len = self.next_wasm_local;
-                let tmp_ptr = self.next_wasm_local + 1;
+                let tmp_len = self.func_ctx().next_wasm_local;
+                let tmp_ptr = self.func_ctx().next_wasm_local + 1;
                 self.wasm.active().local_set(tmp_len);
                 self.wasm.active().local_set(tmp_ptr);
                 self.wasm.active().local_get(addr_local);
@@ -645,28 +630,28 @@ impl Compiler {
                 self.wasm.active().i32_store(4);
             }
             DefineType::Int64 | DefineType::Uint64 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(addr_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().i64_store(0);
             }
             DefineType::Float64 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(addr_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().f64_store(0);
             }
             DefineType::Float32 => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(addr_local);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().f32_store(0);
             }
             _ => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(addr_local);
                 self.wasm.active().local_get(tmp);
@@ -680,7 +665,7 @@ impl Compiler {
         let base_dt = elem_dt.unwrap_qualifiers();
         match base_dt {
             DefineType::String => {
-                let tmp = self.next_wasm_local;
+                let tmp = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(tmp);
                 self.wasm.active().local_get(tmp);
                 self.wasm.active().i32_load(0);
@@ -1650,12 +1635,12 @@ impl Compiler {
             )));
         }
 
-        let data_local = self.next_wasm_local;
+        let data_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(data_local);
-        let tag_local = self.next_wasm_local + 1;
+        let tag_local = self.func_ctx().next_wasm_local + 1;
         self.wasm.active().local_set(tag_local);
-        let saved_next = self.next_wasm_local;
-        self.next_wasm_local = tag_local + 2;
+        let saved_next = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local = tag_local + 2;
 
         let cases = &ts.block.body;
         let num_cases = cases.len();
@@ -1675,9 +1660,9 @@ impl Compiler {
                         DefineType::Qualified(Qualifier::Var, Box::new(iface_dt.clone())),
                         false,
                     );
-                    let base = self.next_wasm_local;
-                    self.next_wasm_local += 2;
-                    self.locals.insert(sym.index, base);
+                    let base = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local += 2;
+                    self.func_ctx().locals.insert(sym.index, base);
                     self.wasm.active().local_get(tag_local);
                     self.wasm.active().local_set(base);
                     self.wasm.active().local_get(data_local);
@@ -1713,9 +1698,9 @@ impl Compiler {
                         DefineType::Qualified(Qualifier::Var, Box::new(case_dt.clone())),
                         false,
                     );
-                    let v_local = self.next_wasm_local;
-                    self.next_wasm_local += 1;
-                    self.locals.insert(sym.index, v_local);
+                    let v_local = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local += 1;
+                    self.func_ctx().locals.insert(sym.index, v_local);
                     self.wasm.active().local_get(data_local);
                     self.wasm.active().local_set(v_local);
                 }
@@ -1736,7 +1721,7 @@ impl Compiler {
             self.wasm.active().emit(&Instruction::End);
         }
 
-        self.next_wasm_local = saved_next;
+        self.func_ctx().next_wasm_local = saved_next;
         self.symbols.leave_scope();
         Ok(())
     }
@@ -1831,13 +1816,13 @@ impl Compiler {
             let _ = e_size;
 
             // Array pointer IS the data pointer.
-            data_ptr_local = self.next_wasm_local;
+            data_ptr_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(data_ptr_local);
-            self.next_wasm_local = data_ptr_local + 1;
+            self.func_ctx().next_wasm_local = data_ptr_local + 1;
 
             // Length is a compile-time constant stored in a local for the loop.
-            len_local = self.next_wasm_local;
-            self.next_wasm_local += 1;
+            len_local = self.func_ctx().next_wasm_local;
+            self.func_ctx().next_wasm_local += 1;
             self.wasm.active().i32_const(arr_len as i32);
             self.wasm.active().local_set(len_local);
         } else {
@@ -1845,14 +1830,14 @@ impl Compiler {
                 .ok_or_else(|| Error::TypeError(format!("range over non-iterable type {:?}", coll_dt)))?;
             elem_dt = slice_elem;
 
-            let hdr_local = self.next_wasm_local;
+            let hdr_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(hdr_local);
-            self.next_wasm_local = hdr_local + 1;
+            self.func_ctx().next_wasm_local = hdr_local + 1;
 
-            data_ptr_local = self.next_wasm_local;
-            self.next_wasm_local += 1;
-            len_local = self.next_wasm_local;
-            self.next_wasm_local += 1;
+            data_ptr_local = self.func_ctx().next_wasm_local;
+            self.func_ctx().next_wasm_local += 1;
+            len_local = self.func_ctx().next_wasm_local;
+            self.func_ctx().next_wasm_local += 1;
 
             self.wasm.active().local_get(hdr_local);
             self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
@@ -1866,8 +1851,8 @@ impl Compiler {
         let e_size = elem_byte_size(&elem_dt);
 
         // Counter local: i = 0
-        let i_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let i_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         self.wasm.active().i32_const(0);
         self.wasm.active().local_set(i_local);
 
@@ -1880,18 +1865,18 @@ impl Compiler {
                     DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Int)),
                     false,
                 );
-                self.locals.insert(sym.index, i_local);
+                self.func_ctx().locals.insert(sym.index, i_local);
             }
         }
 
         // Value local
         let val_local = if let Some(Expression::Ident(val_id)) = &range.value {
             if val_id.name != "_" {
-                let vl = self.next_wasm_local;
+                let vl = self.func_ctx().next_wasm_local;
                 if Self::is_string_type(&elem_dt) {
-                    self.next_wasm_local += 2;
+                    self.func_ctx().next_wasm_local += 2;
                 } else {
-                    self.next_wasm_local += 1;
+                    self.func_ctx().next_wasm_local += 1;
                 }
                 let sym = self.symbols.define(
                     pkg,
@@ -1899,7 +1884,7 @@ impl Compiler {
                     DefineType::Qualified(Qualifier::Var, Box::new(elem_dt.clone())),
                     false,
                 );
-                self.locals.insert(sym.index, vl);
+                self.func_ctx().locals.insert(sym.index, vl);
                 Some(vl)
             } else {
                 None
@@ -2066,7 +2051,7 @@ impl Compiler {
 
             // Stash all N values from the stack into scratch locals (reverse order:
             // last return value is on top of the WASM stack).
-            let stash_base = self.next_wasm_local;
+            let stash_base = self.func_ctx().next_wasm_local;
             let mut stash_locals: Vec<(u32, bool)> = Vec::with_capacity(tuple_types.len());
             let mut slot = stash_base;
             for dt in &tuple_types {
@@ -2074,7 +2059,7 @@ impl Compiler {
                 stash_locals.push((slot, is_str));
                 slot += if is_str { 2 } else { 1 };
             }
-            self.next_wasm_local = slot;
+            self.func_ctx().next_wasm_local = slot;
 
             for &(local, is_str) in stash_locals.iter().rev() {
                 if is_str {
@@ -2113,26 +2098,26 @@ impl Compiler {
                             dt.is_invar(),
                         );
 
-                        if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
+                        if let Some(mv) = self.func_ctx().mem_vars.get(name.as_str()).cloned() {
                             self.wasm.active().local_get(mv.addr_local);
                             self.wasm.active().local_get(stash_local);
                             self.wasm.active().i32_store(0);
-                        } else if self.escaped_vars.contains(name.as_str()) {
+                        } else if self.func_ctx().escaped_vars.contains(name.as_str()) {
                             let size = crate::wasm::layout::field_byte_size(dt);
                             let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
                                 .expect("rt_alloc not registered");
                             self.wasm.active().i32_const(size as i32);
                             self.wasm.active().call(rt_alloc_idx);
-                            let addr_local = self.next_wasm_local;
-                            self.next_wasm_local += 1;
+                            let addr_local = self.func_ctx().next_wasm_local;
+                            self.func_ctx().next_wasm_local += 1;
                             self.wasm.active().local_tee(addr_local);
                             self.wasm.active().local_get(stash_local);
                             self.wasm.active().i32_store(0);
-                            self.mem_vars.insert(name.to_string(), MemVar { addr_local, size });
+                            self.func_ctx().mem_vars.insert(name.to_string(), MemVar { addr_local, size });
                         } else if is_str {
-                            let base = self.next_wasm_local;
-                            self.next_wasm_local += 2;
-                            self.locals.insert(symbol.index, base);
+                            let base = self.func_ctx().next_wasm_local;
+                            self.func_ctx().next_wasm_local += 2;
+                            self.func_ctx().locals.insert(symbol.index, base);
                             self.wasm.active().local_get(stash_local);
                             self.wasm.active().local_set(base);
                             self.wasm.active().local_get(stash_local + 1);
@@ -2140,13 +2125,16 @@ impl Compiler {
                         } else if dt.is_func() {
                             if let DefineType::Func { name: fname, .. } = dt {
                                 if let Some(&fidx) = self.wasm_func_map.get(fname) {
-                                    self.closure_var_func.insert(symbol.index, fidx);
+                                    let binding = self.symbols.resolve(pkg, fname)
+                                        .and_then(|r| r.get_symbol().wasm)
+                                        .unwrap_or(WasmBinding::Func { func_idx: fidx });
+                                    self.symbols.set_wasm_binding_by_index(symbol.index, binding);
                                 }
                             }
                         } else {
-                            let local_idx = self.next_wasm_local;
-                            self.next_wasm_local += 1;
-                            self.locals.insert(symbol.index, local_idx);
+                            let local_idx = self.func_ctx().next_wasm_local;
+                            self.func_ctx().next_wasm_local += 1;
+                            self.func_ctx().locals.insert(symbol.index, local_idx);
                             self.wasm.active().local_get(stash_local);
                             self.wasm.active().local_set(local_idx);
                         }
@@ -2161,7 +2149,7 @@ impl Compiler {
                         if let Expression::Ident(ident) = left {
                             let name = &ident.name;
 
-                            if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
+                            if let Some(mv) = self.func_ctx().mem_vars.get(name.as_str()).cloned() {
                                 self.wasm.active().local_get(mv.addr_local);
                                 self.wasm.active().local_get(stash_local);
                                 self.wasm.active().i32_store(0);
@@ -2174,7 +2162,7 @@ impl Compiler {
 
                             match resolved {
                                 Resolved::Local((symbol, sym_dt, _)) => {
-                                    if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                                    if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                                         if Self::is_string_type(&sym_dt) {
                                             self.wasm.active().local_get(stash_local);
                                             self.wasm.active().local_set(local_idx);
@@ -2262,50 +2250,53 @@ impl Compiler {
                     );
 
                     // Memory-backed variable: store value to linear memory
-                    if let Some(mv) = self.mem_vars.get(name.as_str()).cloned() {
-                        let tmp = self.next_wasm_local;
+                    if let Some(mv) = self.func_ctx().mem_vars.get(name.as_str()).cloned() {
+                        let tmp = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(tmp);
                         self.wasm.active().local_get(mv.addr_local);
                         self.wasm.active().local_get(tmp);
                         self.wasm.active().i32_store(0);
-                    } else if self.escaped_vars.contains(name.as_str()) {
+                    } else if self.func_ctx().escaped_vars.contains(name.as_str()) {
                         // Escaping var: allocate on heap at declaration time
                         let size = crate::wasm::layout::field_byte_size(&rt);
                         let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
                             .expect("rt_alloc not registered");
-                        let val_tmp = self.next_wasm_local;
+                        let val_tmp = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(val_tmp);
                         self.wasm.active().i32_const(size as i32);
                         self.wasm.active().call(rt_alloc_idx);
-                        let addr_local = self.next_wasm_local + 1;
+                        let addr_local = self.func_ctx().next_wasm_local + 1;
                         self.wasm.active().local_tee(addr_local);
                         self.wasm.active().local_get(val_tmp);
                         self.wasm.active().i32_store(0);
-                        self.mem_vars.insert(name.to_string(), MemVar { addr_local, size });
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().mem_vars.insert(name.to_string(), MemVar { addr_local, size });
+                        self.func_ctx().next_wasm_local = addr_local + 1;
                     } else if rt.is_func() {
                         if let DefineType::Func { name: ref fname, .. } = rt {
                             if let Some(&fidx) = self.wasm_func_map.get(fname) {
-                                self.closure_var_func.insert(symbol.index, fidx);
+                                let binding = self.symbols.resolve(pkg, fname)
+                                    .and_then(|r| r.get_symbol().wasm)
+                                    .unwrap_or(WasmBinding::Func { func_idx: fidx });
+                                self.symbols.set_wasm_binding_by_index(symbol.index, binding);
                             }
                         }
                     } else if Self::is_interface_type(&rt) {
-                        let base = self.next_wasm_local;
-                        self.next_wasm_local += 2;
-                        self.locals.insert(symbol.index, base);
+                        let base = self.func_ctx().next_wasm_local;
+                        self.func_ctx().next_wasm_local += 2;
+                        self.func_ctx().locals.insert(symbol.index, base);
                         self.wasm.active().local_set(base + 1); // data_ptr
                         self.wasm.active().local_set(base);      // type_tag
                     } else if Self::is_string_type(&rt) {
-                        let base = self.next_wasm_local;
-                        self.next_wasm_local += 2;
-                        self.locals.insert(symbol.index, base);
+                        let base = self.func_ctx().next_wasm_local;
+                        self.func_ctx().next_wasm_local += 2;
+                        self.func_ctx().locals.insert(symbol.index, base);
 
                         self.wasm.active().local_set(base + 1);
                         self.wasm.active().local_set(base);
                     } else {
-                        let local_idx = self.next_wasm_local;
-                        self.next_wasm_local += 1;
-                        self.locals.insert(symbol.index, local_idx);
+                        let local_idx = self.func_ctx().next_wasm_local;
+                        self.func_ctx().next_wasm_local += 1;
+                        self.func_ctx().locals.insert(symbol.index, local_idx);
 
                         self.wasm.active().local_set(local_idx);
                     }
@@ -2322,17 +2313,17 @@ impl Compiler {
                                 )),
                             };
                             self.emit_nil_check();
-                            let addr_tmp = self.next_wasm_local;
+                            let addr_tmp = self.func_ctx().next_wasm_local;
                             self.wasm.active().local_set(addr_tmp);
-                            let saved_next = self.next_wasm_local;
-                            self.next_wasm_local = addr_tmp + 1;
+                            let saved_next = self.func_ctx().next_wasm_local;
+                            self.func_ctx().next_wasm_local = addr_tmp + 1;
                             self.compile_expression(pkg, right)?;
-                            let val_tmp = self.next_wasm_local;
+                            let val_tmp = self.func_ctx().next_wasm_local;
                             self.wasm.active().local_set(val_tmp);
                             self.wasm.active().local_get(addr_tmp);
                             self.wasm.active().local_get(val_tmp);
                             self.wasm.active().i32_store(0);
-                            self.next_wasm_local = saved_next;
+                            self.func_ctx().next_wasm_local = saved_next;
                             continue;
                         }
                     }
@@ -2351,14 +2342,14 @@ impl Compiler {
                         let offset = *offset;
                         let field_dt = field_dt.clone();
 
-                        let base_local = self.next_wasm_local;
+                        let base_local = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(base_local);
 
-                        let saved_next = self.next_wasm_local;
-                        self.next_wasm_local = base_local + 1;
+                        let saved_next = self.func_ctx().next_wasm_local;
+                        self.func_ctx().next_wasm_local = base_local + 1;
                         self.compile_expression(pkg, right)?;
                         self.emit_field_store(base_local, offset, &field_dt);
-                        self.next_wasm_local = saved_next;
+                        self.func_ctx().next_wasm_local = saved_next;
                         continue;
                     }
 
@@ -2367,10 +2358,10 @@ impl Compiler {
 
                         if let Some((elem_dt, _arr_len)) = Self::unwrap_array_elem(&coll_dt) {
                             let e_size = elem_byte_size(&elem_dt);
-                            let arr_local = self.next_wasm_local;
+                            let arr_local = self.func_ctx().next_wasm_local;
                             self.wasm.active().local_set(arr_local);
-                            let saved_next = self.next_wasm_local;
-                            self.next_wasm_local = arr_local + 1;
+                            let saved_next = self.func_ctx().next_wasm_local;
+                            self.func_ctx().next_wasm_local = arr_local + 1;
 
                             // addr = arr_ptr + idx * e_size  (no header)
                             self.wasm.active().local_get(arr_local);
@@ -2378,13 +2369,13 @@ impl Compiler {
                             self.wasm.active().i32_const(e_size as i32);
                             self.wasm.active().emit(&Instruction::I32Mul);
                             self.wasm.active().emit(&Instruction::I32Add);
-                            let addr_local = self.next_wasm_local;
+                            let addr_local = self.func_ctx().next_wasm_local;
                             self.wasm.active().local_set(addr_local);
-                            self.next_wasm_local = addr_local + 1;
+                            self.func_ctx().next_wasm_local = addr_local + 1;
 
                             self.compile_expression(pkg, right)?;
                             self.emit_elem_store(addr_local, &elem_dt);
-                            self.next_wasm_local = saved_next;
+                            self.func_ctx().next_wasm_local = saved_next;
                             continue;
                         }
 
@@ -2396,11 +2387,11 @@ impl Compiler {
                             )))?;
                         let e_size = elem_byte_size(&elem_dt);
 
-                        let hdr_local = self.next_wasm_local;
+                        let hdr_local = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(hdr_local);
 
-                        let saved_next = self.next_wasm_local;
-                        self.next_wasm_local = hdr_local + 1;
+                        let saved_next = self.func_ctx().next_wasm_local;
+                        self.func_ctx().next_wasm_local = hdr_local + 1;
 
                         // Load data_ptr
                         self.wasm.active().local_get(hdr_local);
@@ -2413,14 +2404,14 @@ impl Compiler {
                         self.wasm.active().i32_const(e_size as i32);
                         self.wasm.active().emit(&Instruction::I32Mul);
                         self.wasm.active().emit(&Instruction::I32Add);
-                        let addr_local = self.next_wasm_local;
+                        let addr_local = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(addr_local);
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().next_wasm_local = addr_local + 1;
 
                         // Compile RHS value
                         self.compile_expression(pkg, right)?;
                         self.emit_elem_store(addr_local, &elem_dt);
-                        self.next_wasm_local = saved_next;
+                        self.func_ctx().next_wasm_local = saved_next;
                         continue;
                     }
 
@@ -2445,9 +2436,9 @@ impl Compiler {
                         continue;
                     }
 
-                    if let Some(mv) = self.mem_vars.get(&name).cloned() {
+                    if let Some(mv) = self.func_ctx().mem_vars.get(&name).cloned() {
                         self.compile_expression(pkg, right)?;
-                        let tmp = self.next_wasm_local;
+                        let tmp = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(tmp);
                         self.wasm.active().local_get(mv.addr_local);
                         self.wasm.active().local_get(tmp);
@@ -2471,7 +2462,7 @@ impl Compiler {
 
                     match resolved {
                         Resolved::Local((symbol, dt, _)) => {
-                            if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                            if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                                 if Self::is_fat_type(&dt) {
                                     self.wasm.active().local_set(local_idx + 1);
                                     self.wasm.active().local_set(local_idx);
@@ -2525,7 +2516,7 @@ impl Compiler {
             .push((rt, false));
 
         // Restore $sp before returning.
-        if let (Some(saved_sp), Some(sp_idx)) = (self.saved_sp_local, self.wasm.sp_global_idx()) {
+        if let (Some(saved_sp), Some(sp_idx)) = (self.func_ctx().saved_sp_local, self.wasm.sp_global_idx()) {
             self.wasm.active().local_get(saved_sp);
             self.wasm.active().global_set(sp_idx);
         }
@@ -2673,7 +2664,7 @@ impl Compiler {
                 self.wasm.active().call(rt_alloc_idx);
 
                 // Store ptr in scratch local, write each byte
-                let scratch = self.next_wasm_local;
+                let scratch = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(scratch);
 
                 for (i, &b) in bytes.iter().enumerate() {
@@ -2722,7 +2713,7 @@ impl Compiler {
                 ))
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
-                if let Some(mv) = self.mem_vars.get(&lit.value).cloned() {
+                if let Some(mv) = self.func_ctx().mem_vars.get(&lit.value).cloned() {
                     let resolved = self.symbols.resolve(pkg, &lit.value).ok_or(
                         Error::ReferenceError(format!("identifier: {} not found", lit.value)),
                     )?;
@@ -2738,7 +2729,7 @@ impl Compiler {
 
                 match resolved {
                     Resolved::Local((symbol, dt, _)) => {
-                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                        if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                             if Self::is_string_type(&dt) {
                                 self.wasm.active().local_get(local_idx);
                                 self.wasm.active().local_get(local_idx + 1);
@@ -2753,7 +2744,7 @@ impl Compiler {
                     _ => {
                         match resolved {
                             Resolved::Enclosed((symbol, dt, _)) => {
-                                if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                                if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                                     if Self::is_string_type(&dt) {
                                         self.wasm.active().local_get(local_idx);
                                         self.wasm.active().local_get(local_idx + 1);
@@ -2771,7 +2762,7 @@ impl Compiler {
                 }
             }
             Expression::Ident(ident) => {
-                if let Some(mv) = self.mem_vars.get(&ident.name).cloned() {
+                if let Some(mv) = self.func_ctx().mem_vars.get(&ident.name).cloned() {
                     let dt = self.symbols.resolve(pkg, &ident.name)
                         .map(|r| r.get_type().0)
                         .unwrap_or(DefineType::Int);
@@ -2798,7 +2789,7 @@ impl Compiler {
 
                 match self.symbols.resolve(pkg, &ident.name) {
                     Some(Resolved::Local((symbol, dt, _))) => {
-                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                        if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                             if Self::is_fat_type(&dt) {
                                 self.wasm.active().local_get(local_idx);
                                 self.wasm.active().local_get(local_idx + 1);
@@ -2811,7 +2802,7 @@ impl Compiler {
                         Ok(dt)
                     }
                     Some(Resolved::Enclosed((symbol, dt, _))) => {
-                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                        if let Some(&local_idx) = self.func_ctx().locals.get(&symbol.index) {
                             if Self::is_fat_type(&dt) {
                                 self.wasm.active().local_get(local_idx);
                                 self.wasm.active().local_get(local_idx + 1);
@@ -2842,11 +2833,11 @@ impl Compiler {
                     // Allocate data block
                     self.wasm.active().i32_const((n * e_size) as i32);
                     self.wasm.active().call(rt_alloc_idx);
-                    let data_ptr_local = self.next_wasm_local;
+                    let data_ptr_local = self.func_ctx().next_wasm_local;
                     self.wasm.active().local_set(data_ptr_local);
 
-                    let saved_next = self.next_wasm_local;
-                    self.next_wasm_local = data_ptr_local + 1;
+                    let saved_next = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local = data_ptr_local + 1;
 
                     // Store each element
                     for (i, kv) in cl.val.values.iter().enumerate() {
@@ -2859,20 +2850,20 @@ impl Compiler {
                         self.wasm.active().local_get(data_ptr_local);
                         self.wasm.active().i32_const((i as u32 * e_size) as i32);
                         self.wasm.active().emit(&Instruction::I32Add);
-                        let addr_local = self.next_wasm_local;
+                        let addr_local = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(addr_local);
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().next_wasm_local = addr_local + 1;
 
                         self.compile_expression(pkg, val_expr)?;
                         self.emit_elem_store(addr_local, &elem_dt);
 
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().next_wasm_local = addr_local + 1;
                     }
 
                     // Allocate header
                     self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
                     self.wasm.active().call(rt_alloc_idx);
-                    let hdr_local = self.next_wasm_local;
+                    let hdr_local = self.func_ctx().next_wasm_local;
                     self.wasm.active().local_set(hdr_local);
 
                     // Store data_ptr at hdr+0
@@ -2890,7 +2881,7 @@ impl Compiler {
                     self.wasm.active().i32_const(n as i32);
                     self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
 
-                    self.next_wasm_local = saved_next;
+                    self.func_ctx().next_wasm_local = saved_next;
                     self.wasm.active().local_get(hdr_local);
 
                     let slice_dt = DefineType::Slice(Box::new(elem_dt));
@@ -2921,11 +2912,11 @@ impl Compiler {
                     self.wasm.active().global_set(sp_idx);
 
                     // arr_ptr = $sp
-                    let arr_local = self.next_wasm_local;
+                    let arr_local = self.func_ctx().next_wasm_local;
                     self.wasm.active().global_get(sp_idx);
                     self.wasm.active().local_set(arr_local);
-                    let saved_next = self.next_wasm_local;
-                    self.next_wasm_local = arr_local + 1;
+                    let saved_next = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local = arr_local + 1;
 
                     for (i, kv) in cl.val.values.iter().enumerate() {
                         let val_expr = match &kv.val {
@@ -2936,16 +2927,16 @@ impl Compiler {
                         self.wasm.active().local_get(arr_local);
                         self.wasm.active().i32_const((i as u32 * e_size) as i32);
                         self.wasm.active().emit(&Instruction::I32Add);
-                        let addr_local = self.next_wasm_local;
+                        let addr_local = self.func_ctx().next_wasm_local;
                         self.wasm.active().local_set(addr_local);
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().next_wasm_local = addr_local + 1;
 
                         self.compile_expression(pkg, val_expr)?;
                         self.emit_elem_store(addr_local, &elem_dt);
-                        self.next_wasm_local = addr_local + 1;
+                        self.func_ctx().next_wasm_local = addr_local + 1;
                     }
 
-                    self.next_wasm_local = saved_next;
+                    self.func_ctx().next_wasm_local = saved_next;
                     self.wasm.active().local_get(arr_local);
 
                     return Ok(DefineType::Array {
@@ -2967,10 +2958,10 @@ impl Compiler {
                 self.wasm.active().i32_const(total_size as i32);
                 self.wasm.active().call(rt_alloc_idx);
 
-                let scratch = self.next_wasm_local;
+                let scratch = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(scratch);
-                let saved_next = self.next_wasm_local;
-                self.next_wasm_local = scratch + 1;
+                let saved_next = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local = scratch + 1;
 
                 for kv in &cl.val.values {
                     let key_name = match &kv.key {
@@ -2996,7 +2987,7 @@ impl Compiler {
                     self.emit_field_store(scratch, offset, &field_dt);
                 }
 
-                self.next_wasm_local = saved_next;
+                self.func_ctx().next_wasm_local = saved_next;
                 self.wasm.active().local_get(scratch);
                 Ok(struct_dt)
             }
@@ -3031,10 +3022,10 @@ impl Compiler {
 
                 if let Some((elem_dt, _arr_len)) = Self::unwrap_array_elem(&coll_dt) {
                     let e_size = elem_byte_size(&elem_dt);
-                    let arr_local = self.next_wasm_local;
+                    let arr_local = self.func_ctx().next_wasm_local;
                     self.wasm.active().local_set(arr_local);
-                    let saved_next = self.next_wasm_local;
-                    self.next_wasm_local = arr_local + 1;
+                    let saved_next = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local = arr_local + 1;
 
                     // ptr + idx * e_size  (no header indirection)
                     self.wasm.active().local_get(arr_local);
@@ -3044,7 +3035,7 @@ impl Compiler {
                     self.wasm.active().emit(&Instruction::I32Add);
 
                     self.emit_elem_load(&elem_dt);
-                    self.next_wasm_local = saved_next;
+                    self.func_ctx().next_wasm_local = saved_next;
                     return Ok(elem_dt);
                 }
 
@@ -3054,11 +3045,11 @@ impl Compiler {
                     .ok_or_else(|| Error::TypeError(format!("index on non-indexable type {:?}", coll_dt)))?;
                 let e_size = elem_byte_size(&elem_dt);
 
-                let hdr_local = self.next_wasm_local;
+                let hdr_local = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(hdr_local);
 
-                let saved_next = self.next_wasm_local;
-                self.next_wasm_local = hdr_local + 1;
+                let saved_next = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local = hdr_local + 1;
 
                 // Load data_ptr from header
                 self.wasm.active().local_get(hdr_local);
@@ -3075,7 +3066,7 @@ impl Compiler {
                 // Load element
                 self.emit_elem_load(&elem_dt);
 
-                self.next_wasm_local = saved_next;
+                self.func_ctx().next_wasm_local = saved_next;
                 Ok(elem_dt)
             }
             Expression::Slice(sl) => {
@@ -3084,19 +3075,19 @@ impl Compiler {
                     .ok_or_else(|| Error::TypeError(format!("slice expr on non-slice type {:?}", slice_dt)))?;
                 let e_size = elem_byte_size(&elem_dt);
 
-                let hdr_local = self.next_wasm_local;
+                let hdr_local = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(hdr_local);
 
-                let saved_next = self.next_wasm_local;
-                self.next_wasm_local = hdr_local + 1;
+                let saved_next = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local = hdr_local + 1;
 
                 // Load data_ptr, len, cap from old header
-                let data_ptr_local = self.next_wasm_local;
-                self.next_wasm_local += 1;
-                let old_len_local = self.next_wasm_local;
-                self.next_wasm_local += 1;
-                let old_cap_local = self.next_wasm_local;
-                self.next_wasm_local += 1;
+                let data_ptr_local = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local += 1;
+                let old_len_local = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local += 1;
+                let old_cap_local = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local += 1;
 
                 self.wasm.active().local_get(hdr_local);
                 self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
@@ -3111,8 +3102,8 @@ impl Compiler {
                 self.wasm.active().local_set(old_cap_local);
 
                 // Evaluate lo (default 0)
-                let lo_local = self.next_wasm_local;
-                self.next_wasm_local += 1;
+                let lo_local = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local += 1;
                 if let Some(lo_expr) = &sl.index[0] {
                     self.compile_expression(pkg, lo_expr)?;
                 } else {
@@ -3121,8 +3112,8 @@ impl Compiler {
                 self.wasm.active().local_set(lo_local);
 
                 // Evaluate hi (default len)
-                let hi_local = self.next_wasm_local;
-                self.next_wasm_local += 1;
+                let hi_local = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local += 1;
                 if let Some(hi_expr) = &sl.index[1] {
                     self.compile_expression(pkg, hi_expr)?;
                 } else {
@@ -3135,7 +3126,7 @@ impl Compiler {
                     .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
                 self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
                 self.wasm.active().call(rt_alloc_idx);
-                let new_hdr = self.next_wasm_local;
+                let new_hdr = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(new_hdr);
 
                 // new_data_ptr = data_ptr + lo * e_size
@@ -3161,7 +3152,7 @@ impl Compiler {
                 self.wasm.active().emit(&Instruction::I32Sub);
                 self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
 
-                self.next_wasm_local = saved_next;
+                self.func_ctx().next_wasm_local = saved_next;
                 self.wasm.active().local_get(new_hdr);
 
                 Ok(slice_dt)
@@ -3175,9 +3166,9 @@ impl Compiler {
                     )));
                 }
 
-                let data_local = self.next_wasm_local;
+                let data_local = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(data_local);
-                let tag_local = self.next_wasm_local + 1;
+                let tag_local = self.func_ctx().next_wasm_local + 1;
                 self.wasm.active().local_set(tag_local);
 
                 match &ta.right {
@@ -3334,18 +3325,8 @@ impl Compiler {
         }
 
         // Phase 2: Build WASM signature with declared params + capture params.
-        let saved_locals = self.locals.clone();
-        let saved_next_local = self.next_wasm_local;
-        let saved_mem_vars = self.mem_vars.clone();
-        let saved_frame_base = self.frame_base_local;
-        let saved_escaped = self.escaped_vars.clone();
-        self.locals.clear();
-        self.next_wasm_local = 0;
-        self.mem_vars.clear();
-        self.frame_base_local = None;
-        self.escaped_vars.clear();
-
         self.symbols.new_context(true);
+        self.func_contexts.push(FuncContext::new(0));
 
         let mut wasm_params: Vec<ValType> = Vec::new();
         let mut decl_arg_types = Vec::new();
@@ -3362,21 +3343,21 @@ impl Compiler {
                     DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
                     false,
                 );
-                let local_idx = self.next_wasm_local;
+                let local_idx = self.func_ctx().next_wasm_local;
                 if Self::is_string_type(&t) {
-                    self.next_wasm_local += 2;
-                    self.locals.insert(sym.index, local_idx);
+                    self.func_ctx().next_wasm_local += 2;
+                    self.func_ctx().locals.insert(sym.index, local_idx);
                     wasm_params.push(ValType::I32);
                     wasm_params.push(ValType::I32);
                     } else {
-                    self.next_wasm_local += 1;
-                    self.locals.insert(sym.index, local_idx);
+                    self.func_ctx().next_wasm_local += 1;
+                    self.func_ctx().locals.insert(sym.index, local_idx);
                     wasm_params.push(Compiler::define_type_to_wasm(&t));
                 }
             }
         }
 
-        let capture_base = self.next_wasm_local;
+        let capture_base = self.func_ctx().next_wasm_local;
         for (i, (cap_name, cap_dt)) in captures.iter().enumerate() {
             let sym = self.symbols.define(
                 pkg,
@@ -3386,13 +3367,13 @@ impl Compiler {
             );
             let local_idx = capture_base + i as u32;
             if Self::is_string_type(cap_dt) {
-                self.next_wasm_local += 2;
-                self.locals.insert(sym.index, local_idx);
+                self.func_ctx().next_wasm_local += 2;
+                self.func_ctx().locals.insert(sym.index, local_idx);
                 wasm_params.push(ValType::I32);
                 wasm_params.push(ValType::I32);
                         } else {
-                self.next_wasm_local += 1;
-                self.locals.insert(sym.index, local_idx);
+                self.func_ctx().next_wasm_local += 1;
+                self.func_ctx().locals.insert(sym.index, local_idx);
                 wasm_params.push(Compiler::define_type_to_wasm(cap_dt));
             }
         }
@@ -3421,12 +3402,11 @@ impl Compiler {
         let type_idx = self.wasm.add_func_type(wasm_params.clone(), wasm_results);
         let func_idx = self.wasm.define_function(type_idx);
         self.wasm_func_map.insert(closure_name.clone(), func_idx);
-        self.closure_captures.insert(func_idx, captures.clone());
 
         let num_params = wasm_params.len() as u32;
 
-        self.func_contexts.push(FuncContext::new(func_idx));
-        self.func_contexts.last_mut().unwrap().expected_ret = if r_t == DefineType::Null {
+        self.func_ctx().wasm_func_idx = func_idx;
+        self.func_ctx().expected_ret = if r_t == DefineType::Null {
             None
         } else {
             Some(r_t.clone())
@@ -3434,23 +3414,20 @@ impl Compiler {
 
         let body_locals_count = 40_u32;
         self.wasm.begin_func_body(func_idx, vec![(body_locals_count, ValType::I32)]);
-        self.next_wasm_local = num_params;
+        self.func_ctx().next_wasm_local = num_params;
 
-        // Save $sp for closures too.
         let sp_idx = self.wasm.sp_global_idx().expect("$sp global not registered");
-        let closure_saved_sp = self.next_wasm_local;
-        self.next_wasm_local += 1;
-        let outer_saved_sp = self.saved_sp_local;
-        self.saved_sp_local = Some(closure_saved_sp);
+        let closure_saved_sp = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
+        self.func_ctx().saved_sp_local = Some(closure_saved_sp);
         self.wasm.active().global_get(sp_idx);
         self.wasm.active().local_set(closure_saved_sp);
 
         self.compile_block_statement(pkg, &fl.body.list)?;
 
-        self.func_contexts.pop();
-
         // Restore $sp before closure end.
-        self.wasm.active().local_get(closure_saved_sp);
+        let closure_sp = self.func_ctx().saved_sp_local.expect("closure saved_sp not set");
+        self.wasm.active().local_get(closure_sp);
         self.wasm.active().global_set(sp_idx);
 
         if !decl_r_types.is_empty() {
@@ -3459,20 +3436,20 @@ impl Compiler {
 
         self.wasm.end_func_body();
         self.symbols.leave_context();
-
-        self.locals = saved_locals;
-        self.next_wasm_local = saved_next_local;
-        self.saved_sp_local = outer_saved_sp;
-        self.mem_vars = saved_mem_vars;
-        self.frame_base_local = saved_frame_base;
-        self.escaped_vars = saved_escaped;
+        self.func_contexts.pop();
 
         let func_dt = DefineType::Func {
-            name: closure_name,
+            name: closure_name.clone(),
             recv: None,
             args: decl_arg_types,
             rt: Box::new(r_t),
         };
+
+        let sym = self.symbols.define(pkg, &closure_name, func_dt.clone(), true);
+        self.symbols.set_wasm_binding_by_index(
+            sym.index,
+            WasmBinding::Closure { func_idx, captures },
+        );
 
         Ok(func_dt)
     }
@@ -3639,34 +3616,49 @@ impl Compiler {
 
             if let Some(resolved) = self.symbols.resolve(pkg, &name.name) {
                 let sym = resolved.get_symbol();
-                if let Some(&closure_idx) = self.closure_var_func.get(&sym.index) {
-                    let (_, _, _func_arg_types, rt) = resolved.get_type().0.unwrap_qualifiers().as_func();
-                    let rts = rt.type_to_val_t();
+                match &sym.wasm {
+                    Some(WasmBinding::Closure { func_idx, captures }) => {
+                        let closure_idx = *func_idx;
+                        let captures = captures.clone();
+                        let (_, _, _func_arg_types, rt) = resolved.get_type().0.unwrap_qualifiers().as_func();
+                        let rts = rt.type_to_val_t();
 
-                    for a in &call.args {
-                        self.compile_expression(pkg, a)?;
-                    }
+                        for a in &call.args {
+                            self.compile_expression(pkg, a)?;
+                        }
 
-                    if let Some(captures) = self.closure_captures.get(&closure_idx).cloned() {
                         for (cap_name, cap_dt) in &captures {
                             let cap_resolved = self.symbols.resolve(pkg, cap_name)
                                 .ok_or_else(|| Error::ReferenceError(format!(
                                     "captured var '{}' not found at call site", cap_name
                                 )))?;
                             let cap_sym = cap_resolved.get_symbol();
-                            if let Some(&local_idx) = self.locals.get(&cap_sym.index) {
+                            if let Some(&local_idx) = self.func_ctx().locals.get(&cap_sym.index) {
                                 if Self::is_string_type(cap_dt) {
                                     self.wasm.active().local_get(local_idx);
                                     self.wasm.active().local_get(local_idx + 1);
-                        } else {
+                                } else {
                                     self.wasm.active().local_get(local_idx);
                                 }
                             }
                         }
-                    }
 
-                    self.wasm.active().call(closure_idx);
-                    return Ok(rts);
+                        self.wasm.active().call(closure_idx);
+                        return Ok(rts);
+                    }
+                    Some(WasmBinding::Func { func_idx }) => {
+                        let fidx = *func_idx;
+                        let (_, _, _func_arg_types, rt) = resolved.get_type().0.unwrap_qualifiers().as_func();
+                        let rts = rt.type_to_val_t();
+
+                        for a in &call.args {
+                            self.compile_expression(pkg, a)?;
+                        }
+
+                        self.wasm.active().call(fidx);
+                        return Ok(rts);
+                    }
+                    None => {}
                 }
             }
         }
@@ -3723,12 +3715,12 @@ impl Compiler {
                 let rts = rt.type_to_val_t();
 
                 // Stack has (type_tag, data_ptr) from the selector expression compiled in from_call
-                let data_local = self.next_wasm_local;
+                let data_local = self.func_ctx().next_wasm_local;
                 self.wasm.active().local_set(data_local);
-                let tag_local = self.next_wasm_local + 1;
+                let tag_local = self.func_ctx().next_wasm_local + 1;
                 self.wasm.active().local_set(tag_local);
-                let saved_next = self.next_wasm_local;
-                self.next_wasm_local = tag_local + 2;
+                let saved_next = self.func_ctx().next_wasm_local;
+                self.func_ctx().next_wasm_local = tag_local + 2;
 
                 // Push receiver (data_ptr) as first arg
                 self.wasm.active().local_get(data_local);
@@ -3757,7 +3749,7 @@ impl Compiler {
                 self.wasm.active().emit(&Instruction::I32Add);
 
                 self.wasm.active().call_indirect(method_type_idx, 0);
-                self.next_wasm_local = saved_next;
+                self.func_ctx().next_wasm_local = saved_next;
                 Ok(rts)
             }
         }
@@ -3821,7 +3813,7 @@ impl Compiler {
         let arg_type = self.compile_expression(pkg, &call.args[0])?;
         if Self::is_string_type(&arg_type) {
             // Stack has [ptr, len] (len on top). Save len, drop ptr, push len.
-            let tmp = self.next_wasm_local;
+            let tmp = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(tmp);
             self.wasm.active().drop();
             self.wasm.active().local_get(tmp);
@@ -3862,15 +3854,15 @@ impl Compiler {
 
         // Evaluate length
         self.compile_expression(pkg, &call.args[1])?;
-        let len_local = self.next_wasm_local;
+        let len_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(len_local);
 
-        let saved_next = self.next_wasm_local;
-        self.next_wasm_local = len_local + 1;
+        let saved_next = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local = len_local + 1;
 
         // Evaluate cap (default = length)
-        let cap_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let cap_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         if call.args.len() == 3 {
             self.compile_expression(pkg, &call.args[2])?;
             self.wasm.active().local_set(cap_local);
@@ -3887,8 +3879,8 @@ impl Compiler {
         self.wasm.active().i32_const(e_size as i32);
         self.wasm.active().emit(&Instruction::I32Mul);
         self.wasm.active().call(rt_alloc_idx);
-        let data_ptr_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let data_ptr_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         self.wasm.active().local_set(data_ptr_local);
 
         // Zero-fill data block: memory.fill(data_ptr, 0, cap * e_size)
@@ -3902,7 +3894,7 @@ impl Compiler {
         // Allocate header
         self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
         self.wasm.active().call(rt_alloc_idx);
-        let hdr_local = self.next_wasm_local;
+        let hdr_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(hdr_local);
 
         // Store data_ptr, len, cap
@@ -3918,7 +3910,7 @@ impl Compiler {
         self.wasm.active().local_get(cap_local);
         self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
 
-        self.next_wasm_local = saved_next;
+        self.func_ctx().next_wasm_local = saved_next;
         self.wasm.active().local_get(hdr_local);
 
         Ok(DefineType::Slice(Box::new(elem_dt)))
@@ -3940,19 +3932,19 @@ impl Compiler {
         let e_size = elem_byte_size(&elem_dt);
         let n_new = (call.args.len() - 1) as u32;
 
-        let hdr_local = self.next_wasm_local;
+        let hdr_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(hdr_local);
 
-        let saved_next = self.next_wasm_local;
-        self.next_wasm_local = hdr_local + 1;
+        let saved_next = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local = hdr_local + 1;
 
         // Load header fields
-        let data_ptr_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
-        let len_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
-        let cap_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let data_ptr_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
+        let len_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
+        let cap_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
 
         self.wasm.active().local_get(hdr_local);
         self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
@@ -3968,8 +3960,8 @@ impl Compiler {
 
         // Check if len + n_new > cap. If so, grow.
         // new_needed = len + n_new
-        let needed_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let needed_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         self.wasm.active().local_get(len_local);
         self.wasm.active().i32_const(n_new as i32);
         self.wasm.active().emit(&Instruction::I32Add);
@@ -3982,8 +3974,8 @@ impl Compiler {
         self.wasm.active().emit(&Instruction::If(BlockType::Empty));
 
         // new_cap = max(cap * 2, needed)
-        let new_cap_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let new_cap_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         self.wasm.active().local_get(cap_local);
         self.wasm.active().i32_const(2);
         self.wasm.active().emit(&Instruction::I32Mul);
@@ -4005,8 +3997,8 @@ impl Compiler {
         self.wasm.active().i32_const(e_size as i32);
         self.wasm.active().emit(&Instruction::I32Mul);
         self.wasm.active().call(rt_alloc_idx);
-        let new_data_local = self.next_wasm_local;
-        self.next_wasm_local += 1;
+        let new_data_local = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local += 1;
         self.wasm.active().local_set(new_data_local);
 
         // memory.copy(new_data, old_data, len * e_size)
@@ -4044,14 +4036,14 @@ impl Compiler {
             self.wasm.active().i32_const(e_size as i32);
             self.wasm.active().emit(&Instruction::I32Mul);
             self.wasm.active().emit(&Instruction::I32Add);
-            let addr_local = self.next_wasm_local;
+            let addr_local = self.func_ctx().next_wasm_local;
             self.wasm.active().local_set(addr_local);
-            self.next_wasm_local = addr_local + 1;
+            self.func_ctx().next_wasm_local = addr_local + 1;
 
             self.compile_expression(pkg, arg)?;
             self.emit_elem_store(addr_local, &elem_dt);
 
-            self.next_wasm_local = addr_local + 1;
+            self.func_ctx().next_wasm_local = addr_local + 1;
         }
 
         // Update len in header: len + n_new
@@ -4059,7 +4051,7 @@ impl Compiler {
         self.wasm.active().local_get(needed_local);
         self.wasm.active().i32_store(SLICE_LEN_OFFSET as u64);
 
-        self.next_wasm_local = saved_next;
+        self.func_ctx().next_wasm_local = saved_next;
         self.wasm.active().local_get(hdr_local);
 
         Ok(slice_dt)
@@ -4136,12 +4128,12 @@ impl Compiler {
             )));
         }
 
-        let data_local = self.next_wasm_local;
+        let data_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(data_local);
-        let tag_local = self.next_wasm_local + 1;
+        let tag_local = self.func_ctx().next_wasm_local + 1;
         self.wasm.active().local_set(tag_local);
-        let saved_next = self.next_wasm_local;
-        self.next_wasm_local = tag_local + 2;
+        let saved_next = self.func_ctx().next_wasm_local;
+        self.func_ctx().next_wasm_local = tag_local + 2;
 
         let type_expr = ta.right.as_ref().unwrap();
         let target_dt = self.expression_to_define_type(pkg, type_expr)
@@ -4153,9 +4145,9 @@ impl Compiler {
         self.wasm.active().local_get(tag_local);
         self.wasm.active().i32_const(target_tag as i32);
         self.wasm.active().emit(&Instruction::I32Eq);
-        let ok_local = self.next_wasm_local;
+        let ok_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(ok_local);
-        self.next_wasm_local = ok_local + 1;
+        self.func_ctx().next_wasm_local = ok_local + 1;
 
         // value = ok ? data_ptr : 0
         self.wasm.active().local_get(ok_local);
@@ -4164,9 +4156,9 @@ impl Compiler {
         self.wasm.active().emit(&Instruction::Else);
         self.wasm.active().i32_const(0);
         self.wasm.active().emit(&Instruction::End);
-        let val_local = self.next_wasm_local;
+        let val_local = self.func_ctx().next_wasm_local;
         self.wasm.active().local_set(val_local);
-        self.next_wasm_local = val_local + 1;
+        self.func_ctx().next_wasm_local = val_local + 1;
 
         // Assign v
         let left_v = &assign.left[0];
@@ -4189,9 +4181,9 @@ impl Compiler {
                         DefineType::Qualified(Qualifier::Var, Box::new(target_dt.clone())),
                         false,
                     );
-                    let v_wasm_local = self.next_wasm_local;
-                    self.next_wasm_local += 1;
-                    self.locals.insert(sym.index, v_wasm_local);
+                    let v_wasm_local = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local += 1;
+                    self.func_ctx().locals.insert(sym.index, v_wasm_local);
                     self.wasm.active().local_get(val_local);
                     self.wasm.active().local_set(v_wasm_local);
                 }
@@ -4202,9 +4194,9 @@ impl Compiler {
                         DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Bool)),
                         false,
                     );
-                    let ok_wasm_local = self.next_wasm_local;
-                    self.next_wasm_local += 1;
-                    self.locals.insert(sym.index, ok_wasm_local);
+                    let ok_wasm_local = self.func_ctx().next_wasm_local;
+                    self.func_ctx().next_wasm_local += 1;
+                    self.func_ctx().locals.insert(sym.index, ok_wasm_local);
                     self.wasm.active().local_get(ok_local);
                     self.wasm.active().local_set(ok_wasm_local);
                 }
@@ -4215,7 +4207,7 @@ impl Compiler {
                     if id.name != "_" {
                         if let Some(resolved) = self.symbols.resolve(pkg, &id.name) {
                             let sym = resolved.get_symbol();
-                            if let Some(&local_idx) = self.locals.get(&sym.index) {
+                            if let Some(&local_idx) = self.func_ctx().locals.get(&sym.index) {
                                 self.wasm.active().local_get(val_local);
                                 self.wasm.active().local_set(local_idx);
                             }
@@ -4226,7 +4218,7 @@ impl Compiler {
                     if id.name != "_" {
                         if let Some(resolved) = self.symbols.resolve(pkg, &id.name) {
                             let sym = resolved.get_symbol();
-                            if let Some(&local_idx) = self.locals.get(&sym.index) {
+                            if let Some(&local_idx) = self.func_ctx().locals.get(&sym.index) {
                                 self.wasm.active().local_get(ok_local);
                                 self.wasm.active().local_set(local_idx);
                             }
@@ -4237,7 +4229,7 @@ impl Compiler {
             _ => return Err(Error::SyntaxError("unexpected operator in type assertion".into())),
         }
 
-        self.next_wasm_local = saved_next;
+        self.func_ctx().next_wasm_local = saved_next;
         Ok(())
     }
 
@@ -4433,7 +4425,7 @@ impl Compiler {
             },
             Operator::And if op.y.is_none() => {
                 if let Expression::Ident(id) = op.x.as_ref() {
-                    let mv = self.mem_vars.get(&id.name).cloned()
+                    let mv = self.func_ctx().mem_vars.get(&id.name).cloned()
                         .ok_or_else(|| Error::InternalError(
                             format!("&{}: variable not in linear memory", id.name)
                         ))?;

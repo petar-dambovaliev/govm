@@ -211,15 +211,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bdwgc-alloc"
-version = "0.6.6"
-source = "git+https://github.com/peter7891/bdwgc-alloc?branch=main#7693947127cd953c698a24bc7a926a1532d3939e"
-dependencies = [
- "cmake",
- "libc",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,15 +428,6 @@ name = "clap_lex"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
-
-[[package]]
-name = "cmake"
-version = "0.1.54"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "cobs"
@@ -1065,7 +1047,6 @@ version = "0.1.0"
 dependencies = [
  "ahash 0.8.11",
  "async-channel",
- "bdwgc-alloc",
  "chrono",
  "clap",
  "criterion",

@@ -3,6 +3,7 @@ use crate::parser::token::LitKind;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::types::Type;
 use crate::vm::Error;
+use ahash::AHashMap;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone)]
@@ -14,11 +15,21 @@ pub(crate) struct SymbolTable {
     pub contexts: Vec<Context>,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
+pub enum WasmBinding {
+    Func { func_idx: u32 },
+    Closure {
+        func_idx: u32,
+        captures: Vec<(String, DefineType)>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct Symbol {
     pub scope: Scope,
     pub index: u16,
     pub invar: bool,
+    pub wasm: Option<WasmBinding>,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug, Eq)]
@@ -797,6 +808,7 @@ pub(crate) struct Context {
     pub symbols: Vec<Vec<(String, DefineType, String)>>,
     pub is_closure: bool,
     pub captured: Vec<String>,
+    pub wasm_bindings: AHashMap<u16, WasmBinding>,
 }
 
 impl Context {
@@ -807,6 +819,7 @@ impl Context {
             symbols: vec![Vec::new()],
             is_closure,
             captured: Vec::new(),
+            wasm_bindings: AHashMap::new(),
         }
     }
 
@@ -833,6 +846,7 @@ impl Context {
             index: (self.total_len() - 1).try_into().unwrap(),
             scope: self.scope,
             invar,
+            wasm: None,
         }
     }
 
@@ -857,11 +871,13 @@ impl Context {
 
                 found
             }) {
+                let sym_index: u16 = (abs_index + index).try_into().unwrap();
                 return Some((
                     Symbol {
-                        index: (abs_index + index).try_into().unwrap(),
+                        index: sym_index,
                         scope: self.scope,
                         invar: scope[index].1.is_invar(),
+                        wasm: self.wasm_bindings.get(&sym_index).cloned(),
                     },
                     scope[index].1.clone(),
                 ));
@@ -1013,6 +1029,7 @@ impl SymbolTable {
                                 scope: Scope::Local,
                                 index: st.try_into().unwrap(),
                                 invar: false,
+                                wasm: s.0.wasm.clone(),
                             },
                             s.1.clone(),
                             pkg.to_string(),
@@ -1089,5 +1106,21 @@ impl SymbolTable {
         } else {
             false
         }
+    }
+
+    pub fn set_wasm_binding(&mut self, pkg: &str, name: &str, binding: WasmBinding) {
+        for ctx in self.contexts.iter_mut().rev() {
+            if let Some((sym, _)) = ctx.resolve(pkg, name) {
+                ctx.wasm_bindings.insert(sym.index, binding);
+                return;
+            }
+            if !ctx.is_closure {
+                break;
+            }
+        }
+    }
+
+    pub fn set_wasm_binding_by_index(&mut self, index: u16, binding: WasmBinding) {
+        self.current_context().wasm_bindings.insert(index, binding);
     }
 }

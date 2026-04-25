@@ -6,7 +6,6 @@ pub mod wasm;
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::module::parse_local_dependencies;
 use crate::wasm::host_heap::HostHeapBump;
-use bdwgc_alloc::Allocator;
 use clap::Args;
 use clap::{Parser as ClapParser, Subcommand};
 use gno_rs::gomod::{add_dependency, list_dependencies, remove_dependency};
@@ -15,9 +14,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use wasmtime::{Caller, Engine, Linker, Module, Store};
-
-#[global_allocator]
-static GLOBAL_ALLOCATOR: Allocator = Allocator;
 
 #[derive(ClapParser, Debug)]
 struct Cli {
@@ -198,8 +194,6 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
 }
 
 fn main() {
-    unsafe { Allocator::initialize() }
-
     let cli = Cli::parse();
 
     match cli.action {

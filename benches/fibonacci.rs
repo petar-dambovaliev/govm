@@ -6,15 +6,6 @@ use gno_rs::vm::VM;
 fn fibonacci() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .on_thread_start(|| {
-            unsafe {
-                bdwgc_alloc::Allocator::register_current_thread()
-                    .expect("failed to register GC thread");
-            }
-        })
-        .on_thread_stop(|| {
-            unsafe { bdwgc_alloc::Allocator::unregister_current_thread() }
-        })
         .build()
         .unwrap();
     let mut parser = Parser::from(

@@ -3,7 +3,7 @@ use crate::parser::token::Operator;
 use crate::vm::compiler::analysis;
 use crate::vm::compiler::compiler::{Compiler, MemVar};
 use crate::vm::compiler::{make_ident_name, make_method_name, FuncContext};
-use crate::vm::symbols::{ContextType, DefineType, Qualifier, Scope};
+use crate::vm::symbols::{ContextType, DefineType, Qualifier, Scope, WasmBinding};
 use crate::vm::Error;
 use crate::wasm::layout::field_byte_size;
 use wasm_encoder::{Instruction, ValType};
@@ -73,42 +73,42 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
                 )
             };
 
-            if let Some(mv) = c.mem_vars.get(&name.name).cloned() {
-                let tmp = c.next_wasm_local;
+            if let Some(mv) = c.func_ctx().mem_vars.get(&name.name).cloned() {
+                let tmp = c.func_ctx().next_wasm_local;
                 c.wasm.active().local_set(tmp);
                 c.wasm.active().local_get(mv.addr_local);
                 c.wasm.active().local_get(tmp);
                 c.wasm.active().i32_store(0);
-            } else if c.escaped_vars.contains(&name.name) {
+            } else if c.func_ctx().escaped_vars.contains(&name.name) {
                 let size = field_byte_size(&rt);
                 let rt_alloc_idx = c.wasm.rt_alloc_func_idx()
                     .expect("rt_alloc not registered");
-                let val_tmp = c.next_wasm_local;
+                let val_tmp = c.func_ctx().next_wasm_local;
                 c.wasm.active().local_set(val_tmp);
                 c.wasm.active().i32_const(size as i32);
                 c.wasm.active().call(rt_alloc_idx);
-                let addr_local = c.next_wasm_local + 1;
+                let addr_local = c.func_ctx().next_wasm_local + 1;
                 c.wasm.active().local_tee(addr_local);
                 c.wasm.active().local_get(val_tmp);
                 c.wasm.active().i32_store(0);
-                c.mem_vars.insert(name.name.clone(), MemVar { addr_local, size });
-                c.next_wasm_local = addr_local + 1;
+                c.func_ctx().mem_vars.insert(name.name.clone(), MemVar { addr_local, size });
+                c.func_ctx().next_wasm_local = addr_local + 1;
             } else if Compiler::is_interface_type(&rt) {
-                let base = c.next_wasm_local;
-                c.next_wasm_local += 2;
-                c.locals.insert(symbol.index, base);
+                let base = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 2;
+                c.func_ctx().locals.insert(symbol.index, base);
                 c.wasm.active().local_set(base + 1); // data_ptr
                 c.wasm.active().local_set(base);      // type_tag
             } else if Compiler::is_string_type(&rt) {
-                let base = c.next_wasm_local;
-                c.next_wasm_local += 2;
-                c.locals.insert(symbol.index, base);
+                let base = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 2;
+                c.func_ctx().locals.insert(symbol.index, base);
                 c.wasm.active().local_set(base + 1);
                 c.wasm.active().local_set(base);
             } else {
-                let local_idx = c.next_wasm_local;
-                c.next_wasm_local += 1;
-                c.locals.insert(symbol.index, local_idx);
+                let local_idx = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 1;
+                c.func_ctx().locals.insert(symbol.index, local_idx);
                 c.wasm.active().local_set(local_idx);
             }
         }
@@ -170,6 +170,7 @@ pub fn forward_declare_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Re
     let mangled = make_ident_name(pkg, &f.name.name);
     c.wasm_func_map.insert(f_name, func_idx);
     c.wasm_func_map.insert(mangled, func_idx);
+    c.symbols.set_wasm_binding(pkg, &f.name.name, WasmBinding::Func { func_idx });
 
     Ok(())
 }
@@ -221,18 +222,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     };
 
     c.symbols.new_context(false);
-
-    let saved_locals = c.locals.clone();
-    let saved_next_local = c.next_wasm_local;
-    let saved_outer_sp = c.saved_sp_local;
-    let saved_mem_vars = c.mem_vars.clone();
-    let saved_frame_base = c.frame_base_local;
-    let saved_escaped = c.escaped_vars.clone();
-    c.locals.clear();
-    c.next_wasm_local = 0;
-    c.mem_vars.clear();
-    c.frame_base_local = None;
-    c.escaped_vars.clear();
+    c.func_contexts.push(FuncContext::new(0));
 
     let mut wasm_params: Vec<ValType> = Vec::new();
 
@@ -254,9 +244,9 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             t.is_invar(),
         );
 
-        let local_idx = c.next_wasm_local;
-        c.next_wasm_local += 1;
-        c.locals.insert(sym.index, local_idx);
+        let local_idx = c.func_ctx().next_wasm_local;
+        c.func_ctx().next_wasm_local += 1;
+        c.func_ctx().locals.insert(sym.index, local_idx);
         wasm_params.push(Compiler::define_type_to_wasm(&t));
     }
 
@@ -277,15 +267,15 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             );
 
             if Compiler::is_fat_type(&t) {
-                let base = c.next_wasm_local;
-                c.next_wasm_local += 2;
-                c.locals.insert(sym.index, base);
+                let base = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 2;
+                c.func_ctx().locals.insert(sym.index, base);
                 wasm_params.push(ValType::I32);
                 wasm_params.push(ValType::I32);
             } else {
-                let local_idx = c.next_wasm_local;
-                c.next_wasm_local += 1;
-                c.locals.insert(sym.index, local_idx);
+                let local_idx = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 1;
+                c.func_ctx().locals.insert(sym.index, local_idx);
                 wasm_params.push(Compiler::define_type_to_wasm(&t));
             }
         }
@@ -336,11 +326,12 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     };
     let mangled = crate::vm::compiler::make_ident_name(pkg, &f.name.name);
     c.wasm_func_map.insert(mangled, func_idx);
+    c.symbols.set_wasm_binding(pkg, &f.name.name, WasmBinding::Func { func_idx });
 
     let num_params = wasm_params.len() as u32;
 
-    c.func_contexts.push(FuncContext::new(func_idx));
-    c.func_contexts.last_mut().unwrap().expected_ret = if r_t == DefineType::Null {
+    c.func_ctx().wasm_func_idx = func_idx;
+    c.func_ctx().expected_ret = if r_t == DefineType::Null {
         None
     } else {
         Some(r_t)
@@ -356,19 +347,14 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     }
 
     c.wasm.begin_func_body(func_idx, body_locals);
-    c.next_wasm_local = num_params;
+    c.func_ctx().next_wasm_local = num_params;
 
     if f.body.is_none() {
         if let Some(emitter) = crate::stdlib::get_native_func(&f.name.name) {
             emitter(c);
             c.wasm.end_func_body();
             c.symbols.leave_context();
-            c.locals = saved_locals;
-            c.next_wasm_local = saved_next_local;
-            c.saved_sp_local = saved_outer_sp;
-            c.mem_vars = saved_mem_vars;
-            c.frame_base_local = saved_frame_base;
-            c.escaped_vars = saved_escaped;
+            c.func_contexts.pop();
             return Ok(());
         }
         return Err(Error::SyntaxError(format!(
@@ -380,9 +366,9 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     // Save $sp for stack-allocated arrays; restore on return.
     let sp_idx = c.wasm.sp_global_idx()
         .expect("$sp global not registered");
-    let saved_sp = c.next_wasm_local;
-    c.next_wasm_local += 1;
-    c.saved_sp_local = Some(saved_sp);
+    let saved_sp = c.func_ctx().next_wasm_local;
+    c.func_ctx().next_wasm_local += 1;
+    c.func_ctx().saved_sp_local = Some(saved_sp);
     c.wasm.active().global_get(sp_idx);
     c.wasm.active().local_set(saved_sp);
 
@@ -397,7 +383,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             let mut frame_vars: Vec<(String, u32)> = Vec::new();
             for (name, size) in &var_infos {
                 if escaping.contains(name.as_str()) {
-                    c.escaped_vars.insert(name.clone());
+                    c.func_ctx().escaped_vars.insert(name.clone());
                 } else {
                     frame_vars.push((name.clone(), *size));
                 }
@@ -420,23 +406,23 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
                 c.wasm.active().emit(&Instruction::I32Sub);
                 c.wasm.active().global_set(sp_idx);
 
-                let fb_local = c.next_wasm_local;
-                c.next_wasm_local += 1;
+                let fb_local = c.func_ctx().next_wasm_local;
+                c.func_ctx().next_wasm_local += 1;
                 c.wasm.active().global_get(sp_idx);
                 c.wasm.active().local_set(fb_local);
-                c.frame_base_local = Some(fb_local);
+                c.func_ctx().frame_base_local = Some(fb_local);
 
                 // Compute each variable's address = frame_base + offset
                 for (name, offset, size) in &offsets {
-                    let addr_local = c.next_wasm_local;
-                    c.next_wasm_local += 1;
+                    let addr_local = c.func_ctx().next_wasm_local;
+                    c.func_ctx().next_wasm_local += 1;
                     c.wasm.active().local_get(fb_local);
                     if *offset > 0 {
                         c.wasm.active().i32_const(*offset as i32);
                         c.wasm.active().emit(&Instruction::I32Add);
                     }
                     c.wasm.active().local_set(addr_local);
-                    c.mem_vars.insert(name.clone(), MemVar { addr_local, size: *size });
+                    c.func_ctx().mem_vars.insert(name.clone(), MemVar { addr_local, size: *size });
                 }
             }
         }
@@ -447,9 +433,8 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
         terminates = c.compile_block_statement(pkg, &body.list)?;
     }
 
-    c.func_contexts.pop();
-
     // Restore $sp before implicit return (fallthrough for void functions or unreachable).
+    let saved_sp = c.func_ctx().saved_sp_local.expect("saved_sp_local not set");
     c.wasm.active().local_get(saved_sp);
     c.wasm.active().global_set(sp_idx);
 
@@ -460,13 +445,7 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
     c.wasm.end_func_body();
 
     c.symbols.leave_context();
-
-    c.locals = saved_locals;
-    c.next_wasm_local = saved_next_local;
-    c.saved_sp_local = saved_outer_sp;
-    c.mem_vars = saved_mem_vars;
-    c.frame_base_local = saved_frame_base;
-    c.escaped_vars = saved_escaped;
+    c.func_contexts.pop();
 
     let _ = symbol;
 
@@ -596,9 +575,9 @@ pub fn compile_const(
                     false,
                 );
 
-                let local_idx = compiler.next_wasm_local;
-                compiler.next_wasm_local += 1;
-                compiler.locals.insert(symbol.index, local_idx);
+                let local_idx = compiler.func_ctx().next_wasm_local;
+                compiler.func_ctx().next_wasm_local += 1;
+                compiler.func_ctx().locals.insert(symbol.index, local_idx);
 
                 compiler.wasm.active().local_set(local_idx);
             }
