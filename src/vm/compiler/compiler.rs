@@ -466,7 +466,7 @@ impl Compiler {
     }
 
     pub(crate) fn is_string_type(dt: &DefineType) -> bool {
-        matches!(dt.unwrap_qualifiers(), DefineType::String)
+        matches!(dt.unwrap_to_base_type(), DefineType::String)
     }
 
     pub(crate) fn is_interface_type(dt: &DefineType) -> bool {
@@ -3879,7 +3879,7 @@ impl Compiler {
     }
 
     fn emit_print_value(&mut self, arg_type: &DefineType) -> Result<(), Error> {
-        let unwrapped = arg_type.unwrap_qualifiers();
+        let unwrapped = arg_type.unwrap_to_base_type();
         if Self::is_string_type(arg_type) {
             let idx = self.wasm.print_string_func_idx()
                 .ok_or_else(|| Error::InternalError("print_string not imported".into()))?;

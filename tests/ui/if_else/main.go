@@ -28,7 +28,7 @@ func main() {
 }
 
 // Output:
-//"greater"
-//"equal"
-//"in range"
+//greater
+//equal
+//in range
 //11
