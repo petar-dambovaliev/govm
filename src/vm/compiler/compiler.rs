@@ -797,6 +797,10 @@ impl Compiler {
         self.wasm.add_gc_collect_import();
         self.wasm.add_print_string_import();
         self.wasm.add_println_string_import();
+        self.wasm.add_print_int_import();
+        self.wasm.add_print_bool_import();
+        self.wasm.add_print_newline_import();
+        self.wasm.add_print_space_import();
         self.wasm.add_default_memory();
         self.wasm.export_memory("memory", 0);
         self.wasm.add_stack_pointer_global();
@@ -3874,29 +3878,56 @@ impl Compiler {
         }
     }
 
+    fn emit_print_value(&mut self, arg_type: &DefineType) -> Result<(), Error> {
+        let unwrapped = arg_type.unwrap_qualifiers();
+        if Self::is_string_type(arg_type) {
+            let idx = self.wasm.print_string_func_idx()
+                .ok_or_else(|| Error::InternalError("print_string not imported".into()))?;
+            self.wasm.active().call(idx);
+        } else if matches!(unwrapped, DefineType::Bool) {
+            let idx = self.wasm.print_bool_func_idx()
+                .ok_or_else(|| Error::InternalError("print_bool not imported".into()))?;
+            self.wasm.active().call(idx);
+        } else if matches!(
+            unwrapped,
+            DefineType::Int | DefineType::Int8 | DefineType::Int16 | DefineType::Int32
+            | DefineType::Uint | DefineType::Uint8 | DefineType::Uint16 | DefineType::Uint32
+            | DefineType::Byte | DefineType::Rune
+        ) {
+            let idx = self.wasm.print_int_func_idx()
+                .ok_or_else(|| Error::InternalError("print_int not imported".into()))?;
+            self.wasm.active().call(idx);
+        } else {
+            return Err(self.unsupported(&format!("print with argument type {:?}", arg_type)));
+        }
+        Ok(())
+    }
+
     fn compile_println(
         &mut self,
         pkg: &str,
         call: &Call,
     ) -> Result<DefineType, Error> {
+        let nl_idx = self.wasm.print_newline_func_idx()
+            .ok_or_else(|| Error::InternalError("print_newline not imported".into()))?;
+
         if call.args.is_empty() {
-            let idx = self.wasm.println_string_func_idx()
-                .ok_or_else(|| Error::InternalError("println_string not imported".into()))?;
-            self.wasm.active().i32_const(0);
-            self.wasm.active().i32_const(0);
-            self.wasm.active().call(idx);
+            self.wasm.active().call(nl_idx);
             return Ok(DefineType::Null);
         }
-        if call.args.len() != 1 {
-            return Err(self.unsupported("println with multiple arguments"));
+
+        let sp_idx = self.wasm.print_space_func_idx()
+            .ok_or_else(|| Error::InternalError("print_space not imported".into()))?;
+
+        for (i, arg) in call.args.iter().enumerate() {
+            if i > 0 {
+                self.wasm.active().call(sp_idx);
+            }
+            let arg_type = self.compile_expression(pkg, arg)?;
+            self.emit_print_value(&arg_type)?;
         }
-        let arg_type = self.compile_expression(pkg, &call.args[0])?;
-        if !Self::is_string_type(&arg_type) {
-            return Err(self.unsupported("println with non-string argument"));
-        }
-        let idx = self.wasm.println_string_func_idx()
-            .ok_or_else(|| Error::InternalError("println_string not imported".into()))?;
-        self.wasm.active().call(idx);
+
+        self.wasm.active().call(nl_idx);
         Ok(DefineType::Null)
     }
 
@@ -3908,16 +3939,17 @@ impl Compiler {
         if call.args.is_empty() {
             return Ok(DefineType::Null);
         }
-        if call.args.len() != 1 {
-            return Err(self.unsupported("print with multiple arguments"));
+
+        for (i, arg) in call.args.iter().enumerate() {
+            if i > 0 {
+                if let Some(sp_idx) = self.wasm.print_space_func_idx() {
+                    self.wasm.active().call(sp_idx);
+                }
+            }
+            let arg_type = self.compile_expression(pkg, arg)?;
+            self.emit_print_value(&arg_type)?;
         }
-        let arg_type = self.compile_expression(pkg, &call.args[0])?;
-        if !Self::is_string_type(&arg_type) {
-            return Err(self.unsupported("print with non-string argument"));
-        }
-        let idx = self.wasm.print_string_func_idx()
-            .ok_or_else(|| Error::InternalError("print_string not imported".into()))?;
-        self.wasm.active().call(idx);
+
         Ok(DefineType::Null)
     }
 

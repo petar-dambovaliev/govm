@@ -29,6 +29,10 @@ pub struct WasmModuleBuilder {
     rt_alloc_func_idx: Option<u32>,
     print_string_func_idx: Option<u32>,
     println_string_func_idx: Option<u32>,
+    print_int_func_idx: Option<u32>,
+    print_bool_func_idx: Option<u32>,
+    print_newline_func_idx: Option<u32>,
+    print_space_func_idx: Option<u32>,
     sp_global_idx: Option<u32>,
     heap_bump_global_idx: Option<u32>,
     free_list_head_global_idx: Option<u32>,
@@ -64,6 +68,10 @@ impl WasmModuleBuilder {
             rt_alloc_func_idx: None,
             print_string_func_idx: None,
             println_string_func_idx: None,
+            print_int_func_idx: None,
+            print_bool_func_idx: None,
+            print_newline_func_idx: None,
+            print_space_func_idx: None,
             sp_global_idx: None,
             heap_bump_global_idx: None,
             free_list_head_global_idx: None,
@@ -137,6 +145,82 @@ impl WasmModuleBuilder {
 
     pub fn println_string_func_idx(&self) -> Option<u32> {
         self.println_string_func_idx
+    }
+
+    /// `(i32) -> ()` import `env.print_int` -- host prints i32 as decimal.
+    pub fn add_print_int_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types.ty().function(vec![ValType::I32], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "print_int", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.print_int_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn print_int_func_idx(&self) -> Option<u32> {
+        self.print_int_func_idx
+    }
+
+    /// `(i32) -> ()` import `env.print_bool` -- host prints "true" or "false".
+    pub fn add_print_bool_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types.ty().function(vec![ValType::I32], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "print_bool", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.print_bool_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn print_bool_func_idx(&self) -> Option<u32> {
+        self.print_bool_func_idx
+    }
+
+    /// `() -> ()` import `env.print_newline` -- host prints "\n".
+    pub fn add_print_newline_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types.ty().function(vec![], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "print_newline", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.print_newline_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn print_newline_func_idx(&self) -> Option<u32> {
+        self.print_newline_func_idx
+    }
+
+    /// `() -> ()` import `env.print_space` -- host prints " ".
+    pub fn add_print_space_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types.ty().function(vec![], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "print_space", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.print_space_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn print_space_func_idx(&self) -> Option<u32> {
+        self.print_space_func_idx
     }
 
     /// Mutable i32 global `$sp` initialized to [`STACK_TOP`], used for stack-allocated arrays.

@@ -53,6 +53,36 @@ fn host_println_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
     caller.data_mut().output.extend_from_slice(&bytes);
 }
 
+fn host_print_int(mut caller: Caller<'_, HostState>, val: i32) {
+    let s = format!("{}", val);
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(s.as_bytes());
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.extend_from_slice(s.as_bytes());
+}
+
+fn host_print_bool(mut caller: Caller<'_, HostState>, val: i32) {
+    let s = if val != 0 { "true" } else { "false" };
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(s.as_bytes());
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.extend_from_slice(s.as_bytes());
+}
+
+fn host_print_newline(mut caller: Caller<'_, HostState>) {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(b"\n");
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.push(b'\n');
+}
+
+fn host_print_space(mut caller: Caller<'_, HostState>) {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(b" ");
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.push(b' ');
+}
+
 fn host_gc_collect(mut caller: Caller<'_, HostState>) {
     let mem = caller
         .get_export("memory")
@@ -139,6 +169,18 @@ fn setup_linker(linker: &mut Linker<HostState>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     linker
         .func_wrap("env", "println_string", host_println_string)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_int", host_print_int)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_bool", host_print_bool)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_newline", host_print_newline)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_space", host_print_space)
         .map_err(|e| e.to_string())?;
     linker
         .func_wrap("env", "rt_gc_collect", host_gc_collect)

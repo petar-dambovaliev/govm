@@ -34,6 +34,8 @@ enum SubCommand {
     #[clap(name = "run", about = "Builds and runs a Go binary via Wasmtime")]
     Run {
         binary: PathBuf,
+        #[arg(long)]
+        output_assert: bool,
     },
     #[clap(name = "mod", about = "Manage Go modules")]
     Mod(ModArg),
@@ -74,10 +76,11 @@ fn host_print_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
     let start = ptr as usize;
     let end = start + len as usize;
     if end <= data.len() {
-        let bytes = &data[start..end];
+        let bytes = data[start..end].to_vec();
         use std::io::Write;
-        let _ = std::io::stdout().write_all(bytes);
+        let _ = std::io::stdout().write_all(&bytes);
         let _ = std::io::stdout().flush();
+        caller.data_mut().output.extend_from_slice(&bytes);
     }
 }
 
@@ -99,6 +102,66 @@ fn host_println_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
     use std::io::Write;
     let _ = std::io::stdout().write_all(&bytes);
     let _ = std::io::stdout().flush();
+    caller.data_mut().output.extend_from_slice(&bytes);
+}
+
+fn host_print_int(mut caller: Caller<'_, HostState>, val: i32) {
+    let s = format!("{}", val);
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(s.as_bytes());
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.extend_from_slice(s.as_bytes());
+}
+
+fn host_print_bool(mut caller: Caller<'_, HostState>, val: i32) {
+    let s = if val != 0 { "true" } else { "false" };
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(s.as_bytes());
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.extend_from_slice(s.as_bytes());
+}
+
+fn host_print_newline(mut caller: Caller<'_, HostState>) {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(b"\n");
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.push(b'\n');
+}
+
+fn host_print_space(mut caller: Caller<'_, HostState>) {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(b" ");
+    let _ = std::io::stdout().flush();
+    caller.data_mut().output.push(b' ');
+}
+
+fn parse_expected_output(source: &PathBuf) -> Option<String> {
+    let mut src = String::new();
+    File::open(source)
+        .and_then(|mut f| f.read_to_string(&mut src))
+        .unwrap_or_else(|e| panic!("failed to read source {:?}: {}", source, e));
+
+    let mut collecting = false;
+    let mut lines = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed == "// Output:" {
+            collecting = true;
+            continue;
+        }
+        if collecting {
+            if let Some(rest) = trimmed.strip_prefix("//") {
+                lines.push(rest.to_string());
+            } else {
+                break;
+            }
+        }
+    }
+    if collecting {
+        Some(lines.join("\n"))
+    } else {
+        None
+    }
 }
 
 fn compile_to_wasm(source: &PathBuf) -> Vec<u8> {
@@ -112,7 +175,7 @@ fn compile_to_wasm(source: &PathBuf) -> Vec<u8> {
     goc.compile(main, src, pkgs, false).unwrap()
 }
 
-fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
+fn run_wasm(wasm_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let engine = Engine::default();
     let module = Module::new(&engine, wasm_bytes).map_err(|e| e.to_string())?;
 
@@ -125,6 +188,18 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     linker
         .func_wrap("env", "println_string", host_println_string)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_int", host_print_int)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_bool", host_print_bool)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_newline", host_print_newline)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_space", host_print_space)
         .map_err(|e| e.to_string())?;
 
     let mut store = Store::new(
@@ -149,13 +224,17 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
         .call(&mut store, &[], &mut results)
         .map_err(|e| e.to_string())?;
 
+    let output = store.data().output.clone();
+
     if !results.is_empty() {
         if let Some(wasmtime::Val::I32(v)) = results.first() {
-            std::process::exit(*v);
+            if *v != 0 {
+                std::process::exit(*v);
+            }
         }
     }
 
-    Ok(())
+    Ok(output)
 }
 
 fn main() {
@@ -178,7 +257,11 @@ fn main() {
 
             println!("compiled to {:?}", out_path);
         }
-        SubCommand::Run { mut binary } => {
+        SubCommand::Run {
+            mut binary,
+            output_assert,
+        } => {
+            let source_path = binary.clone();
             let is_wasm = binary.extension().map_or(false, |ext| ext == "wasm");
 
             let wasm_bytes = if is_wasm {
@@ -196,9 +279,28 @@ fn main() {
                 goc.compile(main, binary, pkgs, false).unwrap()
             };
 
-            if let Err(e) = run_wasm(&wasm_bytes) {
-                eprintln!("{}", e);
-                std::process::exit(1);
+            match run_wasm(&wasm_bytes) {
+                Ok(output) => {
+                    if output_assert {
+                        if let Some(expected) = parse_expected_output(&source_path) {
+                            let actual = String::from_utf8_lossy(&output);
+                            let actual = actual.trim_end();
+                            let expected = expected.trim_end();
+                            if actual != expected {
+                                eprintln!("Output assertion failed for {:?}", source_path);
+                                eprintln!("--- expected ---");
+                                eprintln!("{}", expected);
+                                eprintln!("--- actual ---");
+                                eprintln!("{}", actual);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
             }
         }
         SubCommand::Mod(mod_command) => match mod_command.command {
