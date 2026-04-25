@@ -5,11 +5,13 @@ use crate::parser::ast::{
 };
 use crate::parser::parse_dir_recursive;
 use crate::parser::token::{Keyword, LitKind, Operator};
+use crate::stdlib;
 use crate::vm::compiler::call::CallType;
 use crate::vm::compiler::{make_ident_name, make_method_name, Context, FuncContext, LoopContext};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::vm::compiler::declaration::{compile_const, compile_function, compile_variable};
+use crate::vm::compiler::declaration::{compile_const, compile_function, compile_variable, forward_declare_function};
 use crate::vm::compiler::init_order::{compute_init_order, compute_package_order};
 use crate::vm::module::ModuleResolver;
 use crate::vm::symbols::{ContextType, DefineType, Qualifier, Resolved, SymbolTable};
@@ -56,6 +58,10 @@ pub struct Compiler {
     pub(crate) next_type_tag: u32,
     /// Interface name -> vtable metadata for call_indirect dispatch.
     pub(crate) iface_vtables: AHashMap<String, IfaceVtable>,
+    /// Stdlib packages that have already been compiled (prevents double-compilation).
+    compiled_stdlib: HashSet<String>,
+    /// Compile-time evaluated constants from stdlib: (pkg, name) -> (value, DefineType).
+    pub(crate) inline_constants: AHashMap<(String, String), (i64, DefineType)>,
 }
 
 #[derive(Clone)]
@@ -108,11 +114,256 @@ impl Compiler {
             type_tags: AHashMap::new(),
             next_type_tag: 1,
             iface_vtables: AHashMap::new(),
+            compiled_stdlib: HashSet::new(),
+            inline_constants: AHashMap::new(),
         }
     }
 
     fn unsupported(&self, what: &str) -> Error {
         Error::SyntaxError(format!("WASM: unsupported on this branch: {}", what))
+    }
+
+    fn compile_stdlib_package(&mut self, pkg_name: &str) -> Result<(), Error> {
+        if self.compiled_stdlib.contains(pkg_name) {
+            return Ok(());
+        }
+        self.compiled_stdlib.insert(pkg_name.to_string());
+
+        let files = stdlib::parse_stdlib_package(pkg_name)
+            .map_err(|e| Error::InternalError(e))?;
+
+        for file in &files {
+            for imp in &file.imports {
+                let path = imp.path.value.trim_matches('"');
+                if stdlib::is_stdlib_import(path) {
+                    self.compile_stdlib_package(path)?;
+                }
+            }
+        }
+
+        let synthetic = stdlib::stdlib_synthetic_path(pkg_name);
+
+        for file in &files {
+            for imp in &file.imports {
+                let import_path = imp.path.value.trim_matches('"');
+                if stdlib::is_stdlib_import(import_path) {
+                    let alias = imp
+                        .name
+                        .clone()
+                        .map(|id| id.name.clone())
+                        .unwrap_or_else(|| stdlib::pkg_short_name(import_path).to_string());
+                    self.symbols.define(
+                        "",
+                        &alias,
+                        DefineType::Package {
+                            path: stdlib::stdlib_synthetic_path(import_path),
+                            alias: alias.clone(),
+                        },
+                        false,
+                    );
+                }
+            }
+        }
+
+        let mut all_decls = Vec::new();
+        for file in &files {
+            all_decls.extend(file.decl.iter().cloned());
+        }
+
+        self.pre_register_declarations(&synthetic, &all_decls);
+
+        let ordered =
+            compute_init_order(&all_decls).map_err(|e| Error::InternalError(e))?;
+
+        for decl in &ordered {
+            if matches!(decl, Declaration::Type(_)) {
+                self.compile_declaration(&synthetic, decl)?;
+            }
+        }
+
+        self.build_interface_vtable_metadata(&synthetic);
+
+        for decl in &ordered {
+            if let Declaration::Const(c) = decl {
+                for spec in &c.specs {
+                    let dt = spec.typ.as_ref()
+                        .and_then(|t| self.expression_to_define_type(&synthetic, t))
+                        .unwrap_or(DefineType::Int);
+                    for (name, value) in spec.name.iter().zip(spec.values.iter()) {
+                        if let Some(val) = self.try_eval_const_i64(&synthetic, value) {
+                            let resolved_dt = DefineType::Qualified(
+                                Qualifier::Const, Box::new(dt.clone()),
+                            );
+                            self.symbols.update_dt(&synthetic, &name.name, resolved_dt);
+                            self.inline_constants.insert(
+                                (synthetic.clone(), name.name.clone()),
+                                (val, dt.clone()),
+                            );
+                        }
+                    }
+                    self.iota += 1;
+                }
+            }
+        }
+
+        for decl in &ordered {
+            if let Declaration::Function(f) = decl {
+                forward_declare_function(&synthetic, f, self)?;
+            }
+        }
+
+        for decl in &ordered {
+            if matches!(decl, Declaration::Function(_)) {
+                self.compile_declaration(&synthetic, decl)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_eval_const_i64(&self, pkg: &str, expr: &Expression) -> Option<i64> {
+        match expr {
+            Expression::BasicLit(lit) => match lit.kind {
+                LitKind::Integer => {
+                    if lit.value.starts_with("0x") || lit.value.starts_with("0X") {
+                        i64::from_str_radix(&lit.value[2..], 16).ok()
+                    } else if lit.value.starts_with("0b") || lit.value.starts_with("0B") {
+                        i64::from_str_radix(&lit.value[2..], 2).ok()
+                    } else if lit.value.starts_with("0o") || lit.value.starts_with("0O") {
+                        i64::from_str_radix(&lit.value[2..], 8).ok()
+                    } else {
+                        lit.value.parse::<i64>().ok()
+                    }
+                }
+                LitKind::Char => lit.value.chars().next().map(|c| c as i64),
+                LitKind::Ident => match lit.value.as_str() {
+                    "true" => Some(1),
+                    "false" | "nil" => Some(0),
+                    _ => self.inline_constants
+                        .get(&(pkg.to_string(), lit.value.clone()))
+                        .map(|(v, _)| *v),
+                },
+                _ => None,
+            },
+            Expression::Ident(id) => {
+                match id.name.as_str() {
+                    "true" => Some(1),
+                    "false" | "nil" => Some(0),
+                    _ => self.inline_constants
+                        .get(&(pkg.to_string(), id.name.clone()))
+                        .map(|(v, _)| *v),
+                }
+            }
+            Expression::Operation(op) => {
+                let lhs = self.try_eval_const_i64(pkg, &op.x)?;
+                let rhs = op.y.as_ref().and_then(|y| self.try_eval_const_i64(pkg, y))?;
+                match op.op {
+                    Operator::Add => Some(lhs.wrapping_add(rhs)),
+                    Operator::Sub => Some(lhs.wrapping_sub(rhs)),
+                    Operator::Star => Some(lhs.wrapping_mul(rhs)),
+                    Operator::Quo => {
+                        if rhs == 0 { None } else { Some(lhs.wrapping_div(rhs)) }
+                    }
+                    Operator::Rem => {
+                        if rhs == 0 { None } else { Some(lhs.wrapping_rem(rhs)) }
+                    }
+                    Operator::Shl => Some(lhs.wrapping_shl(rhs as u32)),
+                    Operator::Shr => Some(lhs.wrapping_shr(rhs as u32)),
+                    Operator::Or => Some(lhs | rhs),
+                    Operator::And => Some(lhs & rhs),
+                    Operator::Xor => Some(lhs ^ rhs),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn type_name_to_define_type(&self, name: &str) -> DefineType {
+        match name {
+            "int" => DefineType::Int,
+            "int8" => DefineType::Int8,
+            "int16" => DefineType::Int16,
+            "int32" => DefineType::Int32,
+            "int64" => DefineType::Int64,
+            "uint" => DefineType::Uint,
+            "uint8" => DefineType::Uint8,
+            "uint16" => DefineType::Uint16,
+            "uint32" => DefineType::Uint32,
+            "uint64" => DefineType::Uint64,
+            "byte" => DefineType::Byte,
+            "float32" => DefineType::Float32,
+            "float64" => DefineType::Float64,
+            "rune" => DefineType::Rune,
+            "bool" => DefineType::Bool,
+            "string" => DefineType::String,
+            _ => DefineType::Int,
+        }
+    }
+
+    fn is_type_conversion(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "int" | "int8" | "int16" | "int32" | "int64"
+            | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
+            | "byte" | "float32" | "float64" | "rune" | "bool" | "string"
+        )
+    }
+
+    fn emit_type_conversion(&mut self, src: &DefineType, dst: &DefineType) {
+        let s = src.unwrap_qualifiers();
+        let d = dst.unwrap_qualifiers();
+        let s_wasm = Self::define_type_to_wasm(&s);
+        let d_wasm = Self::define_type_to_wasm(&d);
+        match (s_wasm, d_wasm) {
+            (ValType::I32, ValType::I64) => {
+                if s.is_unsigned_int() {
+                    self.wasm.active().emit(&Instruction::I64ExtendI32U);
+                } else {
+                    self.wasm.active().emit(&Instruction::I64ExtendI32S);
+                }
+            }
+            (ValType::I64, ValType::I32) => {
+                self.wasm.active().emit(&Instruction::I32WrapI64);
+            }
+            (ValType::I32, ValType::F64) => {
+                if s.is_unsigned_int() {
+                    self.wasm.active().emit(&Instruction::F64ConvertI32U);
+                } else {
+                    self.wasm.active().emit(&Instruction::F64ConvertI32S);
+                }
+            }
+            (ValType::I64, ValType::F64) => {
+                if s.is_unsigned_int() {
+                    self.wasm.active().emit(&Instruction::F64ConvertI64U);
+                } else {
+                    self.wasm.active().emit(&Instruction::F64ConvertI64S);
+                }
+            }
+            (ValType::F64, ValType::I32) => {
+                self.wasm.active().emit(&Instruction::I32TruncF64S);
+            }
+            (ValType::F64, ValType::I64) => {
+                self.wasm.active().emit(&Instruction::I64TruncF64S);
+            }
+            (ValType::F32, ValType::F64) => {
+                self.wasm.active().emit(&Instruction::F64PromoteF32);
+            }
+            (ValType::F64, ValType::F32) => {
+                self.wasm.active().emit(&Instruction::F32DemoteF64);
+            }
+            (ValType::I32, ValType::F32) => {
+                if s.is_unsigned_int() {
+                    self.wasm.active().emit(&Instruction::F32ConvertI32U);
+                } else {
+                    self.wasm.active().emit(&Instruction::F32ConvertI32S);
+                }
+            }
+            (ValType::F32, ValType::I32) => {
+                self.wasm.active().emit(&Instruction::I32TruncF32S);
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn define_type_to_wasm(dt: &DefineType) -> ValType {
@@ -496,12 +747,26 @@ impl Compiler {
         let resolver = ModuleResolver::from_project_root(&project_path);
 
         let mut project = project;
+        for pkg in &project {
+            for file in &pkg.files {
+                for import in &file.imports {
+                    let import_path = import.path.value.trim_matches('"');
+                    if stdlib::is_stdlib_import(import_path) {
+                        self.compile_stdlib_package(import_path)?;
+                    }
+                }
+            }
+        }
+
         if let Some(ref resolver) = resolver {
             let mut remote_dirs: Vec<PathBuf> = Vec::new();
             for pkg in &project {
                 for file in &pkg.files {
                     for import in &file.imports {
                         let import_path = import.path.value.trim_matches('"');
+                        if stdlib::is_stdlib_import(import_path) {
+                            continue;
+                        }
                         if !import_path.starts_with(resolver.module_path()) {
                             if let Ok(resolved) = resolver.resolve_import(import_path) {
                                 if resolved.exists() && !remote_dirs.contains(&resolved) {
@@ -542,6 +807,26 @@ impl Compiler {
 
                 for import in &file.imports {
                     let import_path = import.path.value.trim_matches('"');
+
+                    if stdlib::is_stdlib_import(import_path) {
+                        let alias = import
+                            .name
+                            .clone()
+                            .map(|id| id.name.clone())
+                            .unwrap_or_else(|| {
+                                stdlib::pkg_short_name(import_path).to_string()
+                            });
+                        self.symbols.define(
+                            "",
+                            &alias,
+                            DefineType::Package {
+                                path: stdlib::stdlib_synthetic_path(import_path),
+                                alias: alias.clone(),
+                            },
+                            false,
+                        );
+                        continue;
+                    }
 
                     let p: PathBuf = if let Some(ref resolver) = resolver {
                         resolver.resolve_import(import_path).map_err(|e| {
@@ -2506,6 +2791,11 @@ impl Compiler {
                     );
                 }
 
+                if let Some((val, dt)) = self.inline_constants.get(&(pkg.to_string(), ident.name.clone())).cloned() {
+                    self.wasm.active().i32_const(val as i32);
+                    return Ok(DefineType::Qualified(Qualifier::Const, Box::new(dt)));
+                }
+
                 match self.symbols.resolve(pkg, &ident.name) {
                     Some(Resolved::Local((symbol, dt, _))) => {
                         if let Some(&local_idx) = self.locals.get(&symbol.index) {
@@ -3334,6 +3624,15 @@ impl Compiler {
                 "append" => return self.compile_append(pkg, call),
                 _ => {}
             }
+            if self.is_type_conversion(&name.name) {
+                if let Some(arg) = call.args.first() {
+                    let src = self.compile_expression(pkg, arg)?;
+                    let target_dt = self.type_name_to_define_type(&name.name);
+                    self.emit_type_conversion(&src, &target_dt);
+                    return Ok(target_dt);
+                }
+            }
+
             if builtin::resolve(&name.name).is_some() {
                 return Err(self.unsupported(&format!("builtin function: {}", name.name)));
             }

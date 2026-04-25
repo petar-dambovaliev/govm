@@ -131,6 +131,14 @@ impl DefineType {
             _ => None,
         }
     }
+
+    pub fn is_unsigned_int(&self) -> bool {
+        matches!(
+            self.unwrap_qualifiers(),
+            DefineType::Uint | DefineType::Uint8 | DefineType::Uint16
+            | DefineType::Uint32 | DefineType::Uint64 | DefineType::Byte
+        )
+    }
 }
 
 impl Display for DefineType {
@@ -964,6 +972,16 @@ impl SymbolTable {
 
     ///Resolve a symbol in either the current context or the global context if no local was found.
     /// For closures, keep looking in outer scopes (not global) and return if the symbol is from the outer scope
+    pub fn peek(&self, pkg: &str, name: &str) -> Option<Resolved> {
+        for ctx in self.contexts.iter().rev() {
+            let symbol = ctx.resolve(pkg, name);
+            if let Some((sym, dt)) = symbol {
+                return Some(Resolved::Local((sym, dt, pkg.to_string())));
+            }
+        }
+        None
+    }
+
     pub fn resolve(&mut self, pkg: &str, name: &str) -> Option<Resolved> {
         for (i, ctx) in self.contexts.iter().rev().enumerate() {
             let symbol = ctx.resolve(pkg, name);

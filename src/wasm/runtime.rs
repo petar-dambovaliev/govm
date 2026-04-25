@@ -1627,4 +1627,23 @@ func main() int {
         .expect("should compile and run");
         assert_eq!(result, 12);
     }
+
+    // ──── stdlib import tests ────
+
+    #[test]
+    fn go_stdlib_const_access() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+import "runtime"
+
+func main() int {
+    return runtime.GOOS
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
 }

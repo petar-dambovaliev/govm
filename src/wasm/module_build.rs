@@ -34,6 +34,8 @@ pub struct WasmModuleBuilder {
     /// Funcref table entries: (table_offset, func_idx) for interface vtables.
     vtable_entries: Vec<(u32, u32)>,
     vtable_size: u32,
+    /// Init values for mutable globals (indexed by global_idx).
+    global_init_values: Vec<(u32, i64)>,
 }
 
 impl Default for WasmModuleBuilder {
@@ -63,6 +65,7 @@ impl WasmModuleBuilder {
             next_global_idx: 0,
             vtable_entries: Vec::new(),
             vtable_size: 0,
+            global_init_values: Vec::new(),
         }
     }
 
@@ -143,6 +146,40 @@ impl WasmModuleBuilder {
         self.next_global_idx += 1;
         self.sp_global_idx = Some(idx);
         idx
+    }
+
+    pub fn add_mutable_global(&mut self, val_type: ValType, init_value: i64) -> u32 {
+        let idx = self.next_global_idx;
+        let init_expr = match val_type {
+            ValType::I32 => ConstExpr::i32_const(init_value as i32),
+            ValType::I64 => ConstExpr::i64_const(init_value),
+            ValType::F32 => {
+                let ieee = wasm_encoder::Ieee32::from(f32::from_bits(init_value as u32));
+                ConstExpr::f32_const(ieee)
+            }
+            ValType::F64 => {
+                let ieee = wasm_encoder::Ieee64::from(f64::from_bits(init_value as u64));
+                ConstExpr::f64_const(ieee)
+            }
+            _ => ConstExpr::i32_const(0),
+        };
+        self.globals.global(
+            GlobalType {
+                val_type,
+                mutable: true,
+                shared: false,
+            },
+            &init_expr,
+        );
+        self.global_init_values.push((idx, init_value));
+        self.next_global_idx += 1;
+        idx
+    }
+
+    pub fn get_global_init_i64(&self, global_idx: u32) -> Option<i64> {
+        self.global_init_values.iter()
+            .find(|&&(idx, _)| idx == global_idx)
+            .map(|&(_, val)| val)
     }
 
     pub fn sp_global_idx(&self) -> Option<u32> {

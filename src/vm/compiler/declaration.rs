@@ -2,7 +2,7 @@ use crate::parser::ast::{self, ConstSpec, Decl, Expression, FuncDecl, VarSpec};
 use crate::parser::token::Operator;
 use crate::vm::compiler::analysis;
 use crate::vm::compiler::compiler::{Compiler, MemVar};
-use crate::vm::compiler::{make_method_name, FuncContext};
+use crate::vm::compiler::{make_ident_name, make_method_name, FuncContext};
 use crate::vm::symbols::{ContextType, DefineType, Qualifier, Scope};
 use crate::vm::Error;
 use crate::wasm::layout::field_byte_size;
@@ -113,6 +113,64 @@ pub fn compile_variable(pkg: &str, v: &Decl<VarSpec>, c: &mut Compiler) -> Resul
             }
         }
     }
+    Ok(())
+}
+
+/// Pre-register a function's type and index in the WASM module without compiling its body.
+/// Used by stdlib compilation to resolve intra-package calls.
+pub fn forward_declare_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(), Error> {
+    let f_name = if let Some(recv) = f.recv.as_ref() {
+        let recv_field = recv
+            .list
+            .first()
+            .ok_or_else(|| Error::SyntaxError("receiver field list is empty".to_string()))?;
+        let t = c
+            .expression_to_define_type(pkg, &recv_field.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve receiver type".to_string()))?;
+        make_method_name(pkg, t.strip_ref(), &f.name.name)
+    } else {
+        f.name.name.clone()
+    };
+
+    if c.wasm_func_map.contains_key(&f_name) {
+        return Ok(());
+    }
+
+    let mut wasm_params: Vec<ValType> = Vec::new();
+    if let Some(recv) = f.recv.as_ref() {
+        let recv_field = recv.list.first().unwrap();
+        let t = c.expression_to_define_type(pkg, &recv_field.typ).unwrap();
+        wasm_params.push(Compiler::define_type_to_wasm(&t));
+    }
+    for p in &f.typ.params.list {
+        let t = c
+            .expression_to_define_type(pkg, &p.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve parameter type".to_string()))?;
+        for _ in &p.name {
+            if Compiler::is_fat_type(&t) {
+                wasm_params.push(ValType::I32);
+                wasm_params.push(ValType::I32);
+            } else {
+                wasm_params.push(Compiler::define_type_to_wasm(&t));
+            }
+        }
+    }
+
+    let mut wasm_results: Vec<ValType> = Vec::new();
+    for el in &f.typ.result.list {
+        let t = c
+            .expression_to_define_type(pkg, &el.typ)
+            .ok_or_else(|| Error::TypeError("failed to resolve return type".to_string()))?;
+        wasm_results.push(Compiler::define_type_to_wasm(&t));
+    }
+
+    let type_idx = c.wasm.add_func_type(wasm_params, wasm_results);
+    let func_idx = c.wasm.define_function(type_idx);
+
+    let mangled = make_ident_name(pkg, &f.name.name);
+    c.wasm_func_map.insert(f_name, func_idx);
+    c.wasm_func_map.insert(mangled, func_idx);
+
     Ok(())
 }
 
@@ -266,12 +324,16 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
             .collect()
     };
 
-    let type_idx = c
-        .wasm
-        .add_func_type(wasm_params.clone(), wasm_results.clone());
-    let func_idx = c.wasm.define_function(type_idx);
-
-    c.wasm_func_map.insert(f_name.clone(), func_idx);
+    let func_idx = if let Some(&existing) = c.wasm_func_map.get(&f_name) {
+        existing
+    } else {
+        let type_idx = c
+            .wasm
+            .add_func_type(wasm_params.clone(), wasm_results.clone());
+        let idx = c.wasm.define_function(type_idx);
+        c.wasm_func_map.insert(f_name.clone(), idx);
+        idx
+    };
     let mangled = crate::vm::compiler::make_ident_name(pkg, &f.name.name);
     c.wasm_func_map.insert(mangled, func_idx);
 
@@ -295,6 +357,25 @@ pub fn compile_function(pkg: &str, f: &FuncDecl, c: &mut Compiler) -> Result<(),
 
     c.wasm.begin_func_body(func_idx, body_locals);
     c.next_wasm_local = num_params;
+
+    if f.body.is_none() {
+        if let Some(emitter) = crate::stdlib::get_native_func(&f.name.name) {
+            emitter(c);
+            c.wasm.end_func_body();
+            c.symbols.leave_context();
+            c.locals = saved_locals;
+            c.next_wasm_local = saved_next_local;
+            c.saved_sp_local = saved_outer_sp;
+            c.mem_vars = saved_mem_vars;
+            c.frame_base_local = saved_frame_base;
+            c.escaped_vars = saved_escaped;
+            return Ok(());
+        }
+        return Err(Error::SyntaxError(format!(
+            "function \"{}\" has no body and no native implementation",
+            f.name.name
+        )));
+    }
 
     // Save $sp for stack-allocated arrays; restore on return.
     let sp_idx = c.wasm.sp_global_idx()

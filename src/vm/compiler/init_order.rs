@@ -1,6 +1,7 @@
 use crate::parser::ast::{
     Decl, DeclStmt, Declaration, Element, Expression, Package, Statement,
 };
+use crate::stdlib;
 use crate::vm::builtin;
 use crate::vm::module::ModuleResolver;
 use ahash::{HashMap, HashMapExt};
@@ -797,6 +798,10 @@ pub fn compute_package_order(
         for file in &p.files {
             for import in &file.imports {
                 let raw_import = import.path.value.trim_matches('"');
+
+                if stdlib::is_stdlib_import(raw_import) {
+                    continue;
+                }
 
                 let resolved_path = if let Some(resolver) = resolver {
                     resolver.resolve_import(raw_import).map_err(|e| {
