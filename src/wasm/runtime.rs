@@ -969,4 +969,179 @@ func main() int {
         .expect("should compile and run");
         assert_eq!(result, 4950);
     }
+
+    #[test]
+    fn go_compound_assign_ops() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    x := 100
+    x += 10
+    x -= 20
+    x *= 3
+    x /= 9
+    x %= 7
+    return x
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn go_incdec_ident() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    x := 10
+    x++
+    x++
+    x--
+    return x
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 11);
+    }
+
+    #[test]
+    fn go_incdec_index() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    a := [3]int{10, 20, 30}
+    a[1]++
+    a[1]++
+    a[2]--
+    return a[0] + a[1] + a[2]
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 10 + 22 + 29);
+    }
+
+    #[test]
+    fn go_incdec_selector() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+type Point struct {
+    x int
+    y int
+}
+
+func main() int {
+    p := Point{x: 5, y: 10}
+    p.x++
+    p.y--
+    return p.x + p.y
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 6 + 9);
+    }
+
+    #[test]
+    fn go_short_circuit_and() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    counter := 0
+    x := false && counter > 0
+    _ = x
+    return counter
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn go_short_circuit_or() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    a := 1
+    b := 0
+    if a > 0 || b > 0 {
+        return 1
+    }
+    return 0
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn go_nil_comparison() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    if nil == nil {
+        return 1
+    }
+    return 0
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn go_nil_literal_value() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    x := 0
+    if nil == nil {
+        x = 1
+    }
+    return x
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn go_short_circuit_nil_guard() {
+        let result = compile_and_run_go(
+            r#"
+package main
+
+func main() int {
+    if false && nil == nil {
+        return 0
+    }
+    return 1
+}
+"#,
+        )
+        .expect("should compile and run");
+        assert_eq!(result, 1);
+    }
 }

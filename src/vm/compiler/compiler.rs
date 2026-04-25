@@ -121,6 +121,29 @@ impl Compiler {
         matches!(dt.unwrap_qualifiers(), DefineType::String)
     }
 
+    fn emit_builtin_value(&mut self, name: &str, dt: &DefineType) {
+        match dt.unwrap_to_base_type() {
+            DefineType::Null => self.wasm.active().i32_const(0),
+            DefineType::Bool => {
+                let val = if name == "true" { 1 } else { 0 };
+                self.wasm.active().i32_const(val);
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_nil_check(&mut self) {
+        let tmp = self.next_wasm_local;
+        self.wasm.active().local_tee(tmp);
+        self.wasm.active().emit(&Instruction::I32Eqz);
+        self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+        self.nesting_depth += 1;
+        self.wasm.active().emit(&Instruction::Unreachable);
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End);
+        self.wasm.active().local_get(tmp);
+    }
+
     pub(crate) fn is_slice_type(dt: &DefineType) -> bool {
         matches!(dt.unwrap_qualifiers(), DefineType::Slice(_))
     }
@@ -553,6 +576,8 @@ impl Compiler {
             DefineType::Type(Box::new(DefineType::Null), crate::vm::types::Type::Null),
             false,
         );
+        self.symbols.define(BUILTIN, "true", DefineType::Bool, false);
+        self.symbols.define(BUILTIN, "false", DefineType::Bool, false);
         self.symbols.define(
             BUILTIN,
             "_",
@@ -1453,7 +1478,19 @@ impl Compiler {
 
         for (left, right) in assign.left.iter().zip(assign.right.iter()) {
             match &assign.op {
-                Operator::AddAssign => {
+                Operator::AddAssign
+                | Operator::SubAssign
+                | Operator::MulAssign
+                | Operator::QuoAssign
+                | Operator::RemAssign => {
+                    let arith_op = match assign.op {
+                        Operator::AddAssign => Operator::Add,
+                        Operator::SubAssign => Operator::Sub,
+                        Operator::MulAssign => Operator::Star,
+                        Operator::QuoAssign => Operator::Quo,
+                        Operator::RemAssign => Operator::Rem,
+                        _ => unreachable!(),
+                    };
                     self.compile_statement(
                         pkg,
                         &Statement::Assign(AssignStmt {
@@ -1462,7 +1499,7 @@ impl Compiler {
                             left: vec![left.clone()],
                             right: vec![Expression::Operation(Operation {
                                 pos: 0,
-                                op: Operator::Add,
+                                op: arith_op,
                                 x: Box::new(left.clone()),
                                 y: Some(Box::new(right.clone())),
                             })],
@@ -1514,6 +1551,7 @@ impl Compiler {
                 Operator::Assign => {
                     if let Expression::Selector(sel) = left {
                         let obj_dt = self.compile_expression(pkg, &sel.x)?;
+                        self.emit_nil_check();
                         let fields = self.resolve_struct_fields(pkg, &obj_dt)?;
                         let (layout, _) = struct_field_layout(&fields);
                         let field_name = &sel.sel.name;
@@ -1562,13 +1600,14 @@ impl Compiler {
                             continue;
                         }
 
+                        self.emit_nil_check();
+
                         let elem_dt = Self::unwrap_slice_elem(&coll_dt)
                             .ok_or_else(|| Error::TypeError(format!(
                                 "index assign on non-indexable type {:?}", coll_dt
                             )))?;
                         let e_size = elem_byte_size(&elem_dt);
 
-                        // hdr_ptr on stack -> stash
                         let hdr_local = self.next_wasm_local;
                         self.wasm.active().local_set(hdr_local);
 
@@ -1763,45 +1802,29 @@ impl Compiler {
         pkg: &str,
         incdec: &IncDecStmt,
     ) -> Result<Option<bool>, Error> {
-        let name = match &incdec.expr {
-            Expression::Ident(ident) => ident.clone(),
-            _ => {
-                return Err(Error::SyntaxError(
-                "increment/decrement requires an identifier".to_string(),
-                ))
-            }
-        };
-
-        let r = self.symbols.resolve(pkg, &name.name).ok_or_else(|| {
-            Error::ReferenceError(format!("`{}` is not defined", name.name))
-        })?;
-
-        let (symbol, t) = match r {
-            Resolved::Local((symbol, t, _)) => (symbol, t),
-            _ => return Err(self.unsupported("enclosed variable inc/dec")),
-        };
-
-        if !t.unwrap_qualifiers().is_numeric() {
-            return Err(Error::TypeError(format!(
-                "cannot use inc/dec on non-numeric type {:#?}",
-                t
-            )));
-        }
-
-        let local_idx = *self.locals.get(&symbol.index).ok_or_else(|| {
-            Error::InternalError(format!("no WASM local for '{}'", name.name))
-        })?;
-
-        self.wasm.active().local_get(local_idx);
-        self.wasm.active().i32_const(1);
-        if incdec.op == Operator::Inc {
-            self.wasm.active().emit(&Instruction::I32Add);
+        let arith_op = if incdec.op == Operator::Inc {
+            Operator::Add
         } else {
-            self.wasm.active().emit(&Instruction::I32Sub);
-        }
-        self.wasm.active().local_set(local_idx);
-
-        Ok(None)
+            Operator::Sub
+        };
+        self.compile_statement(
+            pkg,
+            &Statement::Assign(AssignStmt {
+                pos: 0,
+                op: Operator::Assign,
+                left: vec![incdec.expr.clone()],
+                right: vec![Expression::Operation(Operation {
+                    pos: 0,
+                    op: arith_op,
+                    x: Box::new(incdec.expr.clone()),
+                    y: Some(Box::new(Expression::BasicLit(BasicLit {
+                        pos: 0,
+                        kind: LitKind::Integer,
+                        value: "1".to_string(),
+                    }))),
+                })],
+            }),
+        )
     }
 
     pub(crate) fn compile_expression(
@@ -1823,14 +1846,6 @@ impl Compiler {
                         value: self.iota.to_string(),
                     }),
                 )
-            }
-            Expression::BasicLit(lit)
-                if lit.kind == LitKind::Ident
-                    && (lit.value == "true" || lit.value == "false") =>
-            {
-                let val = if lit.value == "true" { 1 } else { 0 };
-                self.wasm.active().i32_const(val);
-                Ok(DefineType::Bool)
             }
             Expression::BasicLit(lit) if lit.kind == LitKind::String => {
                 let raw = &lit.value;
@@ -1914,6 +1929,8 @@ impl Compiler {
                             } else {
                                 self.wasm.active().local_get(local_idx);
                             }
+                        } else {
+                            self.emit_builtin_value(&lit.value, &dt);
                         }
                         Ok(dt)
                     }
@@ -1927,6 +1944,8 @@ impl Compiler {
                         } else {
                                         self.wasm.active().local_get(local_idx);
                                     }
+                                } else {
+                                    self.emit_builtin_value(&lit.value, &dt);
                                 }
                                 Ok(dt)
                             }
@@ -1936,13 +1955,6 @@ impl Compiler {
                 }
             }
             Expression::Ident(ident) => {
-                if ident.name == "true" {
-                    self.wasm.active().i32_const(1);
-                    return Ok(DefineType::Bool);
-                } else if ident.name == "false" {
-                    self.wasm.active().i32_const(0);
-                    return Ok(DefineType::Bool);
-                }
 
                 if ident.name == "iota" {
                     return self.compile_expression(
@@ -1964,6 +1976,8 @@ impl Compiler {
                             } else {
                                 self.wasm.active().local_get(local_idx);
                             }
+                        } else {
+                            self.emit_builtin_value(&ident.name, &dt);
                         }
                         Ok(dt)
                     }
@@ -1975,6 +1989,8 @@ impl Compiler {
                     } else {
                                 self.wasm.active().local_get(local_idx);
                             }
+                        } else {
+                            self.emit_builtin_value(&ident.name, &dt);
                         }
                         Ok(dt)
                     }
@@ -2163,6 +2179,7 @@ impl Compiler {
                     }
                 }
                 let obj_dt = self.compile_expression(pkg, &sel.x)?;
+                self.emit_nil_check();
                 let fields = self.resolve_struct_fields(pkg, &obj_dt)?;
                 let (layout, _) = struct_field_layout(&fields);
                 let field_name = &sel.sel.name;
@@ -2202,11 +2219,12 @@ impl Compiler {
                     return Ok(elem_dt);
                 }
 
+                self.emit_nil_check();
+
                 let elem_dt = Self::unwrap_slice_elem(&coll_dt)
                     .ok_or_else(|| Error::TypeError(format!("index on non-indexable type {:?}", coll_dt)))?;
                 let e_size = elem_byte_size(&elem_dt);
 
-                // hdr_ptr on stack -> stash
                 let hdr_local = self.next_wasm_local;
                 self.wasm.active().local_set(hdr_local);
 
@@ -3177,8 +3195,13 @@ impl Compiler {
             Operator::AndAnd => match &op.y {
                 Some(y) => {
                     self.compile_expression(pkg, op.x.as_ref())?;
+                    self.wasm.active().emit(&Instruction::If(BlockType::Result(ValType::I32)));
+                    self.nesting_depth += 1;
                     self.compile_expression(pkg, y.as_ref())?;
-                    self.wasm.active().emit(&Instruction::I32And);
+                    self.wasm.active().emit(&Instruction::Else);
+                    self.wasm.active().i32_const(0);
+                    self.nesting_depth -= 1;
+                    self.wasm.active().emit(&Instruction::End);
                     Ok(DefineType::Bool)
                 }
                 None => Err(self.unsupported("unary &&")),
@@ -3186,8 +3209,13 @@ impl Compiler {
             Operator::OrOr => match &op.y {
                 Some(y) => {
                     self.compile_expression(pkg, op.x.as_ref())?;
+                    self.wasm.active().emit(&Instruction::If(BlockType::Result(ValType::I32)));
+                    self.nesting_depth += 1;
+                    self.wasm.active().i32_const(1);
+                    self.wasm.active().emit(&Instruction::Else);
                     self.compile_expression(pkg, y.as_ref())?;
-                    self.wasm.active().emit(&Instruction::I32Or);
+                    self.nesting_depth -= 1;
+                    self.wasm.active().emit(&Instruction::End);
                     Ok(DefineType::Bool)
                 }
                 None => Err(self.unsupported("unary ||")),
