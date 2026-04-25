@@ -17,7 +17,7 @@ pub fn build_smoke_module() -> Vec<u8> {
     b.export_memory("memory", 0);
 
     let demo_idx = b.define_function(demo_ty);
-    b.begin_func_body(vec![]);
+    b.begin_func_body(demo_idx, vec![]);
     {
         let f = b.active();
         f.i32_const(16);
@@ -57,7 +57,7 @@ mod tests {
         b.add_default_memory();
 
         let inner_idx = b.define_function(t_i32);
-        b.begin_func_body(vec![]);
+        b.begin_func_body(inner_idx, vec![]);
         {
             let f = b.active();
             f.i32_const(8);
@@ -66,7 +66,7 @@ mod tests {
         b.end_func_body();
 
         let outer_idx = b.define_function(t_i32);
-        b.begin_func_body(vec![]);
+        b.begin_func_body(outer_idx, vec![]);
         b.active().call(inner_idx);
         b.end_func_body();
 

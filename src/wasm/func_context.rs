@@ -5,7 +5,7 @@
 //! `MemArg { offset, align, memory_index }`, …) but target [`wasm_encoder::Function`] instead of
 //! `Vec<Instruction>` + later copy.
 
-use wasm_encoder::{Function, Instruction, ValType};
+use wasm_encoder::{Function, Instruction, MemArg, ValType};
 
 /// One function body under construction (locals + instruction stream).
 #[derive(Debug)]
@@ -56,8 +56,112 @@ impl WasmFuncContext {
     }
 
     #[inline]
+    pub fn global_get(&mut self, idx: u32) {
+        self.emit(&Instruction::GlobalGet(idx));
+    }
+
+    #[inline]
+    pub fn global_set(&mut self, idx: u32) {
+        self.emit(&Instruction::GlobalSet(idx));
+    }
+
+    #[inline]
     pub fn drop(&mut self) {
         self.emit(&Instruction::Drop);
+    }
+
+    #[inline]
+    pub fn i32_store8(&mut self, offset: u64) {
+        self.emit(&Instruction::I32Store8(MemArg {
+            offset,
+            align: 0,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn i32_store(&mut self, offset: u64) {
+        self.emit(&Instruction::I32Store(MemArg {
+            offset,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn i32_load(&mut self, offset: u64) {
+        self.emit(&Instruction::I32Load(MemArg {
+            offset,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn i64_store(&mut self, offset: u64) {
+        self.emit(&Instruction::I64Store(MemArg {
+            offset,
+            align: 3,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn i64_load(&mut self, offset: u64) {
+        self.emit(&Instruction::I64Load(MemArg {
+            offset,
+            align: 3,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn f32_store(&mut self, offset: u64) {
+        self.emit(&Instruction::F32Store(MemArg {
+            offset,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn f32_load(&mut self, offset: u64) {
+        self.emit(&Instruction::F32Load(MemArg {
+            offset,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn f64_store(&mut self, offset: u64) {
+        self.emit(&Instruction::F64Store(MemArg {
+            offset,
+            align: 3,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn f64_load(&mut self, offset: u64) {
+        self.emit(&Instruction::F64Load(MemArg {
+            offset,
+            align: 3,
+            memory_index: 0,
+        }));
+    }
+
+    #[inline]
+    pub fn memory_copy(&mut self) {
+        self.emit(&Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+    }
+
+    #[inline]
+    pub fn memory_fill(&mut self) {
+        self.emit(&Instruction::MemoryFill(0));
     }
 
     #[inline]

@@ -1,10 +1,10 @@
 pub mod parser;
 pub mod vm;
+pub mod wasm;
 
-use crate::vm::compiler::bytecode::{deserialize_bytecode, serialize_bytecode};
 use crate::vm::compiler::compiler::Compiler;
 use crate::vm::module::parse_local_dependencies;
-use crate::vm::VM;
+use crate::wasm::host_heap::HostHeapBump;
 use bdwgc_alloc::Allocator;
 use clap::Args;
 use clap::{Parser as ClapParser, Subcommand};
@@ -13,6 +13,7 @@ use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use wasmtime::{Caller, Engine, Linker, Module, Store};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: Allocator = Allocator;
@@ -28,16 +29,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
-    #[clap(name = "build", about = "Compile Go source to bytecode")]
+    #[clap(name = "build", about = "Compile Go source to WASM")]
     Build {
         source: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    #[clap(name = "run", about = "Builds and runs a Go binary")]
+    #[clap(name = "run", about = "Builds and runs a Go binary via Wasmtime")]
     Run {
-        #[arg(short, long)]
-        output_assert: bool,
         binary: PathBuf,
     },
     #[clap(name = "mod", about = "Manage Go modules")]
@@ -63,75 +62,182 @@ enum ModSubCommand {
     Remove { dependency: String },
 }
 
+struct HostState {
+    heap: HostHeapBump,
+    output: Vec<u8>,
+}
+
+fn host_rt_alloc(mut caller: Caller<'_, HostState>, size: i32) -> i32 {
+    let align = if size <= 0 {
+        0u32
+    } else {
+        (size as u32).saturating_add(7) & !7
+    };
+    let base = caller.data().heap.next_offset();
+    let need_end = base.saturating_add(align) as usize;
+
+    let mem = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .expect("memory export");
+
+    let current_len = mem.data_size(&caller);
+    if need_end > current_len {
+        let grow_by = need_end - current_len;
+        let pages =
+            (grow_by + crate::wasm::WASM_PAGE_SIZE as usize - 1) / crate::wasm::WASM_PAGE_SIZE as usize;
+        if mem.grow(&mut caller, pages as u64).is_err() {
+            return -1;
+        }
+    }
+
+    let current_len = mem.data_size(&caller);
+    caller
+        .data_mut()
+        .heap
+        .reserve(size, current_len)
+        .unwrap_or(-1)
+}
+
+fn host_print_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
+    if len <= 0 {
+        return;
+    }
+    let mem = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .expect("memory export");
+    let data = mem.data(&caller);
+    let start = ptr as usize;
+    let end = start + len as usize;
+    if end <= data.len() {
+        let bytes = &data[start..end];
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(bytes);
+        let _ = std::io::stdout().flush();
+    }
+}
+
+fn host_println_string(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) {
+    let mem = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .expect("memory export");
+    let data = mem.data(&caller);
+    let mut bytes = Vec::new();
+    if len > 0 {
+        let start = ptr as usize;
+        let end = start + len as usize;
+        if end <= data.len() {
+            bytes.extend_from_slice(&data[start..end]);
+        }
+    }
+    bytes.push(b'\n');
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(&bytes);
+    let _ = std::io::stdout().flush();
+}
+
+fn compile_to_wasm(source: &PathBuf) -> Vec<u8> {
+    let mut src = source.clone();
+    let pkgs = parse_local_dependencies(&src).unwrap();
+
+    let mut goc = Compiler::new();
+    let main = src.clone();
+    src.pop();
+
+    goc.compile(main, src, pkgs, false).unwrap()
+}
+
+fn run_wasm(wasm_bytes: &[u8]) -> Result<(), String> {
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm_bytes).map_err(|e| e.to_string())?;
+
+    let mut linker = Linker::new(&engine);
+    linker
+        .func_wrap("env", "rt_alloc", host_rt_alloc)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "print_string", host_print_string)
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "println_string", host_println_string)
+        .map_err(|e| e.to_string())?;
+
+    let mut store = Store::new(
+        &engine,
+        HostState {
+            heap: HostHeapBump::new(),
+            output: Vec::new(),
+        },
+    );
+
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| e.to_string())?;
+
+    let main_fn = instance
+        .get_func(&mut store, "main")
+        .ok_or_else(|| "missing export 'main'".to_string())?;
+
+    let ty = main_fn.ty(&store);
+    let mut results = vec![wasmtime::Val::I32(0); ty.results().len()];
+
+    main_fn
+        .call(&mut store, &[], &mut results)
+        .map_err(|e| e.to_string())?;
+
+    if !results.is_empty() {
+        if let Some(wasmtime::Val::I32(v)) = results.first() {
+            std::process::exit(*v);
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     unsafe { Allocator::initialize() }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build tokio runtime");
-
-    runtime.block_on(async_main());
-}
-
-async fn async_main() {
     let cli = Cli::parse();
 
     match cli.action {
-        SubCommand::Build {
-            source,
-            output,
-        } => {
-            let mut src = source.clone();
-            let pkgs = parse_local_dependencies(&src).unwrap();
-
-            let mut goc = Compiler::new();
-            let main = src.clone();
-            src.pop();
-
-            let code = goc.compile(main, src, pkgs, false).unwrap();
-            let bytes = serialize_bytecode(&code);
+        SubCommand::Build { source, output } => {
+            let wasm_bytes = compile_to_wasm(&source);
 
             let out_path = output.unwrap_or_else(|| {
                 let mut p = source.clone();
-                p.set_extension("govm");
+                p.set_extension("wasm");
                 p
             });
 
             let mut file = File::create(&out_path)
                 .unwrap_or_else(|e| panic!("failed to create output file {:?}: {}", out_path, e));
-            file.write_all(&bytes)
-                .unwrap_or_else(|e| panic!("failed to write bytecode: {}", e));
+            file.write_all(&wasm_bytes)
+                .unwrap_or_else(|e| panic!("failed to write WASM: {}", e));
 
             println!("compiled to {:?}", out_path);
         }
-        SubCommand::Run {
-            output_assert,
-            mut binary,
-        } => {
-            let is_bytecode = binary.extension().map_or(false, |ext| ext == "govm");
+        SubCommand::Run { mut binary } => {
+            let is_wasm = binary.extension().map_or(false, |ext| ext == "wasm");
 
-            let code = if is_bytecode {
+            let wasm_bytes = if is_wasm {
                 let mut file = File::open(&binary)
                     .unwrap_or_else(|e| panic!("failed to open {:?}: {}", binary, e));
                 let mut data = Vec::new();
                 file.read_to_end(&mut data)
                     .unwrap_or_else(|e| panic!("failed to read {:?}: {}", binary, e));
-                deserialize_bytecode(&data)
-                    .unwrap_or_else(|e| panic!("failed to load bytecode: {}", e))
+                data
             } else {
                 let pkgs = parse_local_dependencies(&binary).unwrap();
-
                 let mut goc = Compiler::new();
                 let main = binary.clone();
                 binary.pop();
-
-                goc.compile(main, binary, pkgs, output_assert).unwrap()
+                goc.compile(main, binary, pkgs, false).unwrap()
             };
 
-            let mut vm = VM::new();
-            if let Err(e) = vm.run(code).await {
-                eprintln!("{}", vm.error_with_location(&e));
+            if let Err(e) = run_wasm(&wasm_bytes) {
+                eprintln!("{}", e);
                 std::process::exit(1);
             }
         }
@@ -143,7 +249,7 @@ async fn async_main() {
                         .as_ref()
                         .and_then(|cd| cd.file_name())
                         .and_then(|name| name.to_str())
-                        .and_then(|a| Some(a.to_string()))
+                        .map(|a| a.to_string())
                         .expect("no module name")
                 });
 

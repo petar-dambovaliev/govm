@@ -56,7 +56,7 @@ impl CallType {
                     }
                 }
 
-                let sellt = c.compile_expression(pkg, &sel.x)?.strip_var();
+                let sellt = c.compile_expression(pkg, &sel.x)?;
                 let method_name = sel.sel.name.to_string();
 
                 fn find_sel(
@@ -68,7 +68,7 @@ impl CallType {
                 ) -> Result<(CallType, String), Error> {
                     match dt.clone() {
                         DefineType::Ref(inner) => {
-                            find_sel(c, pkg, sel, inner.strip_var(), method_name)
+                            find_sel(c, pkg, sel, *inner, method_name)
                         }
                         DefineType::Interface { methods, .. } => {
                             let m = find_method(&method_name, methods);
@@ -229,7 +229,7 @@ impl CallType {
                             id.name, pkg
                         ))
                     })?;
-                let mut t = resolved.get_type().0.strip_var();
+                let mut t = resolved.get_type().0;
 
                 if !t.is_type() {
                     if !t.is_func() {

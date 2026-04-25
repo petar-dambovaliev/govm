@@ -1,9 +1,7 @@
 use crate::parser::ast::{ArrayType, BasicLit, Expression, Ident};
 use crate::parser::token::LitKind;
 use crate::vm::compiler::compiler::Compiler;
-use crate::vm::object::structure::TypeValue;
-use crate::vm::object::Object;
-use crate::vm::object::Type;
+use crate::vm::types::Type;
 use crate::vm::Error;
 use std::fmt::{Display, Formatter};
 
@@ -223,29 +221,6 @@ impl DefineType {
         match &self {
             Self::Array { len, inner_type } => (len.clone(), *inner_type.clone()),
             _ => panic!("expected Self::Tuple, got {:#?}", self),
-        }
-    }
-    pub fn to_object(mut self) -> Object {
-        self = self.strip_var();
-
-        match self {
-            DefineType::Type(dt, _t) => match *dt.clone() {
-                DefineType::String => TypeValue::object(Type::String, None),
-                DefineType::Int => TypeValue::object(Type::Int, None),
-                _ => dt.to_object(),
-            },
-            DefineType::Slice(inner) => {
-                let inner = inner.to_object();
-                TypeValue::object(Type::Slice, Some(inner))
-            }
-            DefineType::Map(k, v) => {
-                let k_obj = k.to_object();
-                let v_obj = v.to_object();
-
-                TypeValue::object_map(Type::Map, Some(k_obj), Some(v_obj))
-            }
-            DefineType::Channel(_) => TypeValue::object(Type::Channel, None),
-            _ => unimplemented!("DefineType::to_object {:#?}", self),
         }
     }
     pub fn to_expression(self) -> Expression {
@@ -541,19 +516,21 @@ impl DefineType {
             self.clone()
         }
     }
-    pub fn strip_var(&self) -> DefineType {
-        if let Self::Qualified(Qualifier::Var, v) = self {
-            *v.clone()
-        } else {
-            self.clone()
+    /// Strips all `Qualified` wrappers, returning the innermost non-Qualified type.
+    pub fn unwrap_qualifiers(&self) -> DefineType {
+        match self {
+            Self::Qualified(_, inner) => inner.unwrap_qualifiers(),
+            other => other.clone(),
         }
     }
 
-    pub fn strip_const(&self) -> DefineType {
-        if let Self::Qualified(Qualifier::Const, v) = self {
-            *v.clone()
-        } else {
-            self.clone()
+    /// Re-wraps with the outermost qualifier only, collapsing nested Qualified layers.
+    pub fn normalize(self) -> DefineType {
+        match self {
+            Self::Qualified(q, inner) => {
+                Self::Qualified(q, Box::new(inner.unwrap_qualifiers()))
+            }
+            other => other,
         }
     }
 
@@ -839,7 +816,7 @@ impl Context {
 
     /// Defines a new symbol in the current context its inner-most scope.
     fn define(&mut self, pkg: &str, name: &str, dt: DefineType, invar: bool) -> Symbol {
-        //println!("define: {}", name);
+        let dt = dt.normalize();
         let current_scope = self.symbols.last_mut().unwrap();
         current_scope.push((name.to_string(), dt, pkg.to_string()));
         self.max_size += 1;

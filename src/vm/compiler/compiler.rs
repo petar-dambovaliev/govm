@@ -1,254 +1,362 @@
-use crate::parser::ast::{ArrayType, Field};
 use crate::parser::ast::{
-    AssignStmt, BasicLit, BranchStmt, Call, CompositeLit, Decl, DeclStmt, Declaration, Element,
-    ExprStmt, Expression, FieldList, ForStmt, FuncLit, Ident, IfStmt, IncDecStmt,
-    KeyedElement, LabeledStmt, LiteralValue, Operation, RangeStmt, ReturnStmt, SelectStmt,
-    SendStmt, Statement, SwitchStmt, TypeAssertion, TypeSpec, TypeSwitchStmt,
+    AssignStmt, BasicLit, BranchStmt, Call, Decl, DeclStmt, Declaration,
+    Element, Expression, Field, FieldList, ForStmt, FuncLit, Ident, IfStmt, IncDecStmt,
+    InterfaceType, Operation, Package, RangeStmt, ReturnStmt, Statement, TypeSpec,
 };
-use crate::parser::ast::{InterfaceType, Package};
 use crate::parser::parse_dir_recursive;
 use crate::parser::token::{Keyword, LitKind, Operator};
-use crate::parser::Parser;
 use crate::vm::compiler::call::CallType;
-use crate::vm::compiler::{
-    literal, make_method_name, pos_to_line_col, Bytecode, Context, FuncContext, LoopContext,
-    OpCode, SourceMap, Span, SwitchContext, JUMP_PLACEHOLDER,
-};
-use std::io::BufWriter;
+use crate::vm::compiler::{make_ident_name, make_method_name, Context, FuncContext, LoopContext};
 use std::path::PathBuf;
 
-use crate::vm::compiler::declaration::type_spec;
-use crate::vm::compiler::declaration::{
-    compile_const, compile_function, compile_variable, type_interface, type_struct,
-};
+use crate::vm::compiler::declaration::{compile_const, compile_function, compile_variable};
 use crate::vm::compiler::init_order::{compute_init_order, compute_package_order};
 use crate::vm::module::ModuleResolver;
-use crate::vm::object::function::Closure;
-use crate::vm::object::rune::Rune;
-use crate::vm::object::structure::{Struct, TypeValue};
-use crate::vm::object::{is_builtin_const, FromString, Object, Type};
-use crate::vm::symbols::{
-    is_integer_coerceable_to, is_uint_coerceable_to, ContextType, DefineType, Qualifier, Resolved,
-    Scope, SymbolTable,
-};
+use crate::vm::symbols::{ContextType, DefineType, Qualifier, Resolved, SymbolTable};
 use crate::vm::{builtin, Error};
+use crate::wasm::WasmModuleBuilder;
+use crate::wasm::layout::{
+    struct_field_layout, elem_byte_size, array_byte_size,
+    SLICE_HEADER_SIZE, SLICE_DATA_PTR_OFFSET, SLICE_LEN_OFFSET, SLICE_CAP_OFFSET,
+};
 use ahash::AHashMap;
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub struct Compiler {
     pub(crate) symbols: SymbolTable,
-    pub(crate) constants: Vec<Object>,
-    pub(crate) instructions: Vec<u8>,
-    last_instruction: Option<OpCode>,
+    pub(crate) wasm: WasmModuleBuilder,
     pub(crate) contexts: Vec<Context>,
     pub(crate) func_contexts: Vec<FuncContext>,
     pub(crate) label_contexts: AHashMap<(usize, usize), String>,
+    /// Symbol.index -> WASM local base index (strings occupy base and base+1)
+    pub(crate) locals: AHashMap<u16, u32>,
+    pub(crate) wasm_func_map: AHashMap<String, u32>,
+    pub(crate) next_wasm_local: u32,
+    str_concat_func_idx: Option<u32>,
+    /// Maps a closure's WASM func_idx to the list of captured variable names and types.
+    closure_captures: AHashMap<u32, Vec<(String, DefineType)>>,
+    /// Maps a local variable's symbol index to a closure func_idx (when the variable holds a closure).
+    closure_var_func: AHashMap<u16, u32>,
+    next_closure_id: usize,
     anonymous_struct: usize,
     pub(crate) iota: usize,
-    pub(crate) source_map: SourceMap,
     current_file: Option<String>,
     current_lines: Vec<usize>,
+    nesting_depth: u32,
+    /// WASM local holding the saved `$sp` for the current function.
+    pub(crate) saved_sp_local: Option<u32>,
 }
 
 const BUILTIN: &str = "0xbuiltin";
 
 impl Compiler {
-    /// Create a new compiler
     pub fn new() -> Self {
         Self {
             symbols: SymbolTable::new(),
-            instructions: Vec::new(),
-            constants: Vec::new(),
-            last_instruction: None,
+            wasm: WasmModuleBuilder::new(),
             contexts: Vec::new(),
             func_contexts: Vec::new(),
             label_contexts: AHashMap::new(),
+            locals: AHashMap::new(),
+            wasm_func_map: AHashMap::new(),
+            next_wasm_local: 0,
+            str_concat_func_idx: None,
+            closure_captures: AHashMap::new(),
+            closure_var_func: AHashMap::new(),
+            next_closure_id: 0,
             anonymous_struct: 0,
             iota: 0,
-            source_map: SourceMap::new(),
             current_file: None,
             current_lines: Vec::new(),
+            nesting_depth: 0,
+            saved_sp_local: None,
         }
     }
 
-    pub(crate) fn record_span(&mut self, pos: usize) {
-        if let Some(ref file) = self.current_file {
-            let (line, col) = pos_to_line_col(&self.current_lines, pos);
-            let ip = self.instructions.len();
-            self.source_map.add(ip, Span {
-                file: file.clone(),
-                line,
-                col,
-            });
+    fn unsupported(&self, what: &str) -> Error {
+        Error::SyntaxError(format!("WASM: unsupported on this branch: {}", what))
+    }
+
+    pub(crate) fn define_type_to_wasm(dt: &DefineType) -> ValType {
+        match dt.unwrap_qualifiers() {
+            DefineType::Int | DefineType::Int32 | DefineType::Uint | DefineType::Uint32
+            | DefineType::Bool | DefineType::Byte | DefineType::Int8 | DefineType::Int16
+            | DefineType::Uint8 | DefineType::Uint16 | DefineType::Rune => ValType::I32,
+            DefineType::Int64 | DefineType::Uint64 => ValType::I64,
+            DefineType::Float32 => ValType::F32,
+            DefineType::Float64 => ValType::F64,
+            _ => ValType::I32,
         }
     }
 
-    /// Compiles the given AST into executable Bytecode
+    fn unescape_go_string(s: &str) -> Vec<u8> {
+        let mut out = Vec::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('n') => out.push(b'\n'),
+                    Some('t') => out.push(b'\t'),
+                    Some('r') => out.push(b'\r'),
+                    Some('\\') => out.push(b'\\'),
+                    Some('"') => out.push(b'"'),
+                    Some('\'') => out.push(b'\''),
+                    Some('0') => out.push(0),
+                    Some(other) => {
+                        out.push(b'\\');
+                        let mut buf = [0u8; 4];
+                        out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+                    }
+                    None => out.push(b'\\'),
+                }
+            } else {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        out
+    }
+
+    pub(crate) fn is_string_type(dt: &DefineType) -> bool {
+        matches!(dt.unwrap_qualifiers(), DefineType::String)
+    }
+
+    pub(crate) fn is_slice_type(dt: &DefineType) -> bool {
+        matches!(dt.unwrap_qualifiers(), DefineType::Slice(_))
+    }
+
+    fn unwrap_slice_elem(dt: &DefineType) -> Option<DefineType> {
+        match dt.unwrap_qualifiers() {
+            DefineType::Slice(inner) => Some(inner.as_ref().clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_array_type(dt: &DefineType) -> bool {
+        matches!(dt.unwrap_qualifiers(), DefineType::Array { .. })
+    }
+
+    fn unwrap_array_elem(dt: &DefineType) -> Option<(DefineType, usize)> {
+        match dt.unwrap_qualifiers() {
+            DefineType::Array { inner_type, len } => Some((inner_type.as_ref().clone(), len)),
+            _ => None,
+        }
+    }
+
+    fn is_numeric_type(dt: &DefineType) -> bool {
+        matches!(
+            dt.unwrap_qualifiers(),
+            DefineType::Int
+                | DefineType::Int8
+                | DefineType::Int16
+                | DefineType::Int32
+                | DefineType::Int64
+                | DefineType::Uint
+                | DefineType::Uint8
+                | DefineType::Uint16
+                | DefineType::Uint32
+                | DefineType::Uint64
+                | DefineType::Byte
+                | DefineType::Float32
+                | DefineType::Float64
+                | DefineType::Bool
+                | DefineType::Rune
+        )
+    }
+
+    /// Emit a store to `[base_ptr + offset]`. The **value** must already be on the stack.
+    /// `base_local` is the WASM local holding the struct base pointer.
+    fn emit_field_store(&mut self, base_local: u32, offset: u32, dt: &DefineType) {
+        let base_dt = dt.unwrap_qualifiers();
+        match base_dt {
+            DefineType::String => {
+                // Stack: [str_ptr, str_len]. Stash both, then store at base+offset and base+offset+4.
+                let tmp_len = self.next_wasm_local;
+                let tmp_ptr = self.next_wasm_local + 1;
+                self.wasm.active().local_set(tmp_len);
+                self.wasm.active().local_set(tmp_ptr);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp_ptr);
+                self.wasm.active().i32_store(offset as u64);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp_len);
+                self.wasm.active().i32_store((offset + 4) as u64);
+            }
+            DefineType::Int64 | DefineType::Uint64 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i64_store(offset as u64);
+            }
+            DefineType::Float64 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().f64_store(offset as u64);
+            }
+            DefineType::Float32 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().f32_store(offset as u64);
+            }
+            _ => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(base_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_store(offset as u64);
+            }
+        }
+    }
+
+    fn emit_field_load(&mut self, offset: u64, dt: &DefineType) {
+        let base_dt = dt.unwrap_qualifiers();
+        match base_dt {
+            DefineType::String => {
+                // Stack has struct ptr. Dup it, load ptr at offset, then load len at offset+4.
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_load(offset);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_load(offset + 4);
+            }
+            DefineType::Int64 | DefineType::Uint64 => {
+                self.wasm.active().i64_load(offset);
+            }
+            DefineType::Float64 => {
+                self.wasm.active().f64_load(offset);
+            }
+            DefineType::Float32 => {
+                self.wasm.active().f32_load(offset);
+            }
+            _ => {
+                self.wasm.active().i32_load(offset);
+            }
+        }
+    }
+
+    /// Emit store of a value (already on stack) to `[addr_local + 0]` for a slice element.
+    /// `addr_local` holds the computed target address.
+    fn emit_elem_store(&mut self, addr_local: u32, elem_dt: &DefineType) {
+        let base_dt = elem_dt.unwrap_qualifiers();
+        match base_dt {
+            DefineType::String => {
+                let tmp_len = self.next_wasm_local;
+                let tmp_ptr = self.next_wasm_local + 1;
+                self.wasm.active().local_set(tmp_len);
+                self.wasm.active().local_set(tmp_ptr);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp_ptr);
+                self.wasm.active().i32_store(0);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp_len);
+                self.wasm.active().i32_store(4);
+            }
+            DefineType::Int64 | DefineType::Uint64 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i64_store(0);
+            }
+            DefineType::Float64 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().f64_store(0);
+            }
+            DefineType::Float32 => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().f32_store(0);
+            }
+            _ => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(addr_local);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_store(0);
+            }
+        }
+    }
+
+    /// Emit load of a slice element from address on the stack.
+    fn emit_elem_load(&mut self, elem_dt: &DefineType) {
+        let base_dt = elem_dt.unwrap_qualifiers();
+        match base_dt {
+            DefineType::String => {
+                let tmp = self.next_wasm_local;
+                self.wasm.active().local_set(tmp);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_load(0);
+                self.wasm.active().local_get(tmp);
+                self.wasm.active().i32_load(4);
+            }
+            DefineType::Int64 | DefineType::Uint64 => {
+                self.wasm.active().i64_load(0);
+            }
+            DefineType::Float64 => {
+                self.wasm.active().f64_load(0);
+            }
+            DefineType::Float32 => {
+                self.wasm.active().f32_load(0);
+            }
+            _ => {
+                self.wasm.active().i32_load(0);
+            }
+        }
+    }
+
+    fn resolve_struct_fields(&mut self, pkg: &str, dt: &DefineType) -> Result<Vec<ContextType>, Error> {
+        let base = dt.unwrap_qualifiers();
+        match &base {
+            DefineType::Struct { name, fields, .. } => {
+                if fields.is_empty() {
+                    if let Some(resolved) = self.symbols.resolve(pkg, name) {
+                        let (_, f, _) = resolved.get_type().0.as_struct()?;
+                        return Ok(f);
+                    }
+                }
+                Ok(fields.clone())
+            }
+            _ => Err(Error::TypeError(format!("expected struct type, got {:?}", dt))),
+        }
+    }
+
+    /// Compiles the given AST into WASM module bytes
     pub fn compile(
         &mut self,
         main: PathBuf,
         project_path: PathBuf,
         project: Vec<Package>,
-        output_assert: bool,
-    ) -> Result<Bytecode, Error> {
+        _output_assert: bool,
+    ) -> Result<Vec<u8>, Error> {
         let pkg = project_path
             .canonicalize()
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
-        //insert builtin values
-        //interface{}
-        self.compile_declaration(
-            &pkg,
-            &Declaration::Type(Decl {
-                docs: vec![],
-                pos0: 0,
-                pos1: None,
-                specs: vec![TypeSpec {
-                    docs: vec![],
-                    alias: false,
-                    name: Default::default(),
-                    params: Default::default(),
-                    typ: Expression::TypeInterface(InterfaceType {
-                        pos: 0,
-                        methods: Default::default(),
-                    }),
-                }],
-            }),
-        )?;
 
-        let s = self.symbols.define(
-            BUILTIN,
-            "string",
-            DefineType::Type(Box::new(DefineType::String), Type::String),
-            false,
-        );
-        let idx = self.add_constant(TypeValue::object(Type::String, None));
-        self.emit_opcode(OpCode::Const);
-        self.emit_u16(idx);
-        self.emit_opcode(OpCode::SetGlobal);
-        self.emit_u16(s.index);
-        //panic!("{:#?}", self.constants);
+        self.register_builtin_types(&pkg);
 
-        let s = self.symbols.define(
-            BUILTIN,
-            "bool",
-            DefineType::Type(Box::new(DefineType::Bool), Type::Bool),
-            false,
-        );
+        self.wasm.add_rt_alloc_import();
+        self.wasm.add_print_string_import();
+        self.wasm.add_println_string_import();
+        self.wasm.add_default_memory();
+        self.wasm.export_memory("memory", 0);
+        self.wasm.add_stack_pointer_global();
 
-        let idx = self.add_constant(TypeValue::object(Type::Bool, None));
-        self.emit_opcode(OpCode::Const);
-        self.emit_u16(idx);
-        self.emit_opcode(OpCode::SetGlobal);
-        self.emit_u16(s.index);
+        self.ensure_str_concat_func()?;
 
-        let _ = self.symbols.define(
-            BUILTIN,
-            "nil",
-            DefineType::Type(Box::new(DefineType::Null), Type::Null),
-            false,
-        );
-
-        self.constants.push(Object::null());
-
-        let _ = self.symbols.define(
-            BUILTIN,
-            "_",
-            DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null)),
-            false,
-        );
-
-        let numbers = vec![
-            (
-                "int",
-                DefineType::Type(Box::new(DefineType::Int), Type::Int),
-                Type::Int,
-            ),
-            (
-                "int8",
-                DefineType::Type(Box::new(DefineType::Int8), Type::I8),
-                Type::I8,
-            ),
-            (
-                "int16",
-                DefineType::Type(Box::new(DefineType::Int16), Type::I16),
-                Type::I16,
-            ),
-            (
-                "int32",
-                DefineType::Type(Box::new(DefineType::Int32), Type::I32),
-                Type::I32,
-            ),
-            (
-                "int64",
-                DefineType::Type(Box::new(DefineType::Int64), Type::I64),
-                Type::I64,
-            ),
-            (
-                "uint",
-                DefineType::Type(Box::new(DefineType::Uint), Type::UI),
-                Type::UI,
-            ),
-            (
-                "uint8",
-                DefineType::Type(Box::new(DefineType::Uint8), Type::UI8),
-                Type::UI8,
-            ),
-            (
-                "uint16",
-                DefineType::Type(Box::new(DefineType::Uint16), Type::UI16),
-                Type::UI16,
-            ),
-            (
-                "uint32",
-                DefineType::Type(Box::new(DefineType::Uint32), Type::UI32),
-                Type::UI32,
-            ),
-            (
-                "uint64",
-                DefineType::Type(Box::new(DefineType::Uint64), Type::UI64),
-                Type::UI64,
-            ),
-            (
-                "byte",
-                DefineType::Type(Box::new(DefineType::Byte), Type::Byte),
-                Type::Byte,
-            ),
-            (
-                "float32",
-                DefineType::Type(Box::new(DefineType::Float32), Type::Float32),
-                Type::Float32,
-            ),
-            (
-                "float64",
-                DefineType::Type(Box::new(DefineType::Float64), Type::Float64),
-                Type::Float64,
-            ),
-        ];
-
-        for number in numbers {
-            let s = self.symbols.define(BUILTIN, number.0, number.1, false);
-
-            let idx = self.add_constant(TypeValue::object(number.2, None));
-            self.emit_opcode(OpCode::Const);
-            self.emit_u16(idx);
-            self.emit_opcode(OpCode::SetGlobal);
-            self.emit_u16(s.index);
-        }
-
-        let _ = self.symbols.define(
-            BUILTIN,
-            "rune",
-            DefineType::Type(Box::new(DefineType::Rune), Type::Rune),
-            false,
-        );
-
-        let idx = self.add_constant(Closure::null());
-        self.emit_opcode(OpCode::Const);
-        self.emit_u16(idx);
-
-        //self.constants.push(Rune::from_char(0 as char));
         let resolver = ModuleResolver::from_project_root(&project_path);
 
         let mut project = project;
@@ -280,8 +388,6 @@ impl Compiler {
         let (pkg_order, pkgs_map) = compute_package_order(project, resolver.as_ref())
             .map_err(|e| Error::InternalError(e))?;
 
-        let mut adb = None;
-
         for pkg_id in &pkg_order {
             let pkg = pkgs_map.get(pkg_id).unwrap();
             let cur_pkg = pkg
@@ -296,35 +402,6 @@ impl Compiler {
                 if let Some(ref path) = file.path {
                     self.current_file = Some(path.to_string_lossy().to_string());
                     self.current_lines = file.line_info.clone();
-                }
-                if file.pkg_name.name == "main" {
-                    let mut is_output = false;
-                    for comment in file.comments.clone() {
-                        if output_assert
-                            && !is_output
-                            && comment
-                                .text
-                                .to_lowercase()
-                                .trim_start_matches("//")
-                                .trim_start()
-                                == "output:"
-                        {
-                            is_output = true;
-                        } else if is_output {
-                            adb = match adb.as_mut() {
-                                None => {
-                                    Some(format!("{}\n", comment.text.trim_start_matches("//")))
-                                }
-                                Some(ss) => {
-                                    ss.push_str(&format!(
-                                        "{}\n",
-                                        comment.text.trim_start_matches("//")
-                                    ));
-                                    Some(ss.clone())
-                                }
-                            }
-                        }
-                    }
                 }
 
                 for import in &file.imports {
@@ -365,26 +442,21 @@ impl Compiler {
                 }
             }
 
-            // Collect ALL declarations across all files in this package
             let mut all_decls = Vec::new();
             for file in &pkg.files {
                 all_decls.extend(file.decl.iter().cloned());
             }
 
-            // Pre-register all symbols so forward references work
             self.pre_register_declarations(&cur_pkg, &all_decls);
 
-            // Compute initialization order for the entire package
-            let ordered = compute_init_order(&all_decls)
-                .map_err(|e| Error::InternalError(e))?;
+            let ordered =
+                compute_init_order(&all_decls).map_err(|e| Error::InternalError(e))?;
 
-            // Compile in the computed order
             for decl in &ordered {
                 self.compile_declaration(&cur_pkg, decl)?;
             }
         }
 
-        let entry = Parser::from("main()").expression().unwrap();
         let main_pkg = main
             .parent()
             .unwrap()
@@ -393,59 +465,100 @@ impl Compiler {
             .to_str()
             .unwrap()
             .to_string();
-        self.compile_expression(&main_pkg, &entry)?;
 
-        self.emit_opcode(OpCode::Halt);
-        self.instructions.shrink_to_fit();
-        self.constants.shrink_to_fit();
-        self.source_map.sort();
+        let main_name = make_ident_name(&main_pkg, "main");
+        if let Some(&func_idx) = self.wasm_func_map.get(&main_name) {
+            self.wasm.export_func("main", func_idx);
+        } else if let Some(&func_idx) = self.wasm_func_map.get("main") {
+            self.wasm.export_func("main", func_idx);
+        } else {
+            return Err(Error::ReferenceError("main function not found".to_string()));
+        }
 
-        Ok(Bytecode {
-            constants: self.constants.clone(),
-            instructions: std::mem::take(&mut self.instructions),
-            assert_stdout: adb.map(|a| (a, BufWriter::new(vec![]))),
-            source_map: std::mem::take(&mut self.source_map),
-        })
+        let wasm = std::mem::replace(&mut self.wasm, WasmModuleBuilder::new());
+        Ok(wasm.finish())
     }
 
-    #[inline]
-    pub(crate) fn emit_opcode(&mut self, op: OpCode) {
-        self.instructions.push(op as u8);
-        self.last_instruction = Some(op);
-    }
+    fn register_builtin_types(&mut self, pkg: &str) {
+        self.compile_declaration(
+            pkg,
+            &Declaration::Type(Decl {
+                docs: vec![],
+                pos0: 0,
+                pos1: None,
+                specs: vec![TypeSpec {
+                    docs: vec![],
+                    alias: false,
+                    name: Default::default(),
+                    params: Default::default(),
+                    typ: Expression::TypeInterface(InterfaceType {
+                        pos: 0,
+                        methods: Default::default(),
+                    }),
+                }],
+            }),
+        )
+        .ok();
 
-    #[inline]
-    pub(crate) fn emit_u8(&mut self, v: u8) {
-        self.instructions.push(v)
-    }
+        let type_defs = vec![
+            ("string", DefineType::String),
+            ("bool", DefineType::Bool),
+            ("int", DefineType::Int),
+            ("int8", DefineType::Int8),
+            ("int16", DefineType::Int16),
+            ("int32", DefineType::Int32),
+            ("int64", DefineType::Int64),
+            ("uint", DefineType::Uint),
+            ("uint8", DefineType::Uint8),
+            ("uint16", DefineType::Uint16),
+            ("uint32", DefineType::Uint32),
+            ("uint64", DefineType::Uint64),
+            ("byte", DefineType::Byte),
+            ("float32", DefineType::Float32),
+            ("float64", DefineType::Float64),
+            ("rune", DefineType::Rune),
+        ];
 
-    #[inline]
-    pub(crate) fn emit_u16(&mut self, v: u16) {
-        self.instructions.push((v & 0xFF) as u8);
-        self.instructions.push(((v >> 8) & 0xFF) as u8);
-    }
+        for (name, dt) in type_defs {
+            let t = match &dt {
+                DefineType::String => crate::vm::types::Type::String,
+                DefineType::Bool => crate::vm::types::Type::Bool,
+                DefineType::Int => crate::vm::types::Type::Int,
+                DefineType::Int8 => crate::vm::types::Type::I8,
+                DefineType::Int16 => crate::vm::types::Type::I16,
+                DefineType::Int32 => crate::vm::types::Type::I32,
+                DefineType::Int64 => crate::vm::types::Type::I64,
+                DefineType::Uint => crate::vm::types::Type::UI,
+                DefineType::Uint8 => crate::vm::types::Type::UI8,
+                DefineType::Uint16 => crate::vm::types::Type::UI16,
+                DefineType::Uint32 => crate::vm::types::Type::UI32,
+                DefineType::Uint64 => crate::vm::types::Type::UI64,
+                DefineType::Byte => crate::vm::types::Type::Byte,
+                DefineType::Float32 => crate::vm::types::Type::Float32,
+                DefineType::Float64 => crate::vm::types::Type::Float64,
+                DefineType::Rune => crate::vm::types::Type::Rune,
+                _ => unreachable!(),
+            };
+            self.symbols.define(
+                BUILTIN,
+                name,
+                DefineType::Type(Box::new(dt), t),
+                false,
+            );
+        }
 
-    #[inline]
-    pub(crate) fn change_jump_operand_at(&mut self, idx: usize, v: u16) {
-        assert!(
-            self.instructions[idx] == OpCode::Jump as u8
-                || self.instructions[idx] == OpCode::JumpIfFalse as u8
+        self.symbols.define(
+            BUILTIN,
+            "nil",
+            DefineType::Type(Box::new(DefineType::Null), crate::vm::types::Type::Null),
+            false,
         );
-        self.instructions[idx + 1] = (v & 0xFF) as u8;
-        self.instructions[idx + 2] = ((v >> 8) & 0xFF) as u8;
-    }
-
-    #[inline]
-    pub(crate) fn last_instruction_is(&self, op: OpCode) -> bool {
-        self.last_instruction == Some(op)
-    }
-
-    #[inline]
-    pub(crate) fn remove_last_instruction(&mut self) {
-        debug_assert!(self.last_instruction.is_some());
-        debug_assert_eq!(self.last_instruction.unwrap().operands().len(), 0);
-        self.instructions.pop();
-        self.last_instruction = None;
+        self.symbols.define(
+            BUILTIN,
+            "_",
+            DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null)),
+            false,
+        );
     }
 
     fn define_type_to_context_type(&self, dts: &[DefineType]) -> Vec<ContextType> {
@@ -464,14 +577,13 @@ impl Compiler {
         let mut decl_r_types = Vec::with_capacity(fl.list.len());
 
         fn field_to_define_type(c: &mut Compiler, pkg: &str, field: &Field) -> DefineType {
-            let t = match &field.typ {
-                Expression::Ident(id) => {
-                    c.symbols
+            match &field.typ {
+                Expression::Ident(id) => c
+                    .symbols
                         .resolve(pkg, id.name.as_str())
                         .unwrap()
                         .get_type()
-                        .0
-                }
+                    .0,
                 Expression::TypePointer(pt) => {
                     let id = pt.typ.as_ident().unwrap();
                     let t = c.symbols.resolve(pkg, id.name.as_str()).unwrap().get_type();
@@ -480,7 +592,6 @@ impl Compiler {
                 Expression::TypeFunction(f) => {
                     let (_, t_vec) = c.field_list_to_define_type(pkg, &f.params);
                     let (dt, _) = c.field_list_to_define_type(pkg, &f.result);
-
                     DefineType::Func {
                         name: "".to_string(),
                         recv: None,
@@ -506,8 +617,7 @@ impl Compiler {
                     }
                 }
                 _ => panic!("function: unsupported parameter expression: {:#?}", field),
-            };
-            t
+            }
         }
 
         for el in &fl.list {
@@ -550,20 +660,12 @@ impl Compiler {
             Expression::TypeMap(map) => {
                 let k = self.expression_to_define_type(pkg, map.key.as_ref())?;
                 let v = self.expression_to_define_type(pkg, map.val.as_ref())?;
-
-                // if k.is_type() {
-                //     k = k.as_type().0;
-                // }
-                //
-                // if v.is_type() {
-                //     v = v.as_type().0;
-                // }
-
                 Some(DefineType::Map(Box::new(k), Box::new(v)))
             }
-            Expression::Invar(invar) => Some(DefineType::Qualified(Qualifier::Invar, Box::new(
-                self.expression_to_define_type(pkg, invar.expr.as_ref())?,
-            ))),
+            Expression::Invar(invar) => Some(DefineType::Qualified(
+                Qualifier::Invar,
+                Box::new(self.expression_to_define_type(pkg, invar.expr.as_ref())?),
+            )),
             Expression::TypeInterface(i) => {
                 assert!(i.methods.list.is_empty());
                 Some(DefineType::Interface {
@@ -610,15 +712,7 @@ impl Compiler {
         }
     }
 
-    /// Pre-register all package-level declarations in the symbol table.
-    /// Types are registered first (with skeletal definitions), then consts,
-    /// vars, and functions. This allows forward references during compilation.
-    pub(crate) fn pre_register_declarations(
-        &mut self,
-        pkg: &str,
-        decls: &[Declaration],
-    ) {
-        // Pass 1: register types first so function signatures can reference them
+    pub(crate) fn pre_register_declarations(&mut self, pkg: &str, decls: &[Declaration]) {
         for decl in decls {
             if let Declaration::Type(tspec) = decl {
                 for spec in &tspec.specs {
@@ -653,13 +747,13 @@ impl Compiler {
             }
         }
 
-        // Pass 2: register consts, vars, and functions
         for decl in decls {
             match decl {
                 Declaration::Const(v) => {
                     for spec in &v.specs {
                         for name in &spec.name {
-                            let dt = DefineType::Qualified(Qualifier::Const, Box::new(DefineType::Null));
+                            let dt =
+                                DefineType::Qualified(Qualifier::Const, Box::new(DefineType::Null));
                             let _ = self.symbols.define(pkg, &name.name, dt, false);
                         }
                     }
@@ -667,7 +761,8 @@ impl Compiler {
                 Declaration::Variable(v) => {
                     for spec in &v.specs {
                         for name in &spec.name {
-                            let dt = DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null));
+                            let dt =
+                                DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null));
                             let _ = self.symbols.define(pkg, &name.name, dt, false);
                         }
                     }
@@ -728,8 +823,7 @@ impl Compiler {
                             .0;
 
                         if tt.is_struct() {
-                            let (r_name, r_fields, mut r_methods) =
-                                tt.as_struct().unwrap();
+                            let (r_name, r_fields, mut r_methods) = tt.as_struct().unwrap();
                             r_methods.push(func_def.clone());
                             let updated = self.symbols.update_dt(
                                 pkg,
@@ -761,7 +855,7 @@ impl Compiler {
                         }
                     }
                 }
-                Declaration::Type(_) => {} // already handled in pass 1
+                Declaration::Type(_) => {}
             }
         }
     }
@@ -772,8 +866,8 @@ impl Compiler {
         decl: &Declaration,
     ) -> Result<(), Error> {
         match decl {
-            Declaration::Variable(v) => {
-                compile_variable(pkg, v, self)?;
+            Declaration::Variable(_v) => {
+                compile_variable(pkg, _v, self)?;
             }
             Declaration::Function(f) => {
                 compile_function(pkg, f, self)?;
@@ -785,19 +879,190 @@ impl Compiler {
                 for spec in &t.specs {
                     match &spec.typ {
                         Expression::TypeInterface(it) => {
-                            type_interface(pkg, spec, it, self)?;
+                            self.compile_interface_type(pkg, spec, it)?;
                         }
                         Expression::TypeStruct(ta) => {
-                            type_struct(pkg, spec, ta, self)?;
+                            self.compile_struct_type(pkg, spec, ta)?;
                         }
                         Expression::Ident(_id) => {
-                            type_spec(pkg, spec, self)?;
+                            self.compile_type_spec(pkg, spec)?;
                         }
-                        _ => unimplemented!("{:#?}", spec),
+                        _ => return Err(self.unsupported(&format!("type spec: {:#?}", spec))),
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    fn compile_interface_type(
+        &mut self,
+        pkg: &str,
+        spec: &TypeSpec,
+        it: &InterfaceType,
+    ) -> Result<(), Error> {
+        let mut funcs = Vec::with_capacity(it.methods.list.len());
+        for field in &it.methods.list {
+            let func_name = field
+                .name
+                .first()
+                .ok_or_else(|| Error::SyntaxError("interface method has no name".to_string()))?;
+            let (_, _, args, rt) = self
+                .expression_to_define_type(pkg, &field.typ)
+                .ok_or_else(|| {
+                    Error::TypeError(format!(
+                        "failed to resolve interface method type: {}",
+                        func_name.name
+                    ))
+                })?
+                .as_func();
+
+            funcs.push(DefineType::Func {
+                name: func_name.name.to_string(),
+                recv: None,
+                args,
+                rt,
+            });
+        }
+
+        match self.symbols.resolve(pkg, &spec.name.name) {
+            Some(_) => {
+                self.symbols.update_dt(
+                    pkg,
+                    &spec.name.name,
+                    DefineType::Interface {
+                        name: spec.name.name.clone(),
+                        methods: funcs,
+                    },
+                );
+            }
+            None => {
+                self.symbols.define(
+                    pkg,
+                    &spec.name.name,
+                    DefineType::Interface {
+                        name: spec.name.name.clone(),
+                        methods: funcs,
+                    },
+                    false,
+                );
+            }
+        };
+        Ok(())
+    }
+
+    fn compile_struct_type(
+        &mut self,
+        pkg: &str,
+        spec: &TypeSpec,
+        ta: &crate::parser::ast::StructType,
+    ) -> Result<(), Error> {
+        let t = spec.name.clone();
+        let mut field_types = vec![];
+
+        for field in &ta.fields {
+            let (inner_t, is_ref) = match &field.typ {
+                Expression::TypePointer(p) => {
+                    (p.typ.as_ident().map_err(|e| Error::TypeError(e))?, true)
+                }
+                _ => (
+                    field.typ.as_ident().map_err(|e| Error::TypeError(e))?,
+                    false,
+                ),
+            };
+
+            if !is_ref && t.name == inner_t.name {
+                return Err(Error::TypeError(format!(
+                    "recursive type definition: {}",
+                    t.name
+                )));
+            }
+
+            let r = self
+                .symbols
+                .resolve(pkg, &inner_t.name)
+                .ok_or_else(|| {
+                    Error::ReferenceError(format!("undefined type: {}", inner_t.name))
+                })?
+                .get_type()
+                .0;
+
+            let dt = if is_ref {
+                DefineType::Ref(Box::new(r.strip_type()))
+            } else {
+                r.strip_type()
+            };
+
+            if field.name.is_empty() {
+                field_types.push(ContextType::Embedded(inner_t.name.clone(), dt.clone()));
+            } else {
+                for name in &field.name {
+                    field_types.push(ContextType::Named(name.name.as_str().to_string(), dt.clone()));
+                }
+            }
+        }
+
+        let name = spec.name.name.as_str();
+
+        match self.symbols.resolve(pkg, &spec.name.name) {
+            Some(_) => {}
+            None => {
+                self.symbols.define(
+                    pkg,
+                    name,
+                    DefineType::Struct {
+                        name: name.to_string(),
+                        fields: field_types.clone(),
+                        methods: vec![],
+                    },
+                    false,
+                );
+            }
+        };
+
+        self.symbols
+            .update_struct_fields(pkg, name, field_types.clone());
+
+        Ok(())
+    }
+
+    fn compile_type_spec(&mut self, pkg: &str, spec: &TypeSpec) -> Result<(), Error> {
+        let t = spec.name.clone();
+        let inner_t = self
+            .expression_to_define_type(pkg, &spec.typ)
+            .ok_or_else(|| {
+                Error::TypeError(format!("failed to resolve type spec: {}", t.name))
+            })?;
+
+        match self.symbols.resolve(pkg, &t.name) {
+            Some(s) => {
+                let s = s.get_symbol();
+                self.symbols.update_dt(
+                    pkg,
+                    &t.name,
+                    DefineType::Spec {
+                        name: t.name.to_string(),
+                        inner: Box::new(inner_t),
+                        methods: vec![],
+                        is_transparent: spec.alias,
+                    },
+                );
+                let _ = s;
+            }
+            None => {
+                self.symbols.define(
+                    pkg,
+                    &t.name,
+                    DefineType::Spec {
+                        name: t.name.to_string(),
+                        inner: Box::new(inner_t),
+                        methods: vec![],
+                        is_transparent: spec.alias,
+                    },
+                    false,
+                );
+            }
+        };
         Ok(())
     }
 
@@ -806,10 +1071,7 @@ impl Compiler {
         pkg: &str,
         block: &[Statement],
     ) -> Result<Option<bool>, Error> {
-        // if block statement does not contain any other statements or expressions
-        // simply push a NULL onto the stack
         if block.is_empty() {
-            //self.emit_opcode(OpCode::Null);
             return Ok(Some(false));
         }
 
@@ -820,15 +1082,14 @@ impl Compiler {
         for s in block {
             let term = self.compile_statement(pkg, s)?;
 
-            let is_empty = if let Statement::Empty(_) = s {
-                true
-            } else {
-                false
-            };
+            let is_empty = matches!(s, Statement::Empty(_));
 
             if last_term
                 && !is_empty
-                && self.func_contexts.last().unwrap().expected_ret.is_some()
+                && self
+                    .func_contexts
+                    .last()
+                    .map_or(false, |fc| fc.expected_ret.is_some())
             {
                 panic!("deadcode: {:#?}", s);
             }
@@ -840,12 +1101,9 @@ impl Compiler {
                     last_term = true;
                 }
             }
-            //println!("statement: {:#?}", s);
-            //println!("rt: {:#?}", rt);
         }
 
         self.symbols.leave_scope();
-
         Ok(Some(terminates))
     }
 
@@ -859,9 +1117,14 @@ impl Compiler {
             Statement::If(ifstmt) => self.compile_if_statement(pkg, ifstmt),
             Statement::Assign(assign) => self.compile_assign_statement(pkg, assign),
             Statement::Expr(expr) => {
-                self.compile_expression(pkg, &expr.expr)?;
-                if !self.last_instruction_is(OpCode::Pop) {
-                    self.emit_opcode(OpCode::Pop);
+                let dt = self.compile_expression(pkg, &expr.expr)?;
+                if dt != DefineType::Null && !dt.is_func() {
+                    if Self::is_string_type(&dt) {
+                        self.wasm.active().drop();
+                        self.wasm.active().drop();
+                    } else {
+                        self.wasm.active().drop();
+                    }
                 }
                 Ok(None)
             }
@@ -884,52 +1147,17 @@ impl Compiler {
             Statement::Branch(branch) => self.compile_branch_statement(pkg, branch),
             Statement::IncDec(incdec) => self.compile_incdec_statement(pkg, incdec),
             Statement::Empty(_) => Ok(None),
-            Statement::Range(rng) => self.compile_range_statement(pkg, rng),
-            Statement::Label(lstmt) => self.compile_label_statement(pkg, lstmt),
-            Statement::Switch(switch) => self.compile_switch_statement(pkg, switch),
-            Statement::TypeSwitch(switch) => self.compile_type_switch_statement(pkg, switch),
-            Statement::Defer(defer_stmt) => {
-                let call = &defer_stmt.call;
-                if let Expression::Ident(name) = call.func.as_ref() {
-                    if let Some(builtin) = builtin::resolve(&name.name) {
-                        for a in &call.args {
-                            self.compile_expression(pkg, a)?;
-                        }
-                        self.emit_opcode(OpCode::CallBuiltin);
-                        self.emit_u8(builtin as u8);
-                        self.emit_u8(call.args.len().try_into().unwrap());
-                        if builtin.is_void() {
-                            self.emit_opcode(OpCode::Pop);
-                        }
-                        return Ok(None);
-                    }
+            Statement::Range(range) => self.compile_range_statement(pkg, range),
+            Statement::Label(lstmt) => {
+                let label = lstmt.name.name.clone();
+                let inner = &lstmt.stmt;
+                if let Statement::For(f) = inner.as_ref() {
+                    self.label_contexts.insert((f.pos, 0), label);
                 }
-
-                for a in &call.args {
-                    self.compile_expression(pkg, a)?;
-                }
-
-                self.compile_expression(pkg, &call.func)?;
-
-                self.emit_opcode(OpCode::Defer);
-                self.emit_u8(call.args.len().try_into().unwrap());
+                self.compile_statement(pkg, inner)?;
                 Ok(None)
             }
-            Statement::Go(go_stmt) => {
-                let call = &go_stmt.call;
-                for a in &call.args {
-                    self.compile_expression(pkg, a)?;
-                }
-                self.compile_expression(pkg, &call.func)?;
-                self.emit_opcode(OpCode::GoSpawn);
-                self.emit_u8(call.args.len().try_into().unwrap());
-                Ok(None)
-            }
-            Statement::Send(send_stmt) => self.compile_send_statement(pkg, send_stmt),
-            Statement::Select(select_stmt) => {
-                self.compile_select(pkg, select_stmt)?;
-                Ok(None)
-            }
+            _ => Err(self.unsupported(&format!("statement: {:#?}", stmt))),
         }
     }
 
@@ -938,9 +1166,6 @@ impl Compiler {
         pkg: &str,
         forstmt: &ForStmt,
     ) -> Result<Option<bool>, Error> {
-        self.record_span(forstmt.pos);
-        self.emit_opcode(OpCode::Null);
-
         self.symbols.enter_scope();
         let label = self.label_contexts.get(&(forstmt.pos, 0)).cloned();
 
@@ -948,75 +1173,226 @@ impl Compiler {
             self.compile_statement(pkg, init.as_ref())?;
         }
 
-        self.contexts.push(Context::For(LoopContext::new(
-            self.instructions.len(),
-            label,
-        )));
+        let depth = self.nesting_depth;
+        self.contexts
+            .push(Context::For(LoopContext::new(label, depth)));
 
-        let pos_before_condition = self.instructions.len();
+        // WASM pattern:
+        //   block $break          ;; depth+1: break target
+        //     loop $loop          ;; depth+2: loop restart (after post)
+        //       <condition check>
+        //       br_if $break      ;; exit if condition false
+        //       block $continue   ;; depth+3: continue target (skips to post)
+        //         <body>
+        //       end
+        //       <post statement>
+        //       br $loop          ;; restart loop
+        //     end
+        //   end
+        self.wasm.active().emit(&Instruction::Block(BlockType::Empty));
+        self.nesting_depth += 1;
+        self.wasm.active().emit(&Instruction::Loop(BlockType::Empty));
+        self.nesting_depth += 1;
 
-        let cond = forstmt
-            .cond
-            .clone()
-            .unwrap_or(Box::from(Statement::Expr(ExprStmt {
-                expr: Expression::BasicLit(BasicLit {
-                    pos: 0,
-                    kind: LitKind::Ident,
-                    value: "true".to_string(),
-                }),
-            })));
-
+        let has_cond = forstmt.cond.is_some();
+        if let Some(cond) = &forstmt.cond {
+            if let Statement::Expr(expr_stmt) = cond.as_ref() {
+                self.compile_expression(pkg, &expr_stmt.expr)?;
+            } else {
         self.compile_statement(pkg, cond.as_ref())?;
-
-        if self.last_instruction_is(OpCode::Pop) {
-            self.remove_last_instruction();
+            }
+            self.wasm.active().emit(&Instruction::I32Eqz);
+            self.wasm.active().emit(&Instruction::BrIf(1));
         }
 
-        let pos_jump_if_false = self.instructions.len();
-        self.emit_opcode(OpCode::JumpIfFalse);
-        self.emit_u16(JUMP_PLACEHOLDER);
+        self.wasm.active().emit(&Instruction::Block(BlockType::Empty));
+        self.nesting_depth += 1;
 
         let terminate = self.compile_block_statement(pkg, &forstmt.body.list)?;
 
-        let mut post_op_pos = 0;
-        if self.last_instruction_is(OpCode::Pop) {
-            self.remove_last_instruction();
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end continue block
+
             if let Some(post) = &forstmt.post {
-                post_op_pos = self.instructions.len();
                 self.compile_statement(pkg, post.as_ref())?;
             }
-        } else {
-            if let Some(post) = &forstmt.post {
-                post_op_pos = self.instructions.len();
-                self.compile_statement(pkg, post.as_ref())?;
-            }
-        }
 
-        self.emit_opcode(OpCode::Jump);
-        self.emit_u16(pos_before_condition.try_into().unwrap());
+        self.wasm.active().emit(&Instruction::Br(0));
 
-        self.change_jump_operand_at(
-            pos_jump_if_false,
-            self.instructions.len().try_into().unwrap(),
-        );
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end loop
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end break block
 
         let ctx = self.contexts.pop().unwrap().to_for();
-        for ip in &ctx.break_instructions {
-            self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
-        }
 
-        for ip in &ctx.continue_instructions {
-            self.change_jump_operand_at(*ip, post_op_pos.try_into().unwrap());
-        }
-
-        let loop_terminates = (terminate.unwrap_or_default()
-            || forstmt.body.list.is_empty())
-            && forstmt.cond.is_none()
-            && ctx.break_instructions.is_empty();
+        let loop_terminates = (terminate.unwrap_or_default() || forstmt.body.list.is_empty())
+            && !has_cond
+            && !ctx.has_break;
 
         self.symbols.leave_scope();
-
         Ok(Some(loop_terminates))
+    }
+
+    fn compile_range_statement(
+        &mut self,
+        pkg: &str,
+        range: &RangeStmt,
+    ) -> Result<Option<bool>, Error> {
+        self.symbols.enter_scope();
+
+        let coll_dt = self.compile_expression(pkg, &range.expr)?;
+
+        let (elem_dt, data_ptr_local, len_local);
+
+        if let Some((arr_elem, arr_len)) = Self::unwrap_array_elem(&coll_dt) {
+            elem_dt = arr_elem;
+            let e_size = elem_byte_size(&elem_dt);
+            let _ = e_size;
+
+            // Array pointer IS the data pointer.
+            data_ptr_local = self.next_wasm_local;
+            self.wasm.active().local_set(data_ptr_local);
+            self.next_wasm_local = data_ptr_local + 1;
+
+            // Length is a compile-time constant stored in a local for the loop.
+            len_local = self.next_wasm_local;
+            self.next_wasm_local += 1;
+            self.wasm.active().i32_const(arr_len as i32);
+            self.wasm.active().local_set(len_local);
+        } else {
+            let slice_elem = Self::unwrap_slice_elem(&coll_dt)
+                .ok_or_else(|| Error::TypeError(format!("range over non-iterable type {:?}", coll_dt)))?;
+            elem_dt = slice_elem;
+
+            let hdr_local = self.next_wasm_local;
+            self.wasm.active().local_set(hdr_local);
+            self.next_wasm_local = hdr_local + 1;
+
+            data_ptr_local = self.next_wasm_local;
+            self.next_wasm_local += 1;
+            len_local = self.next_wasm_local;
+            self.next_wasm_local += 1;
+
+            self.wasm.active().local_get(hdr_local);
+            self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
+            self.wasm.active().local_set(data_ptr_local);
+
+            self.wasm.active().local_get(hdr_local);
+            self.wasm.active().i32_load(SLICE_LEN_OFFSET as u64);
+            self.wasm.active().local_set(len_local);
+        }
+
+        let e_size = elem_byte_size(&elem_dt);
+
+        // Counter local: i = 0
+        let i_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        self.wasm.active().i32_const(0);
+        self.wasm.active().local_set(i_local);
+
+        // Bind key variable (index) if present
+        if let Some(Expression::Ident(key_id)) = &range.key {
+            if key_id.name != "_" {
+                let sym = self.symbols.define(
+                    pkg,
+                    &key_id.name,
+                    DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Int)),
+                    false,
+                );
+                self.locals.insert(sym.index, i_local);
+            }
+        }
+
+        // Value local
+        let val_local = if let Some(Expression::Ident(val_id)) = &range.value {
+            if val_id.name != "_" {
+                let vl = self.next_wasm_local;
+                if Self::is_string_type(&elem_dt) {
+                    self.next_wasm_local += 2;
+                } else {
+                    self.next_wasm_local += 1;
+                }
+                let sym = self.symbols.define(
+                    pkg,
+                    &val_id.name,
+                    DefineType::Qualified(Qualifier::Var, Box::new(elem_dt.clone())),
+                    false,
+                );
+                self.locals.insert(sym.index, vl);
+                Some(vl)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Loop: block $break { loop $loop { ... } }
+        self.contexts.push(Context::For(LoopContext {
+            depth: self.nesting_depth,
+            has_break: false,
+            has_continue: false,
+            label: None,
+        }));
+
+        self.wasm.active().emit(&Instruction::Block(BlockType::Empty));
+        self.nesting_depth += 1;
+        self.wasm.active().emit(&Instruction::Loop(BlockType::Empty));
+        self.nesting_depth += 1;
+
+        // Condition: i < len
+        self.wasm.active().local_get(i_local);
+        self.wasm.active().local_get(len_local);
+        self.wasm.active().emit(&Instruction::I32GeU);
+        self.wasm.active().emit(&Instruction::BrIf(1));
+
+        // Load value if needed
+        if let Some(vl) = val_local {
+            // addr = data_ptr + i * e_size
+            self.wasm.active().local_get(data_ptr_local);
+            self.wasm.active().local_get(i_local);
+            self.wasm.active().i32_const(e_size as i32);
+            self.wasm.active().emit(&Instruction::I32Mul);
+            self.wasm.active().emit(&Instruction::I32Add);
+
+            // Load element
+            self.emit_elem_load(&elem_dt);
+
+            // Store in value local
+            if Self::is_string_type(&elem_dt) {
+                self.wasm.active().local_set(vl + 1);
+                self.wasm.active().local_set(vl);
+            } else {
+                self.wasm.active().local_set(vl);
+            }
+        }
+
+        // Continue block
+        self.wasm.active().emit(&Instruction::Block(BlockType::Empty));
+        self.nesting_depth += 1;
+
+        self.compile_block_statement(pkg, &range.body.list)?;
+
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end continue block
+
+        // i++
+        self.wasm.active().local_get(i_local);
+        self.wasm.active().i32_const(1);
+        self.wasm.active().emit(&Instruction::I32Add);
+        self.wasm.active().local_set(i_local);
+
+        self.wasm.active().emit(&Instruction::Br(0)); // loop restart
+
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end loop
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End); // end break block
+
+        self.contexts.pop();
+        self.symbols.leave_scope();
+        Ok(None)
     }
 
     fn compile_if_statement(
@@ -1024,52 +1400,37 @@ impl Compiler {
         pkg: &str,
         ifstmt: &IfStmt,
     ) -> Result<Option<bool>, Error> {
-        self.record_span(ifstmt.pos);
         if let Some(init) = &ifstmt.init {
             self.compile_statement(pkg, init.as_ref())?;
         }
 
         self.compile_expression(pkg, &ifstmt.cond)?;
-        let pos_jump_if_false = self.instructions.len();
-        self.emit_opcode(OpCode::JumpIfFalse);
-        self.emit_u16(JUMP_PLACEHOLDER);
+
+        self.wasm
+            .active()
+            .emit(&Instruction::If(BlockType::Empty));
+        self.nesting_depth += 1;
 
         let terminates = self.compile_block_statement(pkg, &ifstmt.body.list)?;
-
-        if self.last_instruction_is(OpCode::Pop) {
-            self.remove_last_instruction();
-        }
-
-        let pos_jump = self.instructions.len();
-        self.emit_opcode(OpCode::Jump);
-        self.emit_u16(JUMP_PLACEHOLDER);
-
-        self.change_jump_operand_at(
-            pos_jump_if_false,
-            self.instructions.len().try_into().unwrap(),
-        );
 
         let mut else_terminates = None;
 
         if let Some(alternative) = &ifstmt.else_ {
+            self.wasm.active().emit(&Instruction::Else);
+
             match alternative.as_ref() {
                 Statement::Block(bl) => {
                     else_terminates = self.compile_block_statement(pkg, &bl.list)?;
                 }
-                Statement::If(_elseif) => {
+                Statement::If(_) => {
                     self.compile_statement(pkg, alternative.as_ref())?;
                 }
                 _ => panic!("else should be a block: {:#?}", alternative),
             }
-
-            if self.last_instruction_is(OpCode::Pop) {
-                self.remove_last_instruction();
-            }
-        } else {
-            self.emit_opcode(OpCode::Null);
         }
 
-        self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
+        self.nesting_depth -= 1;
+        self.wasm.active().emit(&Instruction::End);
 
         let terminates =
             terminates.unwrap_or_default() && else_terminates.unwrap_or_default();
@@ -1082,110 +1443,11 @@ impl Compiler {
         pkg: &str,
         assign: &AssignStmt,
     ) -> Result<Option<bool>, Error> {
-        self.record_span(assign.pos);
-        if assign.left.len() > 1 && assign.right.len() == 1 {
-            let first = assign.right.first().unwrap();
-            let dt = self.compile_expression(pkg, first)?;
-
-            let (ret, is_type_assert) = match dt {
-                DefineType::Func { rt: ret, .. } => (ret, Some(false)),
-                DefineType::Tuple(_) => {
-                    if let Expression::Index(_) = first {
-                        (Box::new(dt.clone()), None)
-                    } else {
-                        (Box::new(dt.clone()), Some(true))
-                    }
-                }
-                _ => return Err(Error::TypeError(format!(
-                    "expected function or tuple return, got {:#?}",
-                    dt
-                ))),
-            };
-
-            let tuple = ret.as_tuple();
-            if assign.left.len() != tuple.len() {
+        if assign.left.len() != assign.right.len() && assign.right.len() != 1 {
                 return Err(Error::TypeError(format!(
                     "assignment mismatch: {} variables but {} values",
-                    assign.left.len(), tuple.len()
-                )));
-            }
-            let mut i = 0;
-
-            for (left, ct) in assign.left.iter().zip(tuple).rev() {
-                match &assign.op {
-                    Operator::Define => {
-                        let name = match left {
-                            Expression::Ident(ident) => &ident.name,
-                            _ => return Err(Error::SyntaxError(format!(
-                                "non-identifier on left side of :=: {:#?}", left
-                            ))),
-                        };
-
-                        let symbol = self.symbols.define(
-                            pkg,
-                            name.as_str(),
-                            DefineType::Qualified(Qualifier::Var, Box::new(ct.clone())),
-                            ct.is_invar(),
-                        );
-
-                        if is_type_assert.unwrap_or_default() && i == assign.left.len() - 1
-                        {
-                            let def_expr = self.make_type_default_val(ct.clone());
-                            self.compile_expression(pkg, &def_expr)?;
-                            self.emit_opcode(OpCode::SetDefault);
-                        }
-
-                        let op = if symbol.scope == Scope::Global {
-                            OpCode::SetGlobal
-                        } else {
-                            OpCode::SetLocal
-                        };
-                        self.emit_opcode(op);
-                        self.emit_u16(symbol.index);
-                    }
-                    Operator::Assign => 'assign: {
-                        let name = match &left {
-                            Expression::Ident(name) => name.name.as_str(),
-                            _ => {
-                                return Err(Error::TypeError(format!(
-                                    "cannot assign a value to expressions of type {:?}",
-                                    left
-                                )))
-                            }
-                        };
-
-                        if name == "_" {
-                            break 'assign;
-                        }
-
-                        let resolved = self.symbols.resolve(pkg, name).ok_or(
-                            Error::ReferenceError(format!(
-                                "assign: `{name}` is not defined"
-                            )),
-                        )?;
-
-                        let (index, setop) = match resolved {
-                            Resolved::Enclosed((s, _, _)) => (s.index, OpCode::SetCaptured),
-                            Resolved::Local((symbol, _, _)) => match symbol.scope {
-                                Scope::Local => (symbol.index, OpCode::SetLocal),
-                                Scope::Global => (symbol.index, OpCode::SetGlobal),
-                            },
-                        };
-
-                        self.emit_opcode(setop);
-                        self.emit_u16(index);
-                    }
-                    _ => unimplemented!(),
-                }
-                i += 1;
-            }
-            return Ok(None);
-        }
-
-        if assign.left.len() != assign.right.len() {
-            return Err(Error::TypeError(format!(
-                "assignment mismatch: {} variables but {} values",
-                assign.left.len(), assign.right.len()
+                assign.left.len(),
+                assign.right.len()
             )));
         }
 
@@ -1210,25 +1472,15 @@ impl Compiler {
                 Operator::Define => {
                     let name = match left {
                         Expression::Ident(ident) => &ident.name,
-                        _ => return Err(Error::SyntaxError(format!(
-                            "non-identifier on left side of :=: {:#?}", left
-                        ))),
-                    };
-
-                    let mut rt = self.compile_expression(pkg, right)?;
-
-                    rt = match rt {
-                        DefineType::Tuple(tuple) => {
-                            assert_eq!(2, tuple.len());
-                            if let Expression::Index(_) = right {
-                                self.emit_opcode(OpCode::Pop);
-                            } else {
-                                self.emit_opcode(OpCode::PanicIfFalse);
-                            }
-                            tuple[0].clone()
+                        _ => {
+                            return Err(Error::SyntaxError(format!(
+                                "non-identifier on left side of :=: {:#?}",
+                                left
+                            )))
                         }
-                        _ => rt,
                     };
+
+                    let rt = self.compile_expression(pkg, right)?;
 
                     let symbol = self.symbols.define(
                         pkg,
@@ -1237,188 +1489,165 @@ impl Compiler {
                         rt.is_invar(),
                     );
 
-                    let op = if symbol.scope == Scope::Global {
-                        OpCode::SetGlobal
-                    } else {
-                        OpCode::SetLocal
-                    };
-                    self.emit_opcode(op);
-                    self.emit_u16(symbol.index);
-                }
-                Operator::Assign => 'assign: {
-                    let (name, sel, is_deref) = match &left {
-                        Expression::Ident(name) => (name.name.to_string(), None, false),
-                        Expression::Selector(sl) => (
-                            sl.x.as_ident().unwrap().name.clone(),
-                            Some(sl.sel.name.to_string()),
-                            false,
-                        ),
-                        Expression::Index(ind) => {
-                            let _t = self.compile_expression(pkg, ind.left.as_ref())?;
-                            self.compile_expression(pkg, ind.index.as_ref())?;
-                            self.compile_expression(pkg, right)?;
-                            self.emit_opcode(OpCode::IndexSet);
-                            return Ok(None);
-                        }
-                        Expression::Operation(op) => {
-                            if op.y.is_none() && op.op == Operator::Star {
-                                let ident = op.x.as_ident().unwrap();
-                                (ident.name.to_string(), None, true)
-                            } else {
-                                panic!("cannot assign a value to expressions of type");
+                    if rt.is_func() {
+                        if let DefineType::Func { name: ref fname, .. } = rt {
+                            if let Some(&fidx) = self.wasm_func_map.get(fname) {
+                                self.closure_var_func.insert(symbol.index, fidx);
                             }
                         }
+                    } else if Self::is_string_type(&rt) {
+                        let base = self.next_wasm_local;
+                        self.next_wasm_local += 2;
+                        self.locals.insert(symbol.index, base);
+
+                        // Stack has (ptr, len) -- set len first, then ptr
+                        self.wasm.active().local_set(base + 1);
+                        self.wasm.active().local_set(base);
+                            } else {
+                        let local_idx = self.next_wasm_local;
+                        self.next_wasm_local += 1;
+                        self.locals.insert(symbol.index, local_idx);
+
+                        self.wasm.active().local_set(local_idx);
+                    }
+                }
+                Operator::Assign => {
+                    if let Expression::Selector(sel) = left {
+                        let obj_dt = self.compile_expression(pkg, &sel.x)?;
+                        let fields = self.resolve_struct_fields(pkg, &obj_dt)?;
+                        let (layout, _) = struct_field_layout(&fields);
+                        let field_name = &sel.sel.name;
+                        let (_, offset, field_dt) = layout.iter()
+                            .find(|(n, _, _)| n == field_name)
+                            .ok_or_else(|| Error::ReferenceError(format!(
+                                "no field '{}' on struct {:?}", field_name, obj_dt
+                            )))?;
+                        let offset = *offset;
+                        let field_dt = field_dt.clone();
+
+                        let base_local = self.next_wasm_local;
+                        self.wasm.active().local_set(base_local);
+
+                        let saved_next = self.next_wasm_local;
+                        self.next_wasm_local = base_local + 1;
+                        self.compile_expression(pkg, right)?;
+                        self.emit_field_store(base_local, offset, &field_dt);
+                        self.next_wasm_local = saved_next;
+                        continue;
+                    }
+
+                    if let Expression::Index(idx) = left {
+                        let coll_dt = self.compile_expression(pkg, &idx.left)?;
+
+                        if let Some((elem_dt, _arr_len)) = Self::unwrap_array_elem(&coll_dt) {
+                            let e_size = elem_byte_size(&elem_dt);
+                            let arr_local = self.next_wasm_local;
+                            self.wasm.active().local_set(arr_local);
+                            let saved_next = self.next_wasm_local;
+                            self.next_wasm_local = arr_local + 1;
+
+                            // addr = arr_ptr + idx * e_size  (no header)
+                            self.wasm.active().local_get(arr_local);
+                            self.compile_expression(pkg, &idx.index)?;
+                            self.wasm.active().i32_const(e_size as i32);
+                            self.wasm.active().emit(&Instruction::I32Mul);
+                            self.wasm.active().emit(&Instruction::I32Add);
+                            let addr_local = self.next_wasm_local;
+                            self.wasm.active().local_set(addr_local);
+                            self.next_wasm_local = addr_local + 1;
+
+                            self.compile_expression(pkg, right)?;
+                            self.emit_elem_store(addr_local, &elem_dt);
+                            self.next_wasm_local = saved_next;
+                            continue;
+                        }
+
+                        let elem_dt = Self::unwrap_slice_elem(&coll_dt)
+                            .ok_or_else(|| Error::TypeError(format!(
+                                "index assign on non-indexable type {:?}", coll_dt
+                            )))?;
+                        let e_size = elem_byte_size(&elem_dt);
+
+                        // hdr_ptr on stack -> stash
+                        let hdr_local = self.next_wasm_local;
+                        self.wasm.active().local_set(hdr_local);
+
+                        let saved_next = self.next_wasm_local;
+                        self.next_wasm_local = hdr_local + 1;
+
+                        // Load data_ptr
+                        self.wasm.active().local_get(hdr_local);
+                        self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
+
+                        // Compile index
+                        self.compile_expression(pkg, &idx.index)?;
+
+                        // addr = data_ptr + idx * e_size
+                        self.wasm.active().i32_const(e_size as i32);
+                        self.wasm.active().emit(&Instruction::I32Mul);
+                        self.wasm.active().emit(&Instruction::I32Add);
+                        let addr_local = self.next_wasm_local;
+                        self.wasm.active().local_set(addr_local);
+                        self.next_wasm_local = addr_local + 1;
+
+                        // Compile RHS value
+                        self.compile_expression(pkg, right)?;
+                        self.emit_elem_store(addr_local, &elem_dt);
+                        self.next_wasm_local = saved_next;
+                        continue;
+                    }
+
+                    let name = match &left {
+                        Expression::Ident(name) => name.name.to_string(),
                         _ => {
-                            return Err(Error::TypeError(format!(
-                                "cannot assign a value to expressions of type {:?}",
+                            return Err(self.unsupported(&format!(
+                                "non-ident assignment target: {:#?}",
                                 left
                             )))
                         }
                     };
 
                     if name == "_" {
-                        break 'assign;
+                        let rt = self.compile_expression(pkg, right)?;
+                        if Self::is_string_type(&rt) {
+                            self.wasm.active().drop();
+                            self.wasm.active().drop();
+                                } else {
+                            self.wasm.active().drop();
+                        }
+                        continue;
                     }
 
-                    let pkg = sel
-                        .clone()
-                        .map(|s| {
-                            if self.symbols.ident_is_package(&s) {
-                                s
+                    let resolved = self.symbols.resolve(pkg, &name).ok_or(
+                        Error::ReferenceError(format!("assign: `{name}` is not defined")),
+                    )?;
+
+                    self.compile_expression(pkg, right)?;
+
+                    match resolved {
+                        Resolved::Local((symbol, dt, _)) => {
+                            if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                                if Self::is_string_type(&dt) {
+                                    self.wasm.active().local_set(local_idx + 1);
+                                    self.wasm.active().local_set(local_idx);
                             } else {
-                                pkg.to_string()
-                            }
-                        })
-                        .unwrap_or(pkg.to_string());
-
-                    let resolved =
-                        self.symbols
-                            .resolve(&pkg, &name)
-                            .ok_or(Error::ReferenceError(format!(
-                                "assign: `{name}` is not defined"
-                            )))?;
-
-                    if let Some(s) = sel {
-                        let t = resolved.get_type().0.strip_var().strip_ref();
-
-                        match t {
-                            DefineType::Struct { fields, .. } => {
-                                let mut i = None;
-                                for (ind, field) in fields.iter().enumerate() {
-                                    let f = field.as_named().unwrap();
-                                    if f.0 == s {
-                                        i = Some(ind);
-                                    }
+                                    self.wasm.active().local_set(local_idx);
                                 }
-
-                                let i = i.unwrap();
-
-                                self.compile_expression(
-                                    &pkg,
-                                    &Expression::Ident(Ident { pos: 0, name }),
-                                )?;
-                                self.compile_expression(
-                                    &pkg,
-                                    &Expression::BasicLit(BasicLit {
-                                        pos: 0,
-                                        kind: LitKind::Integer,
-                                        value: format!("{}", i),
-                                    }),
-                                )?;
-                                self.compile_expression(&pkg, right)?;
-                                self.emit_opcode(OpCode::IndexSet);
-                                return Ok(None);
-                            }
-                            _ => unimplemented!("{:#?}", t),
-                        }
-                    }
-
-                    let (index, setop, expect_t) = match resolved {
-                        Resolved::Enclosed((s, t, _)) => {
-                            let write_op = if is_deref {
-                                OpCode::EnclosedPtrWrite
                             } else {
-                                OpCode::SetCaptured
-                            };
-                            (s.index, write_op, t.strip_var())
-                        }
-                        Resolved::Local((symbol, mut t, _)) => match symbol.scope {
-                            Scope::Local => {
-                                t = t.strip_var();
-                                let write_op = if is_deref || t.is_func() {
-                                    OpCode::LocalPtrWrite
-                                } else {
-                                    OpCode::SetLocal
-                                };
-                                (symbol.index, write_op, t)
-                            }
-                            Scope::Global => {
-                                let write_op = if is_deref || t.is_func() {
-                                    OpCode::GlobalPtrWrite
-                                } else {
-                                    OpCode::SetGlobal
-                                };
-                                (symbol.index, write_op, t)
-                            }
-                        },
-                    };
-
-                    let got_t = self
-                        .compile_expression(&pkg, right)?
-                        .strip_var()
-                        .strip_const();
-
-                    if is_deref {
-                        if expect_t.is_invar() {
-                            return Err(Error::TypeError(
-                                "cannot write to an invar reference".to_string(),
-                            ));
-                        }
-                        if !expect_t.is_ref() {
-                            return Err(Error::TypeError(format!(
-                                "cannot dereference non-reference type {:#?}",
-                                expect_t
-                            )));
-                        }
-                        let inner = expect_t.as_ref().unwrap_to_base_type();
-                        if inner != got_t {
-                            return Err(Error::TypeError(format!(
-                                "cannot assign {:#?} to dereferenced {:#?}",
-                                got_t, inner
-                            )));
-                        }
-                    } else {
-                        let stripped = expect_t.unwrap_to_base_type();
-
-                        if right.is_int_lit() {
-                            let is_value_coercable = if let Ok(i) = right.as_int_lit() {
-                                is_integer_coerceable_to(i, &stripped)
-                            } else if let Ok(i) = right.as_uint_lit() {
-                                is_uint_coerceable_to(i, &stripped)
-                            } else {
-                                false
-                            };
-
-                            if !(got_t.is_coerceable_to(&stripped) && is_value_coercable)
-                                && stripped != got_t
-                            {
-                                return Err(Error::TypeError(format!(
-                                    "cannot use {:#?} as type {:#?} in assignment",
-                                    got_t, stripped
-                                )));
-                            }
-                        } else if !got_t.is_coerceable_to(&stripped) && stripped != got_t {
-                            return Err(Error::TypeError(format!(
-                                "cannot use {:#?} as type {:#?} in assignment",
-                                got_t, stripped
+                                return Err(Error::InternalError(format!(
+                                    "no WASM local for symbol '{}' (idx={})",
+                                    name, symbol.index
                             )));
                         }
                     }
-
-                    self.emit_opcode(setop);
-                    self.emit_u16(index);
+                        _ => {
+                            return Err(
+                                self.unsupported("enclosed variable assignment in WASM")
+                            )
+                        }
+                    }
                 }
-                _ => unimplemented!(),
+                _ => return Err(self.unsupported(&format!("assign op: {:?}", assign.op))),
             }
         }
         Ok(None)
@@ -1429,116 +1658,102 @@ impl Compiler {
         pkg: &str,
         expr: &ReturnStmt,
     ) -> Result<Option<bool>, Error> {
-        self.record_span(expr.pos);
         let mut rts = Vec::with_capacity(expr.ret.len());
 
         for r in &expr.ret {
-            let t = self.compile_expression(pkg, &r)?;
+            let t = self.compile_expression(pkg, r)?;
             rts.push(t);
         }
 
-        let mut rts_len = rts.len();
-        let mut rt = if rts_len == 0 {
+        let rt = if rts.is_empty() {
             DefineType::Null
-        } else if rts_len == 1 {
+        } else if rts.len() == 1 {
             rts[0].clone()
         } else {
             DefineType::Tuple(rts)
         };
 
-        if rts_len == 1 && rt.is_tuple() {
-            let tuple = rt.as_tuple();
-            rts_len = tuple.len();
-            rt = DefineType::Tuple(tuple);
-        }
-
-        let expect_t = self.func_contexts.last().unwrap().expected_ret.clone();
-
-        let is_type_assert = if expr.ret.len() == 1 {
-            if let Expression::TypeAssert(_) = &expr.ret[0] {
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !expect_t.as_ref().map_or(false, |t| t.is_tuple()) && is_type_assert {
-            rts_len = 1;
-            self.emit_opcode(OpCode::PanicIfFalse);
-        }
-
         self.func_contexts
             .last_mut()
             .unwrap()
             .ret_types
-            .push((rt, is_type_assert));
+            .push((rt, false));
 
-        assert!(rts_len < u16::MAX as usize);
-        self.emit_opcode(OpCode::ReturnValue);
-        self.emit_u16(rts_len as u16);
+        // Restore $sp before returning.
+        if let (Some(saved_sp), Some(sp_idx)) = (self.saved_sp_local, self.wasm.sp_global_idx()) {
+            self.wasm.active().local_get(saved_sp);
+            self.wasm.active().global_set(sp_idx);
+        }
+
+        self.wasm.active().ret();
 
         Ok(Some(true))
     }
 
     fn compile_branch_statement(
         &mut self,
-        pkg: &str,
+        _pkg: &str,
         branch: &BranchStmt,
     ) -> Result<Option<bool>, Error> {
-        let _ = pkg;
         match branch.key {
             Keyword::Break => {
-                self.emit_opcode(OpCode::Null);
-                let pos = self.instructions.len();
-                self.emit_opcode(OpCode::Jump);
-                self.emit_u16(JUMP_PLACEHOLDER);
-
-                if let Some(l) = branch.ident.clone() {
+                let loop_depth = if let Some(l) = branch.ident.clone() {
+                    let mut found_depth = None;
                     for ctx in self.contexts.iter_mut().rev() {
                         if let Some(label) = ctx.label() {
                             if &l.name == label {
-                                ctx.push_break(pos);
-                                return Ok(Some(false));
+                                ctx.push_break(0);
+                                found_depth = Some(ctx.as_for().depth);
+                                break;
                             }
                         }
                     }
-                    return Err(Error::SyntaxError(format!("label not found: {:?}", branch.ident)));
+                    found_depth.ok_or_else(|| {
+                        Error::SyntaxError(format!("label not found: {:?}", branch.ident))
+                    })?
                 } else {
-                    let ctx = match self.contexts.last_mut() {
-                        Some(ctx) => ctx,
-                        None => return Err(Error::SyntaxError("bad call 1".to_string())),
-                    };
-                    ctx.push_break(pos);
-                }
+                    let ctx = self
+                        .contexts
+                        .last_mut()
+                        .ok_or_else(|| Error::SyntaxError("break outside loop".to_string()))?;
+                    ctx.push_break(0);
+                    ctx.as_for().depth
+                };
+                // break targets the outer block at loop_depth + 1
+                let br_depth = self.nesting_depth - (loop_depth + 1);
+                self.wasm.active().emit(&Instruction::Br(br_depth));
             }
             Keyword::Continue => {
-                self.emit_opcode(OpCode::Null);
-                let pos = self.instructions.len();
-                self.emit_opcode(OpCode::Jump);
-                self.emit_u16(JUMP_PLACEHOLDER);
-
-                if let Some(l) = branch.ident.clone() {
+                let loop_depth = if let Some(l) = branch.ident.clone() {
+                    let mut found_depth = None;
                     for ctx in self.contexts.iter_mut().rev() {
                         if let Some(label) = ctx.label() {
                             if &l.name == label {
-                                ctx.push_continue(pos);
-                                return Ok(Some(false));
+                                ctx.push_continue(0);
+                                found_depth = Some(ctx.as_for().depth);
+                                break;
                             }
                         }
                     }
-                    return Err(Error::SyntaxError(format!("label not found: {:?}", branch.ident)));
+                    found_depth.ok_or_else(|| {
+                        Error::SyntaxError(format!("label not found: {:?}", branch.ident))
+                    })?
                 } else {
-                    let ctx = match self.contexts.last_mut() {
-                        Some(ctx) => ctx,
-                        None => return Err(Error::SyntaxError("bad call 1".to_string())),
-                    };
-                    ctx.push_continue(pos);
-                }
+                    let ctx = self
+                        .contexts
+                        .last_mut()
+                        .ok_or_else(|| {
+                            Error::SyntaxError("continue outside loop".to_string())
+                        })?;
+                    ctx.push_continue(0);
+                    ctx.as_for().depth
+                };
+                // continue targets the continue-block at loop_depth + 3
+                // (falls through to post statement, then br 0 restarts loop)
+                let br_depth = self.nesting_depth - (loop_depth + 3);
+                self.wasm.active().emit(&Instruction::Br(br_depth));
             }
-            Keyword::FallThrough => {}
-            _ => panic!("key: {:#?}", branch.key),
+            _ => return Err(self.unsupported(&format!("branch keyword: {:?}", branch.key))),
         }
         Ok(None)
     }
@@ -1550,761 +1765,1474 @@ impl Compiler {
     ) -> Result<Option<bool>, Error> {
         let name = match &incdec.expr {
             Expression::Ident(ident) => ident.clone(),
-            _ => return Err(Error::SyntaxError(
+            _ => {
+                return Err(Error::SyntaxError(
                 "increment/decrement requires an identifier".to_string(),
-            )),
+                ))
+            }
         };
 
         let r = self.symbols.resolve(pkg, &name.name).ok_or_else(|| {
             Error::ReferenceError(format!("`{}` is not defined", name.name))
         })?;
 
-        let (index, incop, t) = match r {
-            Resolved::Enclosed((s, t, _)) => (s.index, OpCode::IncCaptured, t),
-            Resolved::Local((symbol, t, _)) => match symbol.scope {
-                Scope::Local => (symbol.index, OpCode::IncLocal, t),
-                Scope::Global => (symbol.index, OpCode::IncGlobal, t),
-            },
+        let (symbol, t) = match r {
+            Resolved::Local((symbol, t, _)) => (symbol, t),
+            _ => return Err(self.unsupported("enclosed variable inc/dec")),
         };
 
-        if !t.strip_var().is_numeric() {
+        if !t.unwrap_qualifiers().is_numeric() {
             return Err(Error::TypeError(format!(
                 "cannot use inc/dec on non-numeric type {:#?}",
                 t
             )));
         }
 
-        self.emit_opcode(incop);
-        self.emit_u16(index);
+        let local_idx = *self.locals.get(&symbol.index).ok_or_else(|| {
+            Error::InternalError(format!("no WASM local for '{}'", name.name))
+        })?;
+
+        self.wasm.active().local_get(local_idx);
+        self.wasm.active().i32_const(1);
+        if incdec.op == Operator::Inc {
+            self.wasm.active().emit(&Instruction::I32Add);
+        } else {
+            self.wasm.active().emit(&Instruction::I32Sub);
+        }
+        self.wasm.active().local_set(local_idx);
+
         Ok(None)
     }
 
-    fn compile_range_statement(
+    pub(crate) fn compile_expression(
         &mut self,
         pkg: &str,
-        rng: &RangeStmt,
-    ) -> Result<Option<bool>, Error> {
-        self.emit_opcode(OpCode::Null);
-
-        let label = self.label_contexts.get(&rng.pos).cloned();
-        self.contexts.push(Context::For(LoopContext::new(
-            self.instructions.len(),
-            label,
-        )));
-        let iter_sym;
-
-        let _iter_ident = Expression::Ident(Ident {
+        expr: &Expression,
+    ) -> Result<DefineType, Error> {
+        match expr {
+            Expression::Call(call) => self.compile_call_expression(pkg, call),
+            Expression::Operation(op) => self.compile_operation_expression(pkg, op),
+            Expression::BasicLit(lit)
+                if lit.kind == LitKind::Ident && lit.value == "iota" =>
+            {
+                self.compile_expression(
+                    pkg,
+                    &Expression::BasicLit(BasicLit {
             pos: 0,
-            name: "__iter__".to_string(),
-        });
-        {
-            let name = "__iter__";
-            iter_sym = self.symbols.define(
+                        kind: LitKind::Integer,
+                        value: self.iota.to_string(),
+                    }),
+                )
+            }
+            Expression::BasicLit(lit)
+                if lit.kind == LitKind::Ident
+                    && (lit.value == "true" || lit.value == "false") =>
+            {
+                let val = if lit.value == "true" { 1 } else { 0 };
+                self.wasm.active().i32_const(val);
+                Ok(DefineType::Bool)
+            }
+            Expression::BasicLit(lit) if lit.kind == LitKind::String => {
+                let raw = &lit.value;
+                let unquoted = if raw.starts_with('"') && raw.ends_with('"') {
+                    &raw[1..raw.len() - 1]
+                } else if raw.starts_with('`') && raw.ends_with('`') {
+                    &raw[1..raw.len() - 1]
+                } else {
+                    raw.as_str()
+                };
+                let bytes = Self::unescape_go_string(unquoted);
+                let len = bytes.len() as i32;
+
+                let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                    .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+
+                // rt_alloc(len) -> ptr
+                self.wasm.active().i32_const(len);
+                self.wasm.active().call(rt_alloc_idx);
+
+                // Store ptr in scratch local, write each byte
+                let scratch = self.next_wasm_local;
+                self.wasm.active().local_set(scratch);
+
+                for (i, &b) in bytes.iter().enumerate() {
+                    self.wasm.active().local_get(scratch);
+                    if i > 0 {
+                        self.wasm.active().i32_const(i as i32);
+                        self.wasm.active().emit(&Instruction::I32Add);
+                    }
+                    self.wasm.active().i32_const(b as i32);
+                    self.wasm.active().i32_store8(0);
+                }
+
+                // Push (ptr, len) onto the stack
+                self.wasm.active().local_get(scratch);
+                self.wasm.active().i32_const(len);
+
+                Ok(DefineType::String)
+            }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
+                match lit.value.parse::<f64>() {
+                    Ok(f) => {
+                        self.wasm
+                            .active()
+                            .emit(&Instruction::F64Const(f.into()));
+                        Ok(DefineType::Float64)
+                    }
+                    _ => {
+                        let f: f32 = lit.value.parse().unwrap();
+                        self.wasm
+                            .active()
+                            .emit(&Instruction::F32Const(f.into()));
+                        Ok(DefineType::Float32)
+                    }
+                }
+            }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
+                let value = lit
+                    .value
+                    .parse::<isize>()
+                    .or_else(|_| isize::from_str_radix(&lit.value, 16))
+                    .unwrap();
+                self.wasm.active().i32_const(value as i32);
+                Ok(DefineType::Qualified(
+                    Qualifier::Const,
+                    Box::new(DefineType::Int),
+                ))
+            }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
+                let resolved = self.symbols.resolve(pkg, &lit.value).ok_or(
+                    Error::ReferenceError(format!("identifier: {} not found", lit.value)),
+                )?;
+
+                match resolved {
+                    Resolved::Local((symbol, dt, _)) => {
+                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                            if Self::is_string_type(&dt) {
+                                self.wasm.active().local_get(local_idx);
+                                self.wasm.active().local_get(local_idx + 1);
+                            } else {
+                                self.wasm.active().local_get(local_idx);
+                            }
+                        }
+                        Ok(dt)
+                    }
+                    _ => {
+                        match resolved {
+                            Resolved::Enclosed((symbol, dt, _)) => {
+                                if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                                    if Self::is_string_type(&dt) {
+                                        self.wasm.active().local_get(local_idx);
+                                        self.wasm.active().local_get(local_idx + 1);
+                        } else {
+                                        self.wasm.active().local_get(local_idx);
+                                    }
+                                }
+                                Ok(dt)
+                            }
+                            _ => Err(self.unsupported("enclosed variable access")),
+                        }
+                    }
+                }
+            }
+            Expression::Ident(ident) => {
+                if ident.name == "true" {
+                    self.wasm.active().i32_const(1);
+                    return Ok(DefineType::Bool);
+                } else if ident.name == "false" {
+                    self.wasm.active().i32_const(0);
+                    return Ok(DefineType::Bool);
+                }
+
+                if ident.name == "iota" {
+                    return self.compile_expression(
+                        pkg,
+                        &Expression::BasicLit(BasicLit {
+                        pos: 0,
+                            kind: LitKind::Integer,
+                            value: self.iota.to_string(),
+                        }),
+                    );
+                }
+
+                match self.symbols.resolve(pkg, &ident.name) {
+                    Some(Resolved::Local((symbol, dt, _))) => {
+                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                            if Self::is_string_type(&dt) {
+                                self.wasm.active().local_get(local_idx);
+                                self.wasm.active().local_get(local_idx + 1);
+                            } else {
+                                self.wasm.active().local_get(local_idx);
+                            }
+                        }
+                        Ok(dt)
+                    }
+                    Some(Resolved::Enclosed((symbol, dt, _))) => {
+                        if let Some(&local_idx) = self.locals.get(&symbol.index) {
+                            if Self::is_string_type(&dt) {
+                                self.wasm.active().local_get(local_idx);
+                                self.wasm.active().local_get(local_idx + 1);
+                    } else {
+                                self.wasm.active().local_get(local_idx);
+                            }
+                        }
+                        Ok(dt)
+                    }
+                    None => Err(Error::ReferenceError(format!(
+                        "ident: `{}` is not defined in pkg: `{}`",
+                        ident.name, pkg,
+                    ))),
+                }
+            }
+            Expression::CompositeLit(cl) => {
+                if let Expression::TypeSlice(ts) = cl.typ.as_ref() {
+                    let elem_dt = self.expression_to_define_type(pkg, &ts.typ)
+                        .ok_or_else(|| Error::TypeError("cannot resolve slice element type".into()))?;
+                    let e_size = elem_byte_size(&elem_dt);
+                    let n = cl.val.values.len() as u32;
+
+                    let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                        .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+
+                    // Allocate data block
+                    self.wasm.active().i32_const((n * e_size) as i32);
+                    self.wasm.active().call(rt_alloc_idx);
+                    let data_ptr_local = self.next_wasm_local;
+                    self.wasm.active().local_set(data_ptr_local);
+
+                    let saved_next = self.next_wasm_local;
+                    self.next_wasm_local = data_ptr_local + 1;
+
+                    // Store each element
+                    for (i, kv) in cl.val.values.iter().enumerate() {
+                        let val_expr = match &kv.val {
+                            Element::Expr(e) => e,
+                            _ => return Err(self.unsupported("nested literal value in slice")),
+                        };
+
+                        // Compute target address: data_ptr + i * e_size
+                        self.wasm.active().local_get(data_ptr_local);
+                        self.wasm.active().i32_const((i as u32 * e_size) as i32);
+                        self.wasm.active().emit(&Instruction::I32Add);
+                        let addr_local = self.next_wasm_local;
+                        self.wasm.active().local_set(addr_local);
+                        self.next_wasm_local = addr_local + 1;
+
+                        self.compile_expression(pkg, val_expr)?;
+                        self.emit_elem_store(addr_local, &elem_dt);
+
+                        self.next_wasm_local = addr_local + 1;
+                    }
+
+                    // Allocate header
+                    self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
+                    self.wasm.active().call(rt_alloc_idx);
+                    let hdr_local = self.next_wasm_local;
+                    self.wasm.active().local_set(hdr_local);
+
+                    // Store data_ptr at hdr+0
+                    self.wasm.active().local_get(hdr_local);
+                    self.wasm.active().local_get(data_ptr_local);
+                    self.wasm.active().i32_store(SLICE_DATA_PTR_OFFSET as u64);
+
+                    // Store len at hdr+4
+                    self.wasm.active().local_get(hdr_local);
+                    self.wasm.active().i32_const(n as i32);
+                    self.wasm.active().i32_store(SLICE_LEN_OFFSET as u64);
+
+                    // Store cap at hdr+8 (cap = len for literals)
+                    self.wasm.active().local_get(hdr_local);
+                    self.wasm.active().i32_const(n as i32);
+                    self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
+
+                    self.next_wasm_local = saved_next;
+                    self.wasm.active().local_get(hdr_local);
+
+                    let slice_dt = DefineType::Slice(Box::new(elem_dt));
+                    return Ok(slice_dt);
+                }
+
+                if let Expression::TypeArray(ta) = cl.typ.as_ref() {
+                    let elem_dt = self.expression_to_define_type(pkg, &ta.typ)
+                        .ok_or_else(|| Error::TypeError("cannot resolve array element type".into()))?;
+                    let arr_len: usize = match ta.len.as_ref() {
+                        Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
+                            lit.value.parse().map_err(|_| {
+                                Error::TypeError(format!("invalid array length: {}", lit.value))
+                            })?
+                        }
+                        _ => return Err(self.unsupported("non-constant array length")),
+                    };
+                    let e_size = elem_byte_size(&elem_dt);
+                    let total = array_byte_size(&elem_dt, arr_len);
+
+                    let sp_idx = self.wasm.sp_global_idx()
+                        .expect("$sp global not registered");
+
+                    // $sp -= total  (allocate on stack)
+                    self.wasm.active().global_get(sp_idx);
+                    self.wasm.active().i32_const(total as i32);
+                    self.wasm.active().emit(&Instruction::I32Sub);
+                    self.wasm.active().global_set(sp_idx);
+
+                    // arr_ptr = $sp
+                    let arr_local = self.next_wasm_local;
+                    self.wasm.active().global_get(sp_idx);
+                    self.wasm.active().local_set(arr_local);
+                    let saved_next = self.next_wasm_local;
+                    self.next_wasm_local = arr_local + 1;
+
+                    for (i, kv) in cl.val.values.iter().enumerate() {
+                        let val_expr = match &kv.val {
+                            Element::Expr(e) => e,
+                            _ => return Err(self.unsupported("nested literal value in array")),
+                        };
+
+                        self.wasm.active().local_get(arr_local);
+                        self.wasm.active().i32_const((i as u32 * e_size) as i32);
+                        self.wasm.active().emit(&Instruction::I32Add);
+                        let addr_local = self.next_wasm_local;
+                        self.wasm.active().local_set(addr_local);
+                        self.next_wasm_local = addr_local + 1;
+
+                        self.compile_expression(pkg, val_expr)?;
+                        self.emit_elem_store(addr_local, &elem_dt);
+                        self.next_wasm_local = addr_local + 1;
+                    }
+
+                    self.next_wasm_local = saved_next;
+                    self.wasm.active().local_get(arr_local);
+
+                    return Ok(DefineType::Array {
+                        inner_type: Box::new(elem_dt),
+                        len: arr_len,
+                    });
+                }
+
+                let type_name = cl.typ.as_ident().map_err(|e| Error::TypeError(e))?;
+                let resolved = self.symbols.resolve(pkg, &type_name.name)
+                    .ok_or_else(|| Error::ReferenceError(format!("unresolved type '{}'", type_name.name)))?;
+                let struct_dt = resolved.get_type().0.unwrap_qualifiers();
+                let fields = self.resolve_struct_fields(pkg, &struct_dt)?;
+                let (layout, total_size) = struct_field_layout(&fields);
+
+                let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                    .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+
+                self.wasm.active().i32_const(total_size as i32);
+                self.wasm.active().call(rt_alloc_idx);
+
+                let scratch = self.next_wasm_local;
+                self.wasm.active().local_set(scratch);
+                let saved_next = self.next_wasm_local;
+                self.next_wasm_local = scratch + 1;
+
+                for kv in &cl.val.values {
+                    let key_name = match &kv.key {
+                        Some(Element::Expr(Expression::Ident(id))) => id.name.clone(),
+                        _ => return Err(Error::SyntaxError(
+                            "struct literal field must be a named key".into(),
+                        )),
+                    };
+                    let val_expr = match &kv.val {
+                        Element::Expr(e) => e,
+                        _ => return Err(self.unsupported("nested literal value in struct")),
+                    };
+
+                    let (_, offset, field_dt) = layout.iter()
+                        .find(|(n, _, _)| n == &key_name)
+                        .ok_or_else(|| Error::ReferenceError(format!(
+                            "struct '{}' has no field '{}'", type_name.name, key_name
+                        )))?;
+                    let offset = *offset;
+                    let field_dt = field_dt.clone();
+
+                    self.compile_expression(pkg, val_expr)?;
+                    self.emit_field_store(scratch, offset, &field_dt);
+                }
+
+                self.next_wasm_local = saved_next;
+                self.wasm.active().local_get(scratch);
+                Ok(struct_dt)
+            }
+            Expression::Selector(sel) => {
+                if let Expression::Ident(ref id) = *sel.x {
+                    if let Some(p) = self.symbols.get_package_path(&id.name) {
+                        let member = Expression::Ident(sel.sel.clone());
+                        return self.compile_expression(&p, &member);
+                    }
+                }
+                let obj_dt = self.compile_expression(pkg, &sel.x)?;
+                let fields = self.resolve_struct_fields(pkg, &obj_dt)?;
+                let (layout, _) = struct_field_layout(&fields);
+                let field_name = &sel.sel.name;
+                let (_, offset, field_dt) = layout.iter()
+                    .find(|(n, _, _)| n == field_name)
+                    .ok_or_else(|| Error::ReferenceError(format!(
+                        "no field '{}' on struct {:?}", field_name, obj_dt
+                    )))?;
+                let offset = *offset as u64;
+                let field_dt = field_dt.clone();
+                self.emit_field_load(offset, &field_dt);
+                Ok(field_dt)
+            }
+            Expression::FuncLit(fl) => {
+                let func_dt = self.compile_func_lit(pkg, fl)?;
+                Ok(func_dt)
+            }
+            Expression::Index(idx) => {
+                let coll_dt = self.compile_expression(pkg, &idx.left)?;
+
+                if let Some((elem_dt, _arr_len)) = Self::unwrap_array_elem(&coll_dt) {
+                    let e_size = elem_byte_size(&elem_dt);
+                    let arr_local = self.next_wasm_local;
+                    self.wasm.active().local_set(arr_local);
+                    let saved_next = self.next_wasm_local;
+                    self.next_wasm_local = arr_local + 1;
+
+                    // ptr + idx * e_size  (no header indirection)
+                    self.wasm.active().local_get(arr_local);
+                    self.compile_expression(pkg, &idx.index)?;
+                    self.wasm.active().i32_const(e_size as i32);
+                    self.wasm.active().emit(&Instruction::I32Mul);
+                    self.wasm.active().emit(&Instruction::I32Add);
+
+                    self.emit_elem_load(&elem_dt);
+                    self.next_wasm_local = saved_next;
+                    return Ok(elem_dt);
+                }
+
+                let elem_dt = Self::unwrap_slice_elem(&coll_dt)
+                    .ok_or_else(|| Error::TypeError(format!("index on non-indexable type {:?}", coll_dt)))?;
+                let e_size = elem_byte_size(&elem_dt);
+
+                // hdr_ptr on stack -> stash
+                let hdr_local = self.next_wasm_local;
+                self.wasm.active().local_set(hdr_local);
+
+                let saved_next = self.next_wasm_local;
+                self.next_wasm_local = hdr_local + 1;
+
+                // Load data_ptr from header
+                self.wasm.active().local_get(hdr_local);
+                self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
+
+                // Compile index
+                self.compile_expression(pkg, &idx.index)?;
+
+                // Compute data_ptr + idx * elem_size
+                self.wasm.active().i32_const(e_size as i32);
+                self.wasm.active().emit(&Instruction::I32Mul);
+                self.wasm.active().emit(&Instruction::I32Add);
+
+                // Load element
+                self.emit_elem_load(&elem_dt);
+
+                self.next_wasm_local = saved_next;
+                Ok(elem_dt)
+            }
+            Expression::Slice(sl) => {
+                let slice_dt = self.compile_expression(pkg, &sl.left)?;
+                let elem_dt = Self::unwrap_slice_elem(&slice_dt)
+                    .ok_or_else(|| Error::TypeError(format!("slice expr on non-slice type {:?}", slice_dt)))?;
+                let e_size = elem_byte_size(&elem_dt);
+
+                let hdr_local = self.next_wasm_local;
+                self.wasm.active().local_set(hdr_local);
+
+                let saved_next = self.next_wasm_local;
+                self.next_wasm_local = hdr_local + 1;
+
+                // Load data_ptr, len, cap from old header
+                let data_ptr_local = self.next_wasm_local;
+                self.next_wasm_local += 1;
+                let old_len_local = self.next_wasm_local;
+                self.next_wasm_local += 1;
+                let old_cap_local = self.next_wasm_local;
+                self.next_wasm_local += 1;
+
+                self.wasm.active().local_get(hdr_local);
+                self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
+                self.wasm.active().local_set(data_ptr_local);
+
+                self.wasm.active().local_get(hdr_local);
+                self.wasm.active().i32_load(SLICE_LEN_OFFSET as u64);
+                self.wasm.active().local_set(old_len_local);
+
+                self.wasm.active().local_get(hdr_local);
+                self.wasm.active().i32_load(SLICE_CAP_OFFSET as u64);
+                self.wasm.active().local_set(old_cap_local);
+
+                // Evaluate lo (default 0)
+                let lo_local = self.next_wasm_local;
+                self.next_wasm_local += 1;
+                if let Some(lo_expr) = &sl.index[0] {
+                    self.compile_expression(pkg, lo_expr)?;
+                } else {
+                    self.wasm.active().i32_const(0);
+                }
+                self.wasm.active().local_set(lo_local);
+
+                // Evaluate hi (default len)
+                let hi_local = self.next_wasm_local;
+                self.next_wasm_local += 1;
+                if let Some(hi_expr) = &sl.index[1] {
+                    self.compile_expression(pkg, hi_expr)?;
+                } else {
+                    self.wasm.active().local_get(old_len_local);
+                }
+                self.wasm.active().local_set(hi_local);
+
+                // Allocate new header
+                let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+                    .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+                self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
+                self.wasm.active().call(rt_alloc_idx);
+                let new_hdr = self.next_wasm_local;
+                self.wasm.active().local_set(new_hdr);
+
+                // new_data_ptr = data_ptr + lo * e_size
+                self.wasm.active().local_get(new_hdr);
+                self.wasm.active().local_get(data_ptr_local);
+                self.wasm.active().local_get(lo_local);
+                self.wasm.active().i32_const(e_size as i32);
+                self.wasm.active().emit(&Instruction::I32Mul);
+                self.wasm.active().emit(&Instruction::I32Add);
+                self.wasm.active().i32_store(SLICE_DATA_PTR_OFFSET as u64);
+
+                // new_len = hi - lo
+                self.wasm.active().local_get(new_hdr);
+                self.wasm.active().local_get(hi_local);
+                self.wasm.active().local_get(lo_local);
+                self.wasm.active().emit(&Instruction::I32Sub);
+                self.wasm.active().i32_store(SLICE_LEN_OFFSET as u64);
+
+                // new_cap = old_cap - lo
+                self.wasm.active().local_get(new_hdr);
+                self.wasm.active().local_get(old_cap_local);
+                self.wasm.active().local_get(lo_local);
+                self.wasm.active().emit(&Instruction::I32Sub);
+                self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
+
+                self.next_wasm_local = saved_next;
+                self.wasm.active().local_get(new_hdr);
+
+                Ok(slice_dt)
+            }
+            _ => Err(self.unsupported(&format!("expression: {:#?}", expr))),
+        }
+    }
+
+    fn scan_free_vars_expr(&mut self, pkg: &str, expr: &Expression) {
+        match expr {
+            Expression::Ident(id) => { let _ = self.symbols.resolve(pkg, &id.name); }
+            Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
+                let _ = self.symbols.resolve(pkg, &lit.value);
+            }
+            Expression::Operation(op) => {
+                self.scan_free_vars_expr(pkg, &op.x);
+                if let Some(y) = &op.y { self.scan_free_vars_expr(pkg, y); }
+            }
+            Expression::Call(call) => {
+                self.scan_free_vars_expr(pkg, &call.func);
+                for a in &call.args { self.scan_free_vars_expr(pkg, a); }
+            }
+            Expression::Selector(sel) => {
+                self.scan_free_vars_expr(pkg, &sel.x);
+            }
+            Expression::CompositeLit(cl) => {
+                for kv in &cl.val.values {
+                    if let Element::Expr(e) = &kv.val { self.scan_free_vars_expr(pkg, e); }
+                }
+            }
+            Expression::FuncLit(fl) => {
+                for stmt in &fl.body.list { self.scan_free_vars_stmt(pkg, stmt); }
+            }
+            Expression::Paren(inner) => { self.scan_free_vars_expr(pkg, &inner.expr); }
+            Expression::Index(idx) => {
+                self.scan_free_vars_expr(pkg, &idx.left);
+                self.scan_free_vars_expr(pkg, &idx.index);
+            }
+            Expression::Slice(sl) => {
+                self.scan_free_vars_expr(pkg, &sl.left);
+                for opt in &sl.index {
+                    if let Some(e) = opt { self.scan_free_vars_expr(pkg, e); }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_free_vars_stmt(&mut self, pkg: &str, stmt: &Statement) {
+        match stmt {
+            Statement::Expr(e) => { self.scan_free_vars_expr(pkg, &e.expr); }
+            Statement::Return(r) => {
+                for e in &r.ret { self.scan_free_vars_expr(pkg, e); }
+            }
+            Statement::Assign(a) => {
+                for e in &a.left { self.scan_free_vars_expr(pkg, e); }
+                for e in &a.right { self.scan_free_vars_expr(pkg, e); }
+            }
+            Statement::If(i) => {
+                if let Some(init) = &i.init { self.scan_free_vars_stmt(pkg, init); }
+                self.scan_free_vars_expr(pkg, &i.cond);
+                for s in &i.body.list { self.scan_free_vars_stmt(pkg, s); }
+                if let Some(els) = &i.else_ { self.scan_free_vars_stmt(pkg, els); }
+            }
+            Statement::For(f) => {
+                if let Some(init) = &f.init { self.scan_free_vars_stmt(pkg, init); }
+                if let Some(cond) = &f.cond { self.scan_free_vars_stmt(pkg, cond); }
+                if let Some(post) = &f.post { self.scan_free_vars_stmt(pkg, post); }
+                for s in &f.body.list { self.scan_free_vars_stmt(pkg, s); }
+            }
+            Statement::Block(b) => {
+                for s in &b.list { self.scan_free_vars_stmt(pkg, s); }
+            }
+            Statement::IncDec(id) => { self.scan_free_vars_expr(pkg, &id.expr); }
+            Statement::Range(r) => {
+                self.scan_free_vars_expr(pkg, &r.expr);
+                for s in &r.body.list { self.scan_free_vars_stmt(pkg, s); }
+            }
+            Statement::Declaration(decl_stmt) => {
+                if let DeclStmt::Variable(vs) = decl_stmt {
+                    for spec in &vs.specs {
+                        for v in &spec.values { self.scan_free_vars_expr(pkg, v); }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn compile_func_lit(
+        &mut self,
+        pkg: &str,
+        fl: &FuncLit,
+    ) -> Result<DefineType, Error> {
+        let closure_name = format!("__closure_{}", self.next_closure_id);
+        self.next_closure_id += 1;
+
+        // Phase 1: Open a temporary closure context to discover captures.
+        self.symbols.new_context(true);
+        for p in &fl.typ.params.list {
+            let t = self
+                .expression_to_define_type(pkg, &p.typ)
+                .ok_or_else(|| Error::TypeError("closure: failed to resolve param type".into()))?;
+            for name in &p.name {
+                self.symbols.define(
+                    pkg,
+                    &name.name,
+                    DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
+                    false,
+                );
+            }
+        }
+        for stmt in &fl.body.list {
+            self.scan_free_vars_stmt(pkg, stmt);
+        }
+        let scan_ctx = self.symbols.leave_context();
+        let captured_names: Vec<String> = scan_ctx.captured.clone();
+
+        let mut captures: Vec<(String, DefineType)> = Vec::with_capacity(captured_names.len());
+        for cap_name in &captured_names {
+            let resolved = self.symbols.resolve(pkg, cap_name).ok_or_else(|| {
+                Error::ReferenceError(format!("closure: captured var '{}' not found", cap_name))
+            })?;
+            captures.push((cap_name.clone(), resolved.get_type().0));
+        }
+
+        // Phase 2: Build WASM signature with declared params + capture params.
+        let saved_locals = self.locals.clone();
+        let saved_next_local = self.next_wasm_local;
+        self.locals.clear();
+        self.next_wasm_local = 0;
+
+        self.symbols.new_context(true);
+
+        let mut wasm_params: Vec<ValType> = Vec::new();
+        let mut decl_arg_types = Vec::new();
+
+        for p in &fl.typ.params.list {
+            let t = self
+                .expression_to_define_type(pkg, &p.typ)
+                .ok_or_else(|| Error::TypeError("closure: failed to resolve param type".into()))?;
+            for name in &p.name {
+                decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
+                let sym = self.symbols.define(
+                    pkg,
+                    &name.name,
+                    DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
+                    false,
+                );
+                let local_idx = self.next_wasm_local;
+                if Self::is_string_type(&t) {
+                    self.next_wasm_local += 2;
+                    self.locals.insert(sym.index, local_idx);
+                    wasm_params.push(ValType::I32);
+                    wasm_params.push(ValType::I32);
+                    } else {
+                    self.next_wasm_local += 1;
+                    self.locals.insert(sym.index, local_idx);
+                    wasm_params.push(Compiler::define_type_to_wasm(&t));
+                }
+            }
+        }
+
+        let capture_base = self.next_wasm_local;
+        for (i, (cap_name, cap_dt)) in captures.iter().enumerate() {
+            let sym = self.symbols.define(
                 pkg,
-                name,
-                DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null)),
+                cap_name,
+                DefineType::Qualified(Qualifier::Var, Box::new(cap_dt.clone())),
                 false,
             );
-            self.compile_expression(pkg, &rng.expr)?;
-            self.emit_opcode(OpCode::IntoIter);
-            self.emit_opcode(OpCode::SetLocal);
-            self.emit_u16(iter_sym.index);
-        }
-
-        let pos_before_condition = self.instructions.len();
-
-        let key = rng.key.clone().unwrap_or(Expression::Ident(Ident {
-            pos: 0,
-            name: "_".to_string(),
-        }));
-        let value = rng.value.clone().unwrap_or(Expression::Ident(Ident {
-            pos: 0,
-            name: "_".to_string(),
-        }));
-        match (&key, &value) {
-            (Expression::Ident(key_id), Expression::Ident(value_id)) => {
-                let key_symbol = self.symbols.define(
-                    pkg,
-                    key_id.name.as_str(),
-                    DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null)),
-                    false,
-                );
-                let value_symbol = self.symbols.define(
-                    pkg,
-                    value_id.name.as_str(),
-                    DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Null)),
-                    false,
-                );
-
-                self.emit_opcode(OpCode::GetLocal);
-                self.emit_u16(iter_sym.index);
-
-                self.emit_opcode(OpCode::Range);
-                self.emit_u16(key_symbol.index);
-                self.emit_u16(value_symbol.index);
+            let local_idx = capture_base + i as u32;
+            if Self::is_string_type(cap_dt) {
+                self.next_wasm_local += 2;
+                self.locals.insert(sym.index, local_idx);
+                wasm_params.push(ValType::I32);
+                wasm_params.push(ValType::I32);
+                        } else {
+                self.next_wasm_local += 1;
+                self.locals.insert(sym.index, local_idx);
+                wasm_params.push(Compiler::define_type_to_wasm(cap_dt));
             }
-            _ => panic!("invalid"),
         }
 
-        self.compile_statement(
-            pkg,
-            &Statement::Expr(ExprStmt {
-                expr: Expression::Operation(Operation {
-                    pos: 0,
-                    op: Operator::NotEqual,
-                    x: Box::new(Expression::Operation(Operation {
-                        pos: 0,
-                        op: Operator::And,
-                        x: Box::new(key),
-                        y: None,
-                    })),
-                    y: Some(Box::new(Expression::Ident(Ident {
-                        pos: 0,
-                        name: "nil".to_string(),
-                    }))),
-                }),
-            }),
-        )?;
-
-        if self.last_instruction_is(OpCode::Pop) {
-            self.remove_last_instruction();
+        let mut decl_r_types = Vec::new();
+        for el in &fl.typ.result.list {
+            let t = self
+                .expression_to_define_type(pkg, &el.typ)
+                .ok_or_else(|| Error::TypeError("closure: failed to resolve return type".into()))?;
+            decl_r_types.push(t);
         }
 
-        let pos_jump_if_false = self.instructions.len();
-        self.emit_opcode(OpCode::JumpIfFalse);
-        self.emit_u16(JUMP_PLACEHOLDER);
+        let r_t = if decl_r_types.is_empty() {
+            DefineType::Null
+        } else if decl_r_types.len() == 1 {
+            decl_r_types[0].clone()
+                } else {
+            DefineType::Tuple(decl_r_types.clone())
+        };
 
-        self.compile_block_statement(pkg, &rng.body.list)?;
+        let wasm_results: Vec<ValType> = decl_r_types
+            .iter()
+            .map(|dt| Compiler::define_type_to_wasm(dt))
+            .collect();
 
-        if self.last_instruction_is(OpCode::Pop) {
-            self.remove_last_instruction();
+        let type_idx = self.wasm.add_func_type(wasm_params.clone(), wasm_results);
+        let func_idx = self.wasm.define_function(type_idx);
+        self.wasm_func_map.insert(closure_name.clone(), func_idx);
+        self.closure_captures.insert(func_idx, captures.clone());
+
+        let num_params = wasm_params.len() as u32;
+
+        self.func_contexts.push(FuncContext::new(func_idx));
+        self.func_contexts.last_mut().unwrap().expected_ret = if r_t == DefineType::Null {
+            None
         } else {
-            self.emit_opcode(OpCode::Null);
+            Some(r_t.clone())
+        };
+
+        let body_locals_count = 40_u32;
+        self.wasm.begin_func_body(func_idx, vec![(body_locals_count, ValType::I32)]);
+        self.next_wasm_local = num_params;
+
+        // Save $sp for closures too.
+        let sp_idx = self.wasm.sp_global_idx().expect("$sp global not registered");
+        let closure_saved_sp = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        let outer_saved_sp = self.saved_sp_local;
+        self.saved_sp_local = Some(closure_saved_sp);
+        self.wasm.active().global_get(sp_idx);
+        self.wasm.active().local_set(closure_saved_sp);
+
+        self.compile_block_statement(pkg, &fl.body.list)?;
+
+        self.func_contexts.pop();
+
+        // Restore $sp before closure end.
+        self.wasm.active().local_get(closure_saved_sp);
+        self.wasm.active().global_set(sp_idx);
+
+        if !decl_r_types.is_empty() {
+            self.wasm.active().emit(&Instruction::Unreachable);
         }
 
-        self.emit_opcode(OpCode::Jump);
-        self.emit_u16(pos_before_condition.try_into().unwrap());
+        self.wasm.end_func_body();
+        self.symbols.leave_context();
 
-        self.change_jump_operand_at(
-            pos_jump_if_false,
-            self.instructions.len().try_into().unwrap(),
+        self.locals = saved_locals;
+        self.next_wasm_local = saved_next_local;
+        self.saved_sp_local = outer_saved_sp;
+
+        let func_dt = DefineType::Func {
+            name: closure_name,
+            recv: None,
+            args: decl_arg_types,
+            rt: Box::new(r_t),
+        };
+
+        Ok(func_dt)
+    }
+
+    fn compile_call_expression(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        if let Expression::Ident(name) = call.func.as_ref() {
+            match name.name.as_str() {
+                "println" => return self.compile_println(pkg, call),
+                "print" => return self.compile_print(pkg, call),
+                "len" => return self.compile_len(pkg, call),
+                "make" => return self.compile_make(pkg, call),
+                "append" => return self.compile_append(pkg, call),
+                _ => {}
+            }
+            if builtin::resolve(&name.name).is_some() {
+                return Err(self.unsupported(&format!("builtin function: {}", name.name)));
+            }
+
+            if let Some(resolved) = self.symbols.resolve(pkg, &name.name) {
+                let sym = resolved.get_symbol();
+                if let Some(&closure_idx) = self.closure_var_func.get(&sym.index) {
+                    let (_, _, _func_arg_types, rt) = resolved.get_type().0.unwrap_qualifiers().as_func();
+                    let rts = rt.type_to_val_t();
+
+                    for a in &call.args {
+                        self.compile_expression(pkg, a)?;
+                    }
+
+                    if let Some(captures) = self.closure_captures.get(&closure_idx).cloned() {
+                        for (cap_name, cap_dt) in &captures {
+                            let cap_resolved = self.symbols.resolve(pkg, cap_name)
+                                .ok_or_else(|| Error::ReferenceError(format!(
+                                    "captured var '{}' not found at call site", cap_name
+                                )))?;
+                            let cap_sym = cap_resolved.get_symbol();
+                            if let Some(&local_idx) = self.locals.get(&cap_sym.index) {
+                                if Self::is_string_type(cap_dt) {
+                                    self.wasm.active().local_get(local_idx);
+                                    self.wasm.active().local_get(local_idx + 1);
+                        } else {
+                                    self.wasm.active().local_get(local_idx);
+                                }
+                            }
+                        }
+                    }
+
+                    self.wasm.active().call(closure_idx);
+                    return Ok(rts);
+                }
+            }
+        }
+
+        let (ct, _cpkg) = CallType::from_call(pkg, call, self)?;
+
+        match ct {
+            CallType::Func {
+                name: f_name,
+                func_dt,
+                ..
+            } => {
+                let (_, _, arg_types, rts) = func_dt.as_func();
+                let rts = rts.type_to_val_t();
+
+                for (a, _t) in call.args.iter().zip(arg_types.iter()) {
+                    self.compile_expression(pkg, a)?;
+                }
+
+                let wasm_idx = self.wasm_func_map.get(&f_name).copied().ok_or_else(|| {
+                    Error::ReferenceError(format!("WASM function not found: {}", f_name))
+                })?;
+
+                self.wasm.active().call(wasm_idx);
+
+                Ok(rts)
+            }
+            CallType::Method {
+                mangled_name,
+                method_dt,
+                ..
+            } => {
+                let (_, _, arg_types, rt) = method_dt.as_func();
+                let rts = rt.type_to_val_t();
+
+                for (a, _t) in call.args.iter().zip(arg_types.iter()) {
+                    self.compile_expression(pkg, a)?;
+                }
+
+                let wasm_idx = self.wasm_func_map.get(&mangled_name).copied().ok_or_else(|| {
+                    Error::ReferenceError(format!("WASM function not found: {}", mangled_name))
+                })?;
+
+                self.wasm.active().call(wasm_idx);
+                Ok(rts)
+            }
+            _ => Err(self.unsupported("dynamic dispatch calls")),
+        }
+    }
+
+    fn compile_println(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        if call.args.is_empty() {
+            let idx = self.wasm.println_string_func_idx()
+                .ok_or_else(|| Error::InternalError("println_string not imported".into()))?;
+            self.wasm.active().i32_const(0);
+            self.wasm.active().i32_const(0);
+            self.wasm.active().call(idx);
+            return Ok(DefineType::Null);
+        }
+        if call.args.len() != 1 {
+            return Err(self.unsupported("println with multiple arguments"));
+        }
+        let arg_type = self.compile_expression(pkg, &call.args[0])?;
+        if !Self::is_string_type(&arg_type) {
+            return Err(self.unsupported("println with non-string argument"));
+        }
+        let idx = self.wasm.println_string_func_idx()
+            .ok_or_else(|| Error::InternalError("println_string not imported".into()))?;
+        self.wasm.active().call(idx);
+        Ok(DefineType::Null)
+    }
+
+    fn compile_print(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        if call.args.is_empty() {
+            return Ok(DefineType::Null);
+        }
+        if call.args.len() != 1 {
+            return Err(self.unsupported("print with multiple arguments"));
+        }
+        let arg_type = self.compile_expression(pkg, &call.args[0])?;
+        if !Self::is_string_type(&arg_type) {
+            return Err(self.unsupported("print with non-string argument"));
+        }
+        let idx = self.wasm.print_string_func_idx()
+            .ok_or_else(|| Error::InternalError("print_string not imported".into()))?;
+        self.wasm.active().call(idx);
+        Ok(DefineType::Null)
+    }
+
+    fn compile_len(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        if call.args.len() != 1 {
+            return Err(Error::TypeError("len() takes exactly 1 argument".into()));
+        }
+        let arg_type = self.compile_expression(pkg, &call.args[0])?;
+        if Self::is_string_type(&arg_type) {
+            // Stack has [ptr, len] (len on top). Save len, drop ptr, push len.
+            let tmp = self.next_wasm_local;
+            self.wasm.active().local_set(tmp);
+            self.wasm.active().drop();
+            self.wasm.active().local_get(tmp);
+            Ok(DefineType::Int)
+        } else if Self::is_slice_type(&arg_type) {
+            // Stack has hdr_ptr. Load len from hdr+4.
+            self.wasm.active().i32_load(SLICE_LEN_OFFSET as u64);
+            Ok(DefineType::Int)
+        } else if let Some((_elem_dt, arr_len)) = Self::unwrap_array_elem(&arg_type) {
+            // Array pointer on stack -- drop it, push compile-time constant.
+            self.wasm.active().drop();
+            self.wasm.active().i32_const(arr_len as i32);
+            Ok(DefineType::Int)
+                        } else {
+            Err(self.unsupported(&format!("len() with argument type {:?}", arg_type)))
+        }
+    }
+
+    fn compile_make(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        // make([]T, length) or make([]T, length, cap)
+        if call.args.len() < 2 || call.args.len() > 3 {
+            return Err(Error::TypeError("make() takes 2 or 3 arguments".into()));
+        }
+
+        let type_expr = &call.args[0];
+        let elem_dt = match type_expr {
+            Expression::TypeSlice(ts) => {
+                self.expression_to_define_type(pkg, &ts.typ)
+                    .ok_or_else(|| Error::TypeError("make: cannot resolve slice element type".into()))?
+            }
+            _ => return Err(self.unsupported("make() with non-slice type")),
+        };
+        let e_size = elem_byte_size(&elem_dt);
+
+        // Evaluate length
+        self.compile_expression(pkg, &call.args[1])?;
+        let len_local = self.next_wasm_local;
+        self.wasm.active().local_set(len_local);
+
+        let saved_next = self.next_wasm_local;
+        self.next_wasm_local = len_local + 1;
+
+        // Evaluate cap (default = length)
+        let cap_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        if call.args.len() == 3 {
+            self.compile_expression(pkg, &call.args[2])?;
+            self.wasm.active().local_set(cap_local);
+                        } else {
+            self.wasm.active().local_get(len_local);
+            self.wasm.active().local_set(cap_local);
+        }
+
+        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+            .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+
+        // Allocate data block: cap * e_size
+        self.wasm.active().local_get(cap_local);
+        self.wasm.active().i32_const(e_size as i32);
+        self.wasm.active().emit(&Instruction::I32Mul);
+        self.wasm.active().call(rt_alloc_idx);
+        let data_ptr_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        self.wasm.active().local_set(data_ptr_local);
+
+        // Zero-fill data block: memory.fill(data_ptr, 0, cap * e_size)
+        self.wasm.active().local_get(data_ptr_local);
+        self.wasm.active().i32_const(0);
+        self.wasm.active().local_get(cap_local);
+        self.wasm.active().i32_const(e_size as i32);
+        self.wasm.active().emit(&Instruction::I32Mul);
+        self.wasm.active().memory_fill();
+
+        // Allocate header
+        self.wasm.active().i32_const(SLICE_HEADER_SIZE as i32);
+        self.wasm.active().call(rt_alloc_idx);
+        let hdr_local = self.next_wasm_local;
+        self.wasm.active().local_set(hdr_local);
+
+        // Store data_ptr, len, cap
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(data_ptr_local);
+        self.wasm.active().i32_store(SLICE_DATA_PTR_OFFSET as u64);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(len_local);
+        self.wasm.active().i32_store(SLICE_LEN_OFFSET as u64);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(cap_local);
+        self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
+
+        self.next_wasm_local = saved_next;
+        self.wasm.active().local_get(hdr_local);
+
+        Ok(DefineType::Slice(Box::new(elem_dt)))
+    }
+
+    fn compile_append(
+        &mut self,
+        pkg: &str,
+        call: &Call,
+    ) -> Result<DefineType, Error> {
+        if call.args.len() < 2 {
+            return Err(Error::TypeError("append() requires at least 2 arguments".into()));
+        }
+
+        // Compile slice argument
+        let slice_dt = self.compile_expression(pkg, &call.args[0])?;
+        let elem_dt = Self::unwrap_slice_elem(&slice_dt)
+            .ok_or_else(|| Error::TypeError(format!("append on non-slice type {:?}", slice_dt)))?;
+        let e_size = elem_byte_size(&elem_dt);
+        let n_new = (call.args.len() - 1) as u32;
+
+        let hdr_local = self.next_wasm_local;
+        self.wasm.active().local_set(hdr_local);
+
+        let saved_next = self.next_wasm_local;
+        self.next_wasm_local = hdr_local + 1;
+
+        // Load header fields
+        let data_ptr_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        let len_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        let cap_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().i32_load(SLICE_DATA_PTR_OFFSET as u64);
+        self.wasm.active().local_set(data_ptr_local);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().i32_load(SLICE_LEN_OFFSET as u64);
+        self.wasm.active().local_set(len_local);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().i32_load(SLICE_CAP_OFFSET as u64);
+        self.wasm.active().local_set(cap_local);
+
+        // Check if len + n_new > cap. If so, grow.
+        // new_needed = len + n_new
+        let needed_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        self.wasm.active().local_get(len_local);
+        self.wasm.active().i32_const(n_new as i32);
+        self.wasm.active().emit(&Instruction::I32Add);
+        self.wasm.active().local_set(needed_local);
+
+        // if needed > cap -> grow
+        self.wasm.active().local_get(needed_local);
+        self.wasm.active().local_get(cap_local);
+        self.wasm.active().emit(&Instruction::I32GtU);
+        self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+
+        // new_cap = max(cap * 2, needed)
+        let new_cap_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        self.wasm.active().local_get(cap_local);
+        self.wasm.active().i32_const(2);
+        self.wasm.active().emit(&Instruction::I32Mul);
+        self.wasm.active().local_set(new_cap_local);
+
+        // if new_cap < needed { new_cap = needed }
+        self.wasm.active().local_get(new_cap_local);
+        self.wasm.active().local_get(needed_local);
+        self.wasm.active().emit(&Instruction::I32LtU);
+        self.wasm.active().emit(&Instruction::If(BlockType::Empty));
+        self.wasm.active().local_get(needed_local);
+        self.wasm.active().local_set(new_cap_local);
+        self.wasm.active().emit(&Instruction::End);
+
+        // Allocate new data block
+        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+            .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+        self.wasm.active().local_get(new_cap_local);
+        self.wasm.active().i32_const(e_size as i32);
+        self.wasm.active().emit(&Instruction::I32Mul);
+        self.wasm.active().call(rt_alloc_idx);
+        let new_data_local = self.next_wasm_local;
+        self.next_wasm_local += 1;
+        self.wasm.active().local_set(new_data_local);
+
+        // memory.copy(new_data, old_data, len * e_size)
+        self.wasm.active().local_get(new_data_local);
+        self.wasm.active().local_get(data_ptr_local);
+        self.wasm.active().local_get(len_local);
+        self.wasm.active().i32_const(e_size as i32);
+        self.wasm.active().emit(&Instruction::I32Mul);
+        self.wasm.active().memory_copy();
+
+        // Update header data_ptr and cap
+        self.wasm.active().local_get(new_data_local);
+        self.wasm.active().local_set(data_ptr_local);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(new_data_local);
+        self.wasm.active().i32_store(SLICE_DATA_PTR_OFFSET as u64);
+
+        self.wasm.active().local_get(new_cap_local);
+        self.wasm.active().local_set(cap_local);
+
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(new_cap_local);
+        self.wasm.active().i32_store(SLICE_CAP_OFFSET as u64);
+
+        self.wasm.active().emit(&Instruction::End); // end if grow
+
+        // Store new elements at data_ptr + (len + i) * e_size
+        for (i, arg) in call.args.iter().skip(1).enumerate() {
+            // addr = data_ptr + (len + i) * e_size
+            self.wasm.active().local_get(data_ptr_local);
+            self.wasm.active().local_get(len_local);
+            self.wasm.active().i32_const(i as i32);
+            self.wasm.active().emit(&Instruction::I32Add);
+            self.wasm.active().i32_const(e_size as i32);
+            self.wasm.active().emit(&Instruction::I32Mul);
+            self.wasm.active().emit(&Instruction::I32Add);
+            let addr_local = self.next_wasm_local;
+            self.wasm.active().local_set(addr_local);
+            self.next_wasm_local = addr_local + 1;
+
+            self.compile_expression(pkg, arg)?;
+            self.emit_elem_store(addr_local, &elem_dt);
+
+            self.next_wasm_local = addr_local + 1;
+        }
+
+        // Update len in header: len + n_new
+        self.wasm.active().local_get(hdr_local);
+        self.wasm.active().local_get(needed_local);
+        self.wasm.active().i32_store(SLICE_LEN_OFFSET as u64);
+
+        self.next_wasm_local = saved_next;
+        self.wasm.active().local_get(hdr_local);
+
+        Ok(slice_dt)
+    }
+
+    /// Emit the `__str_concat(ptr1, len1, ptr2, len2) -> (ptr, len)` helper once.
+    /// Returns its function index.
+    fn ensure_str_concat_func(&mut self) -> Result<u32, Error> {
+        if let Some(idx) = self.str_concat_func_idx {
+            return Ok(idx);
+        }
+
+        let rt_alloc_idx = self.wasm.rt_alloc_func_idx()
+            .ok_or_else(|| Error::InternalError("rt_alloc not registered".into()))?;
+
+        // Type: (i32, i32, i32, i32) -> (i32, i32)
+        let type_idx = self.wasm.add_func_type(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32, ValType::I32],
         );
+        let func_idx = self.wasm.define_function(type_idx);
+        self.str_concat_func_idx = Some(func_idx);
 
-        let ctx = self.contexts.pop().unwrap().to_for();
-        for ip in ctx.break_instructions {
-            self.change_jump_operand_at(ip, self.instructions.len().try_into().unwrap());
-        }
-        Ok(Some(false))
+        // Params: 0=ptr1, 1=len1, 2=ptr2, 3=len2
+        // Locals: 4=new_ptr, 5=total_len
+        self.wasm.begin_func_body(func_idx, vec![(2, ValType::I32)]);
+
+        // total_len = len1 + len2
+        self.wasm.active().local_get(1);
+        self.wasm.active().local_get(3);
+        self.wasm.active().emit(&Instruction::I32Add);
+        self.wasm.active().local_set(5);
+
+        // new_ptr = rt_alloc(total_len)
+        self.wasm.active().local_get(5);
+        self.wasm.active().call(rt_alloc_idx);
+        self.wasm.active().local_set(4);
+
+        // memory.copy(new_ptr, ptr1, len1) -- copy first string
+        self.wasm.active().local_get(4);       // dst
+        self.wasm.active().local_get(0);       // src
+        self.wasm.active().local_get(1);       // len
+        self.wasm.active().memory_copy();
+
+        // memory.copy(new_ptr + len1, ptr2, len2) -- copy second string
+        self.wasm.active().local_get(4);       // dst base
+        self.wasm.active().local_get(1);       // + len1
+        self.wasm.active().emit(&Instruction::I32Add);
+        self.wasm.active().local_get(2);       // src
+        self.wasm.active().local_get(3);       // len
+        self.wasm.active().memory_copy();
+
+        // Return (new_ptr, total_len)
+        self.wasm.active().local_get(4);
+        self.wasm.active().local_get(5);
+
+        self.wasm.end_func_body();
+
+        Ok(func_idx)
     }
 
-    fn compile_label_statement(
+    fn compile_operation_expression(
         &mut self,
         pkg: &str,
-        lstmt: &LabeledStmt,
-    ) -> Result<Option<bool>, Error> {
-        if self
-            .symbols
-            .resolve(pkg, lstmt.name.name.as_str())
-            .is_some()
-        {
-            panic!("label already defined: {:#?}", lstmt.name.name);
-        }
-
-        let pos = match lstmt.stmt.as_ref() {
-            Statement::For(f) => f.pos,
-            Statement::Switch(sw) => sw.pos,
-            _ => panic!("expected for or switch statement"),
-        };
-
-        self.label_contexts
-            .insert((pos, 0), lstmt.name.name.clone());
-        let r = self.compile_statement(pkg, lstmt.stmt.as_ref());
-        self.label_contexts.remove(&(pos, 0));
-
-        r
-    }
-
-    fn compile_switch_statement(
-        &mut self,
-        pkg: &str,
-        switch: &SwitchStmt,
-    ) -> Result<Option<bool>, Error> {
-        let label = self.label_contexts.get(&(switch.pos, 0)).cloned();
-        self.contexts.push(Context::Switch(SwitchContext::new(
-            self.instructions.len(),
-            label,
-        )));
-
-        if let Some(init) = &switch.init {
-            self.compile_statement(pkg, &init)?;
-        }
-        let internal_tag = Ident {
-            pos: 0,
-            name: "__tag__".to_string(),
-        };
-        let tag = switch.tag.clone().unwrap_or(Expression::Ident(Ident {
-            pos: 0,
-            name: "nil".to_string(),
-        }));
-
-        self.compile_statement(
-            pkg,
-            &Statement::Assign(AssignStmt {
-                pos: 0,
-                op: Operator::Define,
-                left: vec![Expression::Ident(internal_tag.clone())],
-                right: vec![tag.clone()],
-            }),
-        )?;
-
-        let mut terminates = true;
-        let mut has_default = false;
-
-        for clause in &switch.block.body {
-            match clause.tok {
-                Keyword::Default => {
-                    if has_default {
-                        panic!("only one default allowed within a switch");
-                    }
-                    has_default = true;
-                    let cond = Expression::BasicLit(BasicLit {
-                        pos: 0,
-                        kind: LitKind::Ident,
-                        value: "true".to_string(),
-                    });
-
-                    self.compile_expression(pkg, &cond)?;
-
-                    if self.last_instruction_is(OpCode::Pop) {
-                        self.remove_last_instruction();
-                    }
-
-                    let pos_jump_if_false = self.instructions.len();
-                    self.emit_opcode(OpCode::JumpIfFalse);
-                    self.emit_u16(JUMP_PLACEHOLDER);
-
-                    terminates = terminates
-                        && self
-                            .compile_block_statement(pkg, &clause.body)?
-                            .unwrap_or_default();
-
-                    if self.last_instruction_is(OpCode::Pop) {
-                        self.remove_last_instruction();
-                    } else {
-                        self.emit_opcode(OpCode::Null);
-                    }
-
-                    let pos_jump = self.instructions.len();
-                    self.emit_opcode(OpCode::Jump);
-                    self.emit_u16(JUMP_PLACEHOLDER);
-
-                    self.change_jump_operand_at(
-                        pos_jump_if_false,
-                        self.instructions.len().try_into().unwrap(),
-                    );
-
-                    self.change_jump_operand_at(
-                        pos_jump,
-                        self.instructions.len().try_into().unwrap(),
-                    );
-                }
-                Keyword::Case => {
-                    for expr in &clause.list {
-                        let cond = match expr {
-                            Expression::Ident(id) => {
-                                assert!(switch.tag.is_some());
-                                Expression::Operation(Operation {
-                                    pos: 0,
-                                    op: Operator::Equal,
-                                    x: Box::new(Expression::Ident(internal_tag.clone())),
-                                    y: Some(Box::new(Expression::Ident(id.clone()))),
-                                })
-                            }
-                            Expression::BasicLit(bl) => {
-                                assert!(switch.tag.is_some());
-                                Expression::Operation(Operation {
-                                    pos: 0,
-                                    op: Operator::Equal,
-                                    x: Box::new(Expression::Ident(internal_tag.clone())),
-                                    y: Some(Box::new(Expression::BasicLit(bl.clone()))),
-                                })
-                            }
-                            _ => {
-                                assert!(switch.tag.is_none());
-                                expr.clone()
-                            }
-                        };
-                        self.compile_expression(pkg, &cond)?;
-
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
-                        }
-
-                        let pos_jump_if_false = self.instructions.len();
-                        self.emit_opcode(OpCode::JumpIfFalse);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-
-                        let mut has_fallthrough = false;
-                        let bl = clause.body.len();
-                        for (i, stmt) in clause.body.iter().enumerate() {
-                            let is_fallthrough = if let Statement::Branch(br) = stmt {
-                                br.key == Keyword::FallThrough
-                            } else {
-                                false
-                            };
-                            if is_fallthrough {
-                                if i == bl - 1 {
-                                    has_fallthrough = true;
-                                } else {
-                                    panic!("misplaced fallthrough");
-                                }
-                            }
-                        }
-
-                        let mut clause_body = clause.body.clone();
-
-                        if !has_fallthrough {
-                            clause_body.push(Statement::Branch(BranchStmt {
-                                pos: 0,
-                                key: Keyword::Break,
-                                ident: None,
-                            }));
-                        }
-
-                        terminates = terminates
-                            && self
-                                .compile_block_statement(pkg, &clause_body)?
-                                .unwrap_or_default();
-
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
-                        } else {
-                            self.emit_opcode(OpCode::Null);
-                        }
-
-                        let pos_jump = self.instructions.len();
-                        self.emit_opcode(OpCode::Jump);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-
-                        self.change_jump_operand_at(
-                            pos_jump_if_false,
-                            self.instructions.len().try_into().unwrap(),
-                        );
-
-                        self.change_jump_operand_at(
-                            pos_jump,
-                            self.instructions.len().try_into().unwrap(),
-                        );
-                    }
-                }
-                _ => unimplemented!(),
-            }
-        }
-
-        let ctx = self.contexts.pop().unwrap().to_switch();
-
-        for ip in &ctx.break_instructions {
-            self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
-        }
-
-        Ok(Some(terminates))
-    }
-
-    fn compile_type_switch_statement(
-        &mut self,
-        pkg: &str,
-        switch: &TypeSwitchStmt,
-    ) -> Result<Option<bool>, Error> {
-        let label = self.label_contexts.get(&(switch.pos, 0)).cloned();
-        self.contexts.push(Context::Switch(SwitchContext::new(
-            self.instructions.len(),
-            label,
-        )));
-
-        if let Some(init) = &switch.init {
-            self.compile_statement(pkg, &init)?;
-        }
-
-        let internal_tag = Ident {
-            pos: 0,
-            name: "__tag__".to_string(),
-        };
-
-        let (mut left_ass, mut left_ass_type) = (None, None);
-
-        match switch.tag.clone().map(|a| *a) {
-            Some(Statement::Expr(expr)) => {
-                self.compile_statement(
-                    pkg,
-                    &Statement::Assign(AssignStmt {
-                        pos: 0,
-                        op: Operator::Define,
-                        left: vec![Expression::Ident(internal_tag.clone())],
-                        right: vec![expr.expr],
-                    }),
-                )?;
-            }
-            Some(Statement::Assign(ass)) => {
-                let left = ass.left.first().unwrap().as_ident().unwrap().clone();
-                left_ass = Some(left.clone());
-
-                self.compile_statement(pkg, &Statement::Assign(ass))?;
-                self.compile_statement(
-                    pkg,
-                    &Statement::Assign(AssignStmt {
-                        pos: 0,
-                        op: Operator::Define,
-                        left: vec![Expression::Ident(internal_tag.clone())],
-                        right: vec![Expression::Ident(left.clone())],
-                    }),
-                )?;
-                left_ass_type =
-                    Some(self.symbols.resolve(pkg, &left.name).unwrap().get_type());
-            }
-            Some(_) => unreachable!(),
-            None => unreachable!(),
-        }
-
-        let mut terminates = true;
-        let mut has_default = false;
-
-        for clause in &switch.block.body {
-            match clause.tok {
-                Keyword::Default => {
-                    if has_default {
-                        panic!("only one default allowed within a switch");
-                    }
-
-                    if let (Some(lat), Some(la)) = (&left_ass_type, &left_ass) {
-                        let updated = self.symbols.update_dt(pkg, &la.name, lat.0.clone());
-                        assert!(updated);
-                    }
-
-                    has_default = true;
-                    let cond = Expression::BasicLit(BasicLit {
-                        pos: 0,
-                        kind: LitKind::Ident,
-                        value: "true".to_string(),
-                    });
-
-                    self.compile_expression(pkg, &cond)?;
-
-                    if self.last_instruction_is(OpCode::Pop) {
-                        self.remove_last_instruction();
-                    }
-
-                    let pos_jump_if_false = self.instructions.len();
-                    self.emit_opcode(OpCode::JumpIfFalse);
-                    self.emit_u16(JUMP_PLACEHOLDER);
-
-                    terminates = terminates
-                        && self
-                            .compile_block_statement(pkg, &clause.body)?
-                            .unwrap_or_default();
-
-                    if self.last_instruction_is(OpCode::Pop) {
-                        self.remove_last_instruction();
-                    } else {
-                        self.emit_opcode(OpCode::Null);
-                    }
-
-                    let pos_jump = self.instructions.len();
-                    self.emit_opcode(OpCode::Jump);
-                    self.emit_u16(JUMP_PLACEHOLDER);
-
-                    self.change_jump_operand_at(
-                        pos_jump_if_false,
-                        self.instructions.len().try_into().unwrap(),
-                    );
-
-                    self.change_jump_operand_at(
-                        pos_jump,
-                        self.instructions.len().try_into().unwrap(),
-                    );
-                }
-                Keyword::Case => {
-                    for expr in &clause.list {
-                        match expr {
-                            Expression::Ident(id) => {
-                                if clause.list.len() == 1 {
-                                    if let Some(la) = &left_ass {
-                                        let r = self
-                                            .symbols
-                                            .resolve(pkg, &id.name)
-                                            .unwrap()
-                                            .get_type()
-                                            .0;
-
-                                        let updated = self.symbols.update_dt(
-                                            pkg,
-                                            &la.name,
-                                            DefineType::Qualified(Qualifier::Var, Box::new(r)),
-                                        );
-                                        assert!(updated);
-                                    }
-                                }
-
-                                assert!(switch.tag.is_some());
-                                self.compile_expression(
-                                    pkg,
-                                    &Expression::Ident(internal_tag.clone()),
-                                )?;
-                                self.compile_expression(
-                                    pkg,
-                                    &Expression::Ident(id.clone()),
-                                )?;
-                                self.emit_opcode(OpCode::TypeCmp);
-                            }
-                            Expression::TypePointer(pt) => {
-                                let id = pt.typ.as_ident().unwrap();
-
-                                if clause.list.len() == 1 {
-                                    if let Some(la) = &left_ass {
-                                        let r = self
-                                            .symbols
-                                            .resolve(pkg, &id.name)
-                                            .unwrap()
-                                            .get_type()
-                                            .0;
-
-                                        let updated = self.symbols.update_dt(
-                                            pkg,
-                                            &la.name,
-                                            DefineType::Qualified(Qualifier::Var, Box::new(r)),
-                                        );
-
-                                        assert!(updated);
-                                    }
-                                }
-
-                                self.compile_expression(
-                                    pkg,
-                                    &Expression::Ident(internal_tag.clone()),
-                                )?;
-                                self.compile_expression(
-                                    pkg,
-                                    &Expression::Ident(id.clone()),
-                                )?;
-                                self.emit_opcode(OpCode::Ref);
-                                self.emit_opcode(OpCode::TypeCmp);
-                            }
-                            _ => {
-                                assert!(switch.tag.is_none());
-                                self.compile_expression(pkg, &expr)?;
-                            }
-                        };
-
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
-                        }
-
-                        let pos_jump_if_false = self.instructions.len();
-                        self.emit_opcode(OpCode::JumpIfFalse);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-
-                        let mut has_fallthrough = false;
-                        let bl = clause.body.len();
-                        for (i, stmt) in clause.body.iter().enumerate() {
-                            let is_fallthrough = if let Statement::Branch(br) = stmt {
-                                br.key == Keyword::FallThrough
-                            } else {
-                                false
-                            };
-                            if is_fallthrough {
-                                if i == bl - 1 {
-                                    has_fallthrough = true;
-                                } else {
-                                    panic!("misplaced fallthrough");
-                                }
-                            }
-                        }
-
-                        let mut clause_body = clause.body.clone();
-
-                        if !has_fallthrough {
-                            clause_body.push(Statement::Branch(BranchStmt {
-                                pos: 0,
-                                key: Keyword::Break,
-                                ident: None,
-                            }));
-                        }
-
-                        terminates = terminates
-                            && self
-                                .compile_block_statement(pkg, &clause_body)?
-                                .unwrap_or_default();
-
-                        if self.last_instruction_is(OpCode::Pop) {
-                            self.remove_last_instruction();
-                        } else {
-                            self.emit_opcode(OpCode::Null);
-                        }
-
-                        let pos_jump = self.instructions.len();
-                        self.emit_opcode(OpCode::Jump);
-                        self.emit_u16(JUMP_PLACEHOLDER);
-
-                        self.change_jump_operand_at(
-                            pos_jump_if_false,
-                            self.instructions.len().try_into().unwrap(),
-                        );
-
-                        self.change_jump_operand_at(
-                            pos_jump,
-                            self.instructions.len().try_into().unwrap(),
-                        );
-                    }
-                }
-                _ => unimplemented!(),
-            }
-        }
-
-        let ctx = self.contexts.pop().unwrap().to_switch();
-
-        for ip in &ctx.break_instructions {
-            self.change_jump_operand_at(*ip, self.instructions.len().try_into().unwrap());
-        }
-
-        Ok(Some(terminates))
-    }
-
-    fn compile_send_statement(
-        &mut self,
-        pkg: &str,
-        send_stmt: &SendStmt,
-    ) -> Result<Option<bool>, Error> {
-        self.compile_expression(pkg, &send_stmt.chan)?;
-        self.compile_expression(pkg, &send_stmt.value)?;
-        self.emit_opcode(OpCode::ChanSend);
-        Ok(None)
-    }
-
-    fn compile_operator(&mut self, operator: &Operator) {
-        let opcode = match operator {
-            Operator::Add => OpCode::Add,
-            Operator::Sub => OpCode::Subtract,
-            Operator::Quo => OpCode::Divide,
-            Operator::Star => OpCode::Multiply,
-            Operator::Greater => OpCode::Gt,
-            Operator::GreaterEqual => OpCode::Gte,
-            Operator::Less => OpCode::Lt,
-            Operator::LessEqual => OpCode::Lte,
-            Operator::Equal => OpCode::Eq,
-            Operator::NotEqual => OpCode::Neq,
-            Operator::Rem => OpCode::Modulo,
-            Operator::Not => OpCode::Not,
-            // its not clear if `-` is negate or minus
-            // need to add more context where it is
-            //Operator::Negate => OpCode::Negate,
-            Operator::And => OpCode::And,
-            Operator::Or => OpCode::Or,
-            Operator::OrOr => OpCode::Or,
-            Operator::AndAnd => OpCode::And,
-            _ => panic!("unexpected operator of type {operator:?}"),
-        };
-        self.emit_opcode(opcode);
-    }
-
-    /// Coerces binary operand types (e.g., int-to-float promotion) and emits
-    /// the necessary cast opcodes. Returns the resulting type after coercion.
-    fn coerce_binary_operands(
-        &mut self,
-        rt_left: &DefineType,
-        rt_right: &DefineType,
+        op: &Operation,
     ) -> Result<DefineType, Error> {
-        match (
-            rt_left.is_const_coerceable_to(rt_right),
-            rt_right.is_const_coerceable_to(rt_left),
-        ) {
-            (true, false) => {
-                self.emit_float_cast(1, rt_right);
-                Ok(rt_right.clone())
-            }
-            (false, true) => {
-                self.emit_float_cast(0, rt_right);
-                Ok(rt_left.clone())
-            }
-            _ => {
-                if rt_left.unwrap_to_base_type() != rt_right.unwrap_to_base_type() {
-                    return Err(Error::TypeError(format!(
-                        "mismatched types: {:#?} and {:#?}",
-                        rt_left, rt_right
-                    )));
+        match op.op {
+            Operator::Add
+            | Operator::Sub
+            | Operator::Star
+            | Operator::Quo
+            | Operator::Rem => match &op.y {
+                Some(y) => {
+                    let rt_left = self.compile_expression(pkg, op.x.as_ref())?;
+                    let rt_right = self.compile_expression(pkg, y.as_ref())?;
+
+                    if op.op == Operator::Add
+                        && Self::is_string_type(&rt_left)
+                        && Self::is_string_type(&rt_right)
+                    {
+                        // Stack: [ptr1, len1, ptr2, len2]
+                        let concat_idx = self.ensure_str_concat_func()?;
+                        self.wasm.active().call(concat_idx);
+                        return Ok(DefineType::String);
+                    }
+
+                    let result_type = self.coerce_binary_operands_wasm(&rt_left, &rt_right)?;
+                    let vt = Self::define_type_to_wasm(&result_type);
+
+                    match (op.op, vt) {
+                        (Operator::Add, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32Add)
+                        }
+                        (Operator::Sub, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32Sub)
+                        }
+                        (Operator::Star, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32Mul)
+                        }
+                        (Operator::Quo, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32DivS)
+                        }
+                        (Operator::Rem, ValType::I32) => {
+                            self.wasm.active().emit(&Instruction::I32RemS)
+                        }
+                        (Operator::Add, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64Add)
+                        }
+                        (Operator::Sub, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64Sub)
+                        }
+                        (Operator::Star, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64Mul)
+                        }
+                        (Operator::Quo, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64DivS)
+                        }
+                        (Operator::Rem, ValType::I64) => {
+                            self.wasm.active().emit(&Instruction::I64RemS)
+                        }
+                        (Operator::Add, ValType::F64) => {
+                            self.wasm.active().emit(&Instruction::F64Add)
+                        }
+                        (Operator::Sub, ValType::F64) => {
+                            self.wasm.active().emit(&Instruction::F64Sub)
+                        }
+                        (Operator::Star, ValType::F64) => {
+                            self.wasm.active().emit(&Instruction::F64Mul)
+                        }
+                        (Operator::Quo, ValType::F64) => {
+                            self.wasm.active().emit(&Instruction::F64Div)
+                        }
+                        (Operator::Add, ValType::F32) => {
+                            self.wasm.active().emit(&Instruction::F32Add)
+                        }
+                        (Operator::Sub, ValType::F32) => {
+                            self.wasm.active().emit(&Instruction::F32Sub)
+                        }
+                        (Operator::Star, ValType::F32) => {
+                            self.wasm.active().emit(&Instruction::F32Mul)
+                        }
+                        (Operator::Quo, ValType::F32) => {
+                            self.wasm.active().emit(&Instruction::F32Div)
+                    }
+                    _ => {
+                            return Err(self
+                                .unsupported(&format!("arithmetic op {:?} for {:?}", op.op, vt)))
+                        }
+                    }
+
+                    if op.x.as_ref().is_int_lit() && op.y.as_ref().map_or(false, |y| y.is_int_lit())
+                    {
+                        Ok(DefineType::Qualified(
+                            Qualifier::Const,
+                            Box::new(result_type),
+                        ))
+            } else {
+                        Ok(result_type)
+                    }
                 }
-                Ok(rt_right.clone())
-            }
+                None => {
+                    if op.op == Operator::Sub {
+                        let left = self.compile_expression(pkg, op.x.as_ref())?;
+                        assert!(left.is_numeric());
+                        self.wasm.active().emit(&Instruction::I32Const(-1));
+                        self.wasm.active().emit(&Instruction::I32Mul);
+                        return Ok(left);
+                    }
+                    Err(self.unsupported(&format!("unary op {:?}", op.op)))
+                }
+            },
+            Operator::Less
+            | Operator::LessEqual
+            | Operator::Greater
+            | Operator::GreaterEqual
+            | Operator::Equal
+            | Operator::NotEqual => match &op.y {
+                Some(y) => {
+                    self.compile_expression(pkg, op.x.as_ref())?;
+                    self.compile_expression(pkg, y.as_ref())?;
+
+                    match op.op {
+                        Operator::Less => self.wasm.active().emit(&Instruction::I32LtS),
+                        Operator::LessEqual => {
+                            self.wasm.active().emit(&Instruction::I32LeS)
+                        }
+                        Operator::Greater => {
+                            self.wasm.active().emit(&Instruction::I32GtS)
+                        }
+                        Operator::GreaterEqual => {
+                            self.wasm.active().emit(&Instruction::I32GeS)
+                        }
+                        Operator::Equal => self.wasm.active().emit(&Instruction::I32Eq),
+                        Operator::NotEqual => {
+                            self.wasm.active().emit(&Instruction::I32Ne)
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    Ok(DefineType::Bool)
+                }
+                None => Err(self.unsupported("unary comparison")),
+            },
+            Operator::AndAnd => match &op.y {
+                Some(y) => {
+                    self.compile_expression(pkg, op.x.as_ref())?;
+                    self.compile_expression(pkg, y.as_ref())?;
+                    self.wasm.active().emit(&Instruction::I32And);
+                    Ok(DefineType::Bool)
+                }
+                None => Err(self.unsupported("unary &&")),
+            },
+            Operator::OrOr => match &op.y {
+                Some(y) => {
+                    self.compile_expression(pkg, op.x.as_ref())?;
+                    self.compile_expression(pkg, y.as_ref())?;
+                    self.wasm.active().emit(&Instruction::I32Or);
+                    Ok(DefineType::Bool)
+                }
+                None => Err(self.unsupported("unary ||")),
+            },
+            Operator::Not => match &op.y {
+                None => {
+                    self.compile_expression(pkg, &op.x)?;
+                    self.wasm.active().emit(&Instruction::I32Eqz);
+                    Ok(DefineType::Bool)
+                }
+                Some(_) => Err(self.unsupported("binary !")),
+            },
+            _ => Err(self.unsupported(&format!("operator: {:?}", op.op))),
         }
     }
 
-    fn emit_float_cast(&mut self, offset: u8, target: &DefineType) {
-        match target {
-            DefineType::Float32 => {
-                self.emit_opcode(OpCode::CastToFloat32);
-                self.emit_u8(offset);
-            }
-            DefineType::Float64 => {
-                self.emit_opcode(OpCode::CastToFloat64);
-                self.emit_u8(offset);
-            }
-            _ => unimplemented!("cannot cast to {:#?}", target),
-        }
-    }
-
-    fn compile_const_var_infix_expression(
-        &mut self,
-        pkg: &str,
-        varname: &str,
-        const_value: isize,
-        operator: &Operator,
+    fn coerce_binary_operands_wasm(
+        &self,
+        left: &DefineType,
+        right: &DefineType,
     ) -> Result<DefineType, Error> {
-        let idx_constant = self.add_constant(Object::int(const_value));
-        let (symbol, rt, _) = self
-            .symbols
-            .resolve(pkg, varname)
-            .ok_or(Error::ReferenceError(format!("{varname} is not defined")))?
-            .as_local();
-
-        let opcode = match (operator, symbol.scope) {
-            (Operator::Add, Scope::Local) => OpCode::AddLocalConst,
-            (Operator::Sub, Scope::Local) => OpCode::SubtractLocalConst,
-            (Operator::Less, Scope::Local) => OpCode::LtLocalConst,
-            (Operator::LessEqual, Scope::Local) => OpCode::LteLocalConst,
-            (Operator::Greater, Scope::Local) => OpCode::GtLocalConst,
-            (Operator::GreaterEqual, Scope::Local) => OpCode::GteLocalConst,
-            (Operator::Equal, Scope::Local) => OpCode::EqLocalConst,
-            (Operator::NotEqual, Scope::Local) => OpCode::NeqLocalConst,
-            // (Operator::Multiply, Scope::Local) => OpCode::MultiplyLocalConst,
-            // (Operator::Divide, Scope::Local) => OpCode::DivideLocalConst,
-            // (Operator::Modulo, Scope::Local) => OpCode::ModuloLocalConst,
-            _ => {
-                // This is just for other part of compiler to signal it should emit a normal instruction sequence
-                return Err(Error::ReferenceError(
-                    "Optimized variant of this operator & scope type is not yet implemented."
-                        .to_string(),
-                ));
-            }
-        };
-
-        self.emit_opcode(opcode);
-        self.emit_u16(symbol.index);
-        self.emit_u16(idx_constant);
-
-        Ok(rt)
+        let l = left.unwrap_qualifiers();
+        let r = right.unwrap_qualifiers();
+        if l == r {
+            return Ok(l);
+        }
+        // If one is a const int and the other is typed, use the typed one
+        if left.is_const_coerceable_to(right) {
+            return Ok(r);
+        }
+        if right.is_const_coerceable_to(left) {
+            return Ok(l);
+        }
+        if l.unwrap_to_base_type() == r.unwrap_to_base_type() {
+            return Ok(r);
+        }
+        Err(Error::TypeError(format!(
+            "mismatched types: {:#?} and {:#?}",
+            left, right
+        )))
     }
 
     pub(crate) fn make_type_default_val(&mut self, t: DefineType) -> Expression {
         match t {
             DefineType::Type(inner, _) => self.make_type_default_val(*inner),
-            DefineType::String => Expression::BasicLit(BasicLit {
-                pos: 0,
-                kind: LitKind::String,
-                value: "".to_string(),
-            }),
-            DefineType::Rune => Expression::BasicLit(BasicLit {
-                pos: 0,
-                kind: LitKind::Char,
-                value: "".to_string(),
-            }),
             DefineType::Int
             | DefineType::Int8
             | DefineType::Int16
@@ -2320,47 +3248,6 @@ impl Compiler {
                 kind: LitKind::Integer,
                 value: "0".to_string(),
             }),
-            //todo interface
-            DefineType::Ref(_)
-            | DefineType::Func { .. }
-            | DefineType::Map(_, _)
-            | DefineType::Null
-            | DefineType::Slice(_) => Expression::Ident(Ident {
-                pos: 0,
-                name: "nil".to_string(),
-            }),
-
-            DefineType::Array { len, inner_type } => {
-                let mut keyed_elements = Vec::with_capacity(len);
-
-                for i in 0..len {
-                    let el = KeyedElement {
-                        key: Some(Element::Expr(Expression::BasicLit(BasicLit {
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: format!("{}", i),
-                        }))),
-                        val: Element::Expr(self.make_type_default_val(*inner_type.clone())),
-                    };
-                    keyed_elements.push(el);
-                }
-
-                Expression::CompositeLit(CompositeLit {
-                    typ: Box::new(Expression::TypeArray(ArrayType {
-                        pos: (0, 0),
-                        len: Box::new(Expression::BasicLit(BasicLit {
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: format!("{}", len),
-                        })),
-                        typ: Box::new(inner_type.clone().to_expression()),
-                    })),
-                    val: LiteralValue {
-                        pos: (0, 0),
-                        values: keyed_elements,
-                    },
-                })
-            }
             DefineType::Bool => Expression::Ident(Ident {
                 pos: 0,
                 name: "false".to_string(),
@@ -2370,1501 +3257,12 @@ impl Compiler {
                 kind: LitKind::Float,
                 value: "0.0".to_string(),
             }),
-            DefineType::Struct {
-                name: n,
-                fields: inner_types,
-                ..
-            } => {
-                let mut lit_val = LiteralValue {
-                    pos: (0, 0),
-                    values: vec![],
-                };
-
-                for inner_type in inner_types {
-                    let (key, it) = inner_type.as_named().unwrap();
-                    let ex = self.make_type_default_val(it);
-
-                    lit_val.values.push(KeyedElement {
-                        key: Some(Element::Expr(Expression::Ident(Ident {
-                            pos: 0,
-                            name: key,
-                        }))),
-                        val: Element::Expr(ex),
-                    });
-                }
-
-                let expr = Expression::CompositeLit(CompositeLit {
-                    typ: Box::new(Expression::Ident(Ident {
-                        pos: 0,
-                        name: n.clone(),
-                    })),
-                    val: lit_val,
-                });
-                expr
-            }
-            DefineType::Interface { .. } => Expression::Ident(Ident {
+            DefineType::Qualified(_, inner) => self.make_type_default_val(*inner),
+            _ => Expression::BasicLit(BasicLit {
                 pos: 0,
-                name: "nil".to_string(),
+                kind: LitKind::Integer,
+                value: "0".to_string(),
             }),
-            DefineType::Qualified(_, inner) => {
-                self.make_type_default_val(*inner)
-            }
-            _ => unimplemented!("make_type_default_val: {:#?}", t),
         }
-    }
-
-    #[allow(unused)]
-    fn typecheck_call_func_sig(&mut self, pkg: &str, call: &Call) -> Result<(), Error> {
-        let f_name = if let Expression::Selector(sel) = call.func.as_ref() {
-            let sellt = self
-                .symbols
-                .resolve(pkg, &sel.x.as_ident().unwrap().name)
-                .unwrap()
-                .get_type()
-                .0
-                .strip_var();
-
-            make_method_name(pkg, sellt, &sel.sel.name)
-        } else {
-            call.func.as_ident().unwrap().name.to_string()
-        };
-
-        let mut dt = self.symbols.resolve(pkg, &f_name).unwrap().get_type().0;
-
-        if let DefineType::Qualified(Qualifier::Var, inner) = &dt {
-            if inner.is_func() {
-                dt = *inner.clone();
-            }
-        }
-
-        if !dt.is_func() {
-            return Err(Error::SyntaxError(format!(
-                "tried to call not a function: {:#?}",
-                dt
-            )));
-        }
-
-        let arg_types = match dt {
-            DefineType::Func {
-                args: arg_types, ..
-            } => arg_types,
-            _ => unreachable!(),
-        };
-
-        assert_eq!(arg_types.len(), call.args.len());
-        Ok(())
-    }
-
-    pub(crate) fn compile_expression(
-        &mut self,
-        pkg: &str,
-        expr: &Expression,
-    ) -> Result<DefineType, Error> {
-        match expr {
-            Expression::Call(call) => {
-                return self.compile_call_expression(pkg, call);
-            }
-            Expression::TypeMap(_tm) => {
-                let rt = self.expression_to_define_type(&pkg, expr).unwrap();
-                let obj = rt.clone().to_object();
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(rt);
-            }
-            Expression::TypeChannel(_ch) => {
-                let rt = self.expression_to_define_type(&pkg, expr).unwrap();
-                let obj = rt.clone().to_object();
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(rt);
-            }
-            Expression::Operation(op) => {
-                return self.compile_operation_expression(pkg, op);
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Ident && (lit.value == "iota") => {
-                return self.compile_expression(
-                    pkg,
-                    &Expression::BasicLit(BasicLit {
-                        pos: 0,
-                        kind: LitKind::Integer,
-                        value: self.iota.to_string(),
-                    }),
-                );
-            }
-            Expression::BasicLit(lit)
-                if lit.kind == LitKind::Ident && (lit.value == "true" || lit.value == "false") =>
-            {
-                let opcode = if lit.value == "true" {
-                    OpCode::True
-                } else {
-                    OpCode::False
-                };
-                self.emit_opcode(opcode);
-
-                return Ok(DefineType::Bool);
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Float => {
-                let (obj, dt) = match lit.value.parse::<f64>() {
-                    Ok(f) => (Object::float64(f), DefineType::Float64),
-                    _ => (
-                        Object::float32(lit.value.parse().unwrap()),
-                        DefineType::Float32,
-                    ),
-                };
-
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(dt);
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Integer => {
-                // add to gc
-                let value = lit
-                    .value
-                    .parse::<isize>()
-                    .or_else(|_| isize::from_str_radix(&lit.value, 16))
-                    .unwrap();
-
-                let idx = self.add_constant(Object::int(value));
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(DefineType::Qualified(Qualifier::Const, Box::new(DefineType::Int)));
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::String => {
-                let obj = Object::string(lit.value.clone());
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(DefineType::String);
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Char => {
-                let mut chars: Vec<char> = lit.value.chars().collect();
-
-                if chars.is_empty() {
-                    chars = vec![char::default()];
-                } else {
-                    assert_eq!(3, chars.len());
-                    chars = vec![chars[1]];
-                }
-
-                assert_eq!(1, chars.len(), "{:#?}", chars);
-
-                let obj = Rune::from_char(*chars.first().unwrap());
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(DefineType::Rune);
-            }
-            Expression::BasicLit(lit) if lit.kind == LitKind::Ident => {
-                let resolved =
-                    self.symbols
-                        .resolve(pkg, &lit.value)
-                        .ok_or(Error::ReferenceError(format!(
-                            "identifier: {} not found",
-                            lit.value
-                        )))?;
-
-                let (index, getop) = match resolved {
-                    Resolved::Enclosed((s, _, _)) => (s.index, OpCode::GetCaptured),
-                    Resolved::Local((symbol, _, _)) => match symbol.scope {
-                        Scope::Local => (symbol.index, OpCode::GetLocal),
-                        Scope::Global => (symbol.index, OpCode::GetGlobal),
-                    },
-                };
-
-                self.emit_opcode(getop);
-                self.emit_u16(index);
-            }
-            Expression::CompositeLit(clit) => {
-                return self.compile_composite_lit_expression(pkg, clit);
-            }
-            Expression::Index(ind) => {
-                let t = self.compile_expression(pkg, &ind.left)?;
-                self.compile_expression(pkg, &ind.index)?;
-                self.emit_opcode(OpCode::IndexGet);
-
-                fn check_t(i: usize, t: DefineType) -> DefineType {
-                    match t.strip_var() {
-                        DefineType::Array { inner_type, .. } => *inner_type,
-                        DefineType::Slice(inner_type) => *inner_type,
-                        DefineType::Map(_, v) => DefineType::Tuple(vec![*v, DefineType::Bool]),
-                        DefineType::Struct { fields, .. } => fields[i].get_type(),
-                        DefineType::Ref(r) => DefineType::Ref(Box::new(check_t(i, *r))),
-                        DefineType::String => DefineType::String,
-                        DefineType::Qualified(Qualifier::Const, inner) => check_t(i, *inner),
-                        k => unimplemented!("index type: {:#?}", k),
-                    }
-                }
-                //println!("{:#?} {:#?}", t, ind);
-                let i = if ind.index.is_int_lit() {
-                    ind.index.as_int_lit().unwrap_or_default() as usize
-                } else {
-                    0
-                };
-                let rt = check_t(i, t.strip_var());
-
-                return Ok(rt);
-            }
-            Expression::Ident(ident) => {
-                if &ident.name == "true" {
-                    self.emit_opcode(OpCode::True);
-                    return Ok(DefineType::Bool);
-                } else if &ident.name == "false" {
-                    self.emit_opcode(OpCode::False);
-                    return Ok(DefineType::Bool);
-                }
-
-                if ident.name == "iota" {
-                    return self.compile_expression(
-                        pkg,
-                        &Expression::BasicLit(BasicLit {
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: self.iota.to_string(),
-                        }),
-                    );
-                }
-
-                // panic!("{:#?}", self.symbols);
-                return match self.symbols.resolve(pkg, &ident.name) {
-                    Some(Resolved::Local((symbol, dt, _))) => {
-                        let opcode = if symbol.scope == Scope::Global {
-                            if is_builtin_const(&ident.name) {
-                                OpCode::Const
-                            } else {
-                                OpCode::GetGlobal
-                            }
-                        } else {
-                            OpCode::GetLocal
-                        };
-
-                        self.emit_opcode(opcode);
-                        self.emit_u16(symbol.index);
-                        //println!("{}-{}-{}", ident.name, symbol.index, opcode);
-                        //panic!("{:#?}", symbol.index);
-
-                        Ok(dt)
-                    }
-                    Some(Resolved::Enclosed((s, t, _))) => {
-                        // enclosed symbols cannot be global
-                        self.emit_opcode(OpCode::GetCaptured);
-                        self.emit_u16(s.index);
-                        //panic!("{:#?}", 2);
-                        Ok(t)
-                    }
-                    None => Err(Error::ReferenceError(format!(
-                        "ident: `{}` is not defined in pkg: `{}`",
-                        ident.name, pkg,
-                    ))),
-                };
-            }
-            Expression::Selector(sel) => {
-                if let Expression::Ident(ref id) = *sel.x {
-                    if let Some(p) = self.symbols.get_package_path(&id.name) {
-                        let member = Expression::Ident(sel.sel.clone());
-                        return self.compile_expression(&p, &member);
-                    }
-                }
-
-                let dt = self
-                    .compile_expression(pkg, sel.x.as_ref())?
-                    .strip_var()
-                    .strip_ref();
-
-                let (_, inner_types) = match dt.strip_ref() {
-                    DefineType::Struct {
-                        name,
-                        fields: inner_types,
-                        ..
-                    } => (name, inner_types),
-                    _ => panic!("{:#?}", dt),
-                };
-
-                // breadth first search find field name
-                // necessary because of embedding
-                fn find_field(
-                    it: &[ContextType],
-                    target: &str,
-                ) -> Option<(Vec<usize>, ContextType)> {
-                    use std::collections::VecDeque;
-
-                    let mut queue = VecDeque::new();
-
-                    for (i, item) in it.iter().enumerate() {
-                        queue.push_back((vec![i], item.clone()));
-                    }
-
-                    while let Some((path, current)) = queue.pop_front() {
-                        match &current {
-                            ContextType::Named(s, _) => {
-                                if s == target {
-                                    return Some((path, current.clone()));
-                                }
-                            }
-                            ContextType::Embedded(s, dt) => {
-                                if s == target {
-                                    return Some((path, current.clone()));
-                                }
-                                if dt.is_struct() {
-                                    let (_, children, _) = dt.as_struct().unwrap();
-                                    for (i, child) in children.iter().enumerate() {
-                                        let mut child_path = path.clone();
-                                        child_path.push(i);
-                                        queue.push_back((child_path, child.clone()));
-                                    }
-                                }
-                            }
-                            _ => unimplemented!(),
-                        }
-                    }
-
-                    None
-                }
-
-                let (path, rt) = find_field(inner_types.as_ref(), sel.sel.name.as_str()).expect(
-                    &format!("field not found: {} in struct: {:#?}", sel.sel.name, dt),
-                );
-
-                for p in path {
-                    self.compile_expression(
-                        pkg,
-                        &Expression::BasicLit(BasicLit {
-                            pos: 0,
-                            kind: LitKind::Integer,
-                            value: format!("{}", p),
-                        }),
-                    )?;
-                    self.emit_opcode(OpCode::IndexGet);
-                }
-
-                return Ok(rt.get_type());
-            }
-            Expression::FuncLit(f) => {
-                return self.compile_func_lit_expression(pkg, f);
-            }
-            Expression::Invar(invar) => {
-                let rt = self.compile_expression(pkg, &invar.expr)?;
-                return Ok(DefineType::Qualified(Qualifier::Invar, Box::new(rt.strip_var())));
-            }
-            Expression::TypeAssert(type_assert) => {
-                return self.compile_type_assert_expression(pkg, type_assert);
-            }
-            Expression::TypeSlice(_ts) => {
-                let rt = self.expression_to_define_type(pkg, expr).unwrap();
-                let obj = rt.clone().to_object();
-                //panic!("{:#?}", rt);
-                let idx = self.add_constant(obj);
-                self.emit_opcode(OpCode::Const);
-                self.emit_u16(idx);
-
-                return Ok(rt);
-            }
-            Expression::Slice(slice) => {
-                let t = self.compile_expression(pkg, &slice.left)?;
-                match t.strip_var() {
-                    DefineType::Slice(_) | DefineType::Array { .. } => {}
-                    tt => panic!("expected slice or array got {:#?}", tt),
-                }
-
-                let mut index_iter = slice.index.iter();
-
-                let mut index = 0;
-                if let Some(from) = index_iter.next().unwrap() {
-                    let ind_t = self.compile_expression(pkg, from.as_ref())?;
-
-                    if !ind_t.is_numeric() {
-                        panic!("slicing can be done with integers only");
-                    }
-
-                    index = 1;
-                }
-
-                if let Some(from) = index_iter.next().unwrap() {
-                    let ind_t = self.compile_expression(pkg, from.as_ref())?;
-
-                    if !ind_t.is_numeric() {
-                        panic!("slicing can be done with integers only");
-                    }
-
-                    if index == 0 {
-                        index = 2;
-                    } else {
-                        index = 3;
-                    }
-                }
-
-                self.emit_opcode(OpCode::Slice);
-                self.emit_u16(index);
-
-                let obj = t.to_object();
-                let type_value = obj.as_type_value();
-                let mut ind = None;
-                for (i, c) in self.constants.iter().enumerate() {
-                    if c.tag() == Type::Type {
-                        let ctv = c.as_type_value();
-
-                        if ctv == type_value {
-                            ind = Some(i);
-                            break;
-                        }
-                    }
-                }
-                self.emit_u16(ind.unwrap().try_into().unwrap());
-            }
-            _ => {
-                return Err(Error::SyntaxError(format!(
-                    "unsupported expression:  {:#?}",
-                    expr
-                )))
-            }
-        }
-
-        Ok(DefineType::Null)
-    }
-
-    fn compile_call_expression(
-        &mut self,
-        pkg: &str,
-        call: &Call,
-    ) -> Result<DefineType, Error> {
-        //todo typecheck return and args on builtins
-        if let Expression::Ident(name) = call.func.as_ref() {
-            if let Some(builtin) = builtin::resolve(&name.name) {
-                let mut first = None;
-                for a in &call.args {
-                    let t = self.compile_expression(pkg, a)?;
-                    if first.is_none() {
-                        first = Some(t);
-                    }
-                }
-
-                let is_void = builtin.is_void();
-                self.emit_opcode(OpCode::CallBuiltin);
-                self.emit_u8(builtin as u8);
-                self.emit_u8(call.args.len().try_into().unwrap());
-
-                if is_void {
-                    //panic!("{:#?}", 123);
-                    self.emit_opcode(OpCode::Pop);
-                }
-                return Ok(first.unwrap_or(DefineType::Null));
-            }
-        }
-
-        let (ct, cpkg) = CallType::from_call(&pkg, &call, self)?;
-
-        let rt = match ct {
-            CallType::Func { func_dt, expr, .. } => {
-                let (_, _, mut arg_types, rts) = func_dt.as_func();
-                let rts = rts.type_to_val_t();
-                //println!("{:#?}", arg_types);
-                //assert_eq!(arg_types.len(), call.args.len());
-                let (is_variadic, variadic_len) = if let Some(last) =
-                    arg_types.last().cloned()
-                {
-                    let dt = last.get_type();
-                    if dt.is_variadic() {
-                        arg_types.pop();
-                        let v_t = dt.as_variadic();
-                        let mut length = 0;
-
-                        while arg_types.len() < call.args.len() {
-                            length += 1;
-                            arg_types.push(ContextType::Named("".to_string(), v_t.clone()))
-                        }
-
-                        (true, length)
-                    } else {
-                        (false, 0)
-                    }
-                } else {
-                    (false, 0)
-                };
-
-                let variadic_start = arg_types.len() - variadic_len;
-
-                for (i, (a, t)) in call.args.iter().zip(arg_types).enumerate() {
-                    let got = self.compile_expression(pkg, a)?.strip_var();
-                    let expected = t.get_type();
-
-                    if expected.is_interface() && got.implements(&pkg, &expected, self) {
-                        let (name, _) = expected.as_interface();
-                        let (s, _, _) =
-                            self.symbols.resolve(pkg, &name).unwrap().as_local();
-
-                        self.emit_opcode(OpCode::Upcast);
-                        self.emit_u16(s.index);
-                    } else {
-                        let got = got.strip_var();
-                        let t = t.get_type().strip_type();
-
-                        if is_variadic && i >= variadic_start {
-                            match got {
-                                DefineType::Array { inner_type, .. } => {
-                                    assert_eq!(t, inner_type.strip_type());
-                                }
-                                DefineType::Slice(inner_type) => {
-                                    assert_eq!(t, inner_type.strip_type());
-                                }
-                                got_t => assert_eq!(t, got_t),
-                            }
-                        } else {
-                            assert_eq!(t.unwrap_to_base_type(), got.unwrap_to_base_type());
-                        }
-                    }
-                }
-
-                if is_variadic {
-                    self.emit_opcode(OpCode::Variadic);
-                    //panic!("{}", variadic_len);
-                    self.emit_u16(variadic_len as u16);
-                }
-
-                self.compile_expression(&cpkg, &expr)?;
-
-                self.emit_opcode(OpCode::Call);
-                let arg_len: u8 = call.args.len().try_into().unwrap();
-
-                let v_len = if is_variadic && variadic_len > 0 {
-                    variadic_len - 1
-                } else {
-                    0
-                };
-
-                //println!("{}-{}", arg_len, v_len);
-
-                self.emit_u8(arg_len - v_len as u8);
-
-                rts
-            }
-            CallType::Method {
-                mangled_name,
-                struct_expr: _struct_expr,
-                method_dt,
-                struct_dt,
-                ..
-            } => {
-                let (_, recv, arg_types, rts) = method_dt.as_func();
-                let rts = rts.type_to_val_t();
-                assert_eq!(arg_types.len(), call.args.len());
-
-                //here we do automatic passing by reference
-                // if the signature of the function is by ref
-                // and our value is not we emit a ref opcode
-                //let got = self.compile_expression(&struct_expr)?;
-                if struct_dt.is_ref() && !recv.unwrap().is_ref() {
-                    self.emit_opcode(OpCode::Ref);
-                }
-
-                for (a, t) in call.args.iter().zip(arg_types) {
-                    let got = self.compile_expression(pkg, a)?;
-                    assert_eq!(t.as_named().unwrap().1, got);
-                }
-
-                self.compile_expression(
-                    pkg,
-                    &Expression::Ident(Ident {
-                        pos: 0,
-                        name: mangled_name,
-                    }),
-                )?;
-
-                self.emit_opcode(OpCode::Call);
-                let arg_len: u8 = call.args.len().try_into().unwrap();
-                self.emit_u8(arg_len + 1);
-
-                rts
-            }
-            CallType::DynamicDispatch {
-                method_index,
-                method_dt,
-                iface_expr,
-            } => {
-                let (_, _, arg_types, rts) = method_dt.as_func();
-                let rts = rts.type_to_val_t();
-                assert_eq!(arg_types.len(), call.args.len());
-
-                //downcast for the receiver
-                self.compile_expression(pkg, &iface_expr)?;
-                self.emit_opcode(OpCode::Downcast);
-
-                for (a, t) in call.args.iter().zip(arg_types) {
-                    let got = self.compile_expression(pkg, a)?;
-                    match t {
-                        ContextType::Named(_, adt) => {
-                            assert_eq!(adt, got);
-                        }
-                        ContextType::Embedded(_, adt) => {
-                            assert_eq!(adt, got);
-                        }
-                        ContextType::Unnamed(adt) => {
-                            assert_eq!(adt.as_type().0, got);
-                        }
-                    }
-                }
-
-                // need to push the same interface for the dynamic dispatch info
-                self.compile_expression(pkg, &iface_expr)?;
-                self.emit_opcode(OpCode::DynamicDispatch);
-                let arg_len: u16 = call.args.len().try_into().unwrap();
-                self.emit_u16(arg_len + 1);
-                self.emit_u16(method_index as u16);
-
-                rts
-            }
-        };
-
-        Ok(rt)
-    }
-
-    fn compile_operation_expression(
-        &mut self,
-        pkg: &str,
-        op: &Operation,
-    ) -> Result<DefineType, Error> {
-        match op.op {
-            Operator::Star => {
-                match &op.y {
-                    // a * b // multiplication
-                    Some(y) => {
-                        match (op.x.as_ref(), y.as_ref()) {
-                            (Expression::Ident(name), Expression::BasicLit(lit))
-                            | (Expression::BasicLit(lit), Expression::Ident(name))
-                                if lit.kind == LitKind::Integer =>
-                            {
-                                let value: isize = lit.value.parse().unwrap();
-                                let res = self.compile_const_var_infix_expression(
-                                    pkg, &name.name, value, &op.op,
-                                );
-                                if res.is_ok() {
-                                    return Ok(res.unwrap());
-                                }
-                            }
-                            _ => (),
-                        }
-
-                        let rt_left =
-                            self.compile_expression(pkg, op.x.as_ref())?.strip_var();
-                        let rt_right =
-                            self.compile_expression(pkg, y.as_ref())?.strip_var();
-
-                        let coerced = self.coerce_binary_operands(&rt_left, &rt_right)?;
-                        self.compile_operator(&op.op);
-
-                        if op.x.as_ref().is_int_lit() && y.as_ref().is_int_lit() {
-                            return Ok(DefineType::Qualified(Qualifier::Const, Box::new(coerced)));
-                        } else {
-                            return Ok(coerced);
-                        }
-                    }
-                    // *a // deref
-                    None => {
-                        //panic!("{:#?}", op);
-                        let _ident = op.x.as_ident().unwrap();
-                        self.compile_expression(pkg, op.x.as_ref())?;
-                        self.emit_opcode(OpCode::Deref);
-                    }
-                }
-            }
-            Operator::Less
-            | Operator::LessEqual
-            | Operator::NotEqual
-            | Operator::Greater
-            | Operator::GreaterEqual => {
-                match &op.y {
-                    // a * b // multiplication
-                    Some(y) => {
-                        match (op.x.as_ref(), y.as_ref()) {
-                            (Expression::Ident(name), Expression::BasicLit(lit))
-                            | (Expression::BasicLit(lit), Expression::Ident(name))
-                                if lit.kind == LitKind::Integer =>
-                            {
-                                let value: isize = lit.value.parse().unwrap();
-                                let res = self.compile_const_var_infix_expression(
-                                    pkg, &name.name, value, &op.op,
-                                );
-                                if res.is_ok() {
-                                    return Ok(res.unwrap());
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        // If that failed because we haven't implemented a specialized instruction yet, compile it as a sequence of normal instructions
-                        self.compile_expression(pkg, op.x.as_ref())?;
-                        self.compile_expression(pkg, y.as_ref())?;
-                        self.compile_operator(&op.op);
-
-                        return Ok(DefineType::Int);
-                    }
-                    _ => unimplemented!(),
-                }
-            }
-            Operator::Add
-            | Operator::Sub
-            | Operator::Rem
-            | Operator::Equal
-            | Operator::Quo
-            | Operator::AndAnd
-            | Operator::OrOr => {
-                match &op.y {
-                    Some(y) => {
-                        //todo work on Go constants
-                        // weird conversions
-                        match (op.x.as_ref(), y.as_ref()) {
-                            (Expression::Ident(name), Expression::BasicLit(lit))
-                            | (Expression::BasicLit(lit), Expression::Ident(name))
-                                if lit.kind == LitKind::Integer =>
-                            {
-                                let value = lit
-                                    .value
-                                    .parse::<isize>()
-                                    .or_else(|_| isize::from_str_radix(&lit.value, 16))
-                                    .unwrap();
-
-                                let res = self.compile_const_var_infix_expression(
-                                    pkg, &name.name, value, &op.op,
-                                );
-                                if res.is_ok() {
-                                    return Ok(res.unwrap());
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        let rt_left = self.compile_expression(pkg, op.x.as_ref())?;
-                        let rt_right = self.compile_expression(pkg, y.as_ref())?;
-
-                        let rt = self.coerce_binary_operands(&rt_left, &rt_right)?;
-                        self.compile_operator(&op.op);
-
-                        return Ok(rt);
-                    }
-                    None => {
-                        if op.op == Operator::Sub {
-                            let left = self.compile_expression(pkg, op.x.as_ref())?;
-                            assert!(left.is_numeric());
-                            self.emit_opcode(OpCode::Negate);
-                            return Ok(left);
-                        } else {
-                            unimplemented!("{:#?}", op)
-                        }
-                    }
-                }
-            }
-            Operator::And => {
-                match &op.y {
-                    Some(_y) => {
-                        // a & b
-                    }
-                    //reference expression
-                    None => {
-                        let t = self.compile_expression(pkg, &op.x)?;
-                        self.emit_opcode(OpCode::Ref);
-                        return Ok(DefineType::Ref(Box::new(t.strip_var())));
-                    }
-                }
-            }
-            Operator::Not => match &op.y {
-                None => {
-                    let t = self.compile_expression(pkg, &op.x)?;
-
-                    if t.strip_var() != DefineType::Bool {
-                        panic!("expected bool got {:#?}", t.strip_var());
-                    }
-
-                    self.emit_opcode(OpCode::Not);
-                    return Ok(DefineType::Bool);
-                }
-                Some(y) => {
-                    unimplemented!("operator::not y {:#?}", y)
-                }
-            },
-            Operator::Arrow => {
-                let ch_type = self.compile_expression(pkg, op.x.as_ref())?;
-                self.emit_opcode(OpCode::ChanRecv);
-                let elem_type = match ch_type.strip_var() {
-                    DefineType::Channel(inner) => (*inner).strip_type(),
-                    _ => DefineType::Null,
-                };
-                return Ok(elem_type);
-            }
-            _ => panic!("unsupported op: {:#?}", op),
-        }
-        //
-        Ok(DefineType::Null)
-    }
-
-    fn compile_composite_lit_expression(
-        &mut self,
-        pkg: &str,
-        clit: &CompositeLit,
-    ) -> Result<DefineType, Error> {
-        //map
-        if let Expression::TypeMap(mp) = clit.typ.as_ref() {
-            let map_key_t = self
-                .expression_to_define_type(pkg, mp.key.as_ref())
-                .unwrap()
-                .strip_type();
-
-            let map_val_t = self
-                .expression_to_define_type(pkg, mp.val.as_ref())
-                .unwrap()
-                .strip_type();
-
-            for v in &clit.val.values {
-                if let Some(key) = &v.key {
-                    match key {
-                        Element::Expr(el_expr) => {
-                            let expr_t = self.compile_expression(pkg, el_expr)?;
-                            assert_eq!(
-                                map_key_t.strip_const(),
-                                expr_t.strip_const()
-                            );
-                        }
-                        _ => {
-                            panic!("TypeMap val");
-                        }
-                    }
-                }
-
-                match &v.val {
-                    Element::Expr(el_expr) => {
-                        let expr_t = self.compile_expression(pkg, el_expr)?;
-                        assert_eq!(
-                            map_val_t.strip_const(),
-                            expr_t.strip_const()
-                        );
-                    }
-                    _ => {
-                        panic!("TypeMap key");
-                    }
-                }
-            }
-            self.emit_opcode(OpCode::Map);
-            self.emit_u16(clit.val.values.len().try_into().unwrap());
-            return Ok(DefineType::Map(Box::new(map_key_t), Box::new(map_val_t)));
-        }
-
-        //slice
-        if let Expression::TypeSlice(ta) = clit.typ.as_ref() {
-            //todo assert length
-            //if ta.len != clit.val.values.len() { }
-
-            let slice_t = self
-                .expression_to_define_type(&pkg, ta.typ.as_ref())
-                .unwrap();
-            let mut el_t: Option<DefineType> = None;
-            let key_required = clit
-                .val
-                .values
-                .first()
-                .map(|a| a.key.is_some())
-                .unwrap_or_default();
-
-            for v in &clit.val.values {
-                assert_eq!(key_required, v.key.is_some());
-
-                match &v.val {
-                    Element::Expr(el_expr) => {
-                        let expr_t = self.compile_expression(pkg, el_expr)?;
-                        assert_eq!(
-                            slice_t.unwrap_to_base_type(),
-                            expr_t.unwrap_to_base_type()
-                        );
-                        if let Some(expected_t) = &el_t {
-                            assert_eq!(expected_t.unwrap_to_base_type(), expr_t.unwrap_to_base_type());
-                        } else {
-                            el_t = Some(expr_t);
-                        }
-                    }
-                    _ => {
-                        panic!("123");
-                    }
-                }
-            }
-            self.emit_opcode(OpCode::MakeSlice);
-            self.emit_u16(clit.val.values.len().try_into().unwrap());
-
-            let rt = DefineType::Slice(Box::new(slice_t));
-
-            let obj = rt.clone().to_object();
-            let cid = self.add_constant(obj);
-            self.emit_u16(cid);
-
-            return Ok(rt);
-        }
-
-        //struct
-        if let Expression::Ident(name) = clit.typ.as_ref() {
-            //todo this can be locally defined type
-            return Ok(literal::compile_struct(pkg, clit, name, self)?);
-        }
-
-        //array
-        if let Expression::TypeArray(ta) = clit.typ.as_ref() {
-            //todo assert length
-            //if ta.len != clit.val.values.len() { }
-
-            let slice_t = match ta.typ.as_ref() {
-                Expression::Ident(ident) => self
-                    .symbols
-                    .resolve(pkg, ident.name.as_str())
-                    .unwrap()
-                    .as_local()
-                    .1
-                    .strip_type(),
-                Expression::TypeArray(_at) => self
-                    .expression_to_define_type(pkg, ta.typ.as_ref())
-                    .unwrap(),
-                _ => {
-                    unimplemented!("array element type: {:#?}", ta.typ)
-                }
-            };
-
-            let mut el_t: Option<DefineType> = None;
-            let key_required = clit
-                .val
-                .values
-                .first()
-                .map(|a| a.key.is_some())
-                .unwrap_or_default();
-
-            for v in &clit.val.values {
-                assert_eq!(key_required, v.key.is_some());
-
-                match &v.val {
-                    Element::Expr(el_expr) => {
-                        let expr_t = self.compile_expression(pkg, el_expr)?;
-                        assert_eq!(
-                            slice_t.unwrap_to_base_type(),
-                            expr_t.unwrap_to_base_type()
-                        );
-                        if let Some(expected_t) = &el_t {
-                            assert_eq!(
-                                expected_t.unwrap_to_base_type(),
-                                expr_t.unwrap_to_base_type()
-                            );
-                        } else {
-                            el_t = Some(expr_t);
-                        }
-                    }
-                    _ => {
-                        panic!("123");
-                    }
-                }
-            }
-
-            self.emit_opcode(OpCode::MakeArray);
-            self.emit_u16(clit.val.values.len().try_into().unwrap());
-
-            return Ok(DefineType::Array {
-                inner_type: Box::new(slice_t),
-                len: clit.val.values.len(),
-            });
-        }
-
-        // anonymous struct literal
-        if let Expression::TypeStruct(ts) = clit.typ.as_ref() {
-            let mut field_types = vec![];
-
-            //todo tags
-            for field in &ts.fields {
-                let (inner_t, is_ref) = match &field.typ {
-                    Expression::TypePointer(p) => (p.typ.as_ident().unwrap(), true),
-                    _ => (field.typ.as_ident().unwrap(), false),
-                };
-
-                let r = self
-                    .symbols
-                    .resolve(pkg, &inner_t.name)
-                    .unwrap()
-                    .get_type()
-                    .0;
-
-                let dt = if is_ref {
-                    DefineType::Ref(Box::new(r.strip_type()))
-                } else {
-                    r.strip_type()
-                };
-
-                for name in &field.name {
-                    field_types.push(ContextType::Named(
-                        name.name.as_str().to_string(),
-                        dt.clone(),
-                    ));
-                }
-            }
-
-            let ftl = field_types.len();
-
-            let mut field_values = Vec::with_capacity(ftl);
-
-            for _ in 0..ftl {
-                field_values.push(Object::null());
-            }
-
-            let name = format!("anonymous_struct {}", self.anonymous_struct);
-
-            let symbol = self.symbols.define(
-                pkg,
-                &name,
-                DefineType::Struct {
-                    name: name.to_string(),
-                    fields: field_types.clone(),
-                    methods: vec![],
-                },
-                false,
-            );
-
-            for field_type in &mut field_types {
-                let (s, dt) = field_type.as_named().unwrap();
-                let resolved = match dt {
-                    DefineType::Ref(_) => DefineType::Ref(Box::new(dt)),
-                    _ => dt,
-                };
-
-                *field_type = ContextType::Named(s, resolved);
-            }
-
-            let updated = self.symbols.update_dt(
-                pkg,
-                &name,
-                DefineType::Struct {
-                    name: name.to_string(),
-                    fields: field_types,
-                    methods: vec![],
-                },
-            );
-
-            assert!(updated);
-
-            let obj = Struct::object(name.to_string(), field_values, vec![], vec![], true);
-            let idx = self.add_constant(obj);
-            self.emit_opcode(OpCode::Const);
-            self.emit_u16(idx);
-
-            let opcode = if symbol.scope == Scope::Global {
-                OpCode::SetGlobal
-            } else {
-                OpCode::SetLocal
-            };
-            self.emit_opcode(opcode);
-            self.emit_u16(symbol.index);
-
-            self.emit_opcode(OpCode::Const);
-            self.emit_u16(idx);
-
-            let rt = self.compile_expression(
-                pkg,
-                &Expression::CompositeLit(CompositeLit {
-                    typ: Box::new(Expression::Ident(Ident { pos: 0, name })),
-                    val: clit.val.clone(),
-                }),
-            )?;
-
-            self.anonymous_struct += 1;
-            return Ok(rt);
-        }
-
-        panic!("unknown composite lit {:#?}", clit);
-    }
-
-    fn compile_func_lit_expression(
-        &mut self,
-        pkg: &str,
-        f: &FuncLit,
-    ) -> Result<DefineType, Error> {
-        let pos_jump = self.instructions.len();
-
-        self.func_contexts.push(FuncContext::new(pos_jump));
-
-        self.emit_opcode(OpCode::Jump);
-        self.emit_u16(JUMP_PLACEHOLDER);
-
-        let mut decl_arg_types = Vec::with_capacity(f.typ.params.list.len());
-
-        //println!("{:#?}", f.typ.params.list);
-        // Compile function in a new scope
-        self.symbols.new_context(true);
-        for p in &f.typ.params.list {
-            let t = self.expression_to_define_type(pkg, &p.typ).unwrap();
-            for name in &p.name {
-                decl_arg_types.push(ContextType::Named(name.name.clone(), t.clone()));
-
-                self.symbols.define(
-                    pkg,
-                    &name.name,
-                    DefineType::Qualified(Qualifier::Var, Box::new(t.clone())),
-                    t.is_invar(),
-                );
-            }
-        }
-
-        let mut decl_r_types = Vec::with_capacity(f.typ.result.list.len());
-
-        for el in &f.typ.result.list {
-            let t = self.expression_to_define_type(pkg, &el.typ).unwrap();
-            decl_r_types.push(t);
-        }
-
-        let r_t = if decl_r_types.is_empty() {
-            DefineType::Null
-        } else if decl_r_types.len() == 1 {
-            decl_r_types[0].clone()
-        } else {
-            DefineType::Tuple(decl_r_types.clone())
-        };
-
-        let pos_start_function = self.instructions.len();
-
-        //todo ugly
-
-        // type checking if all returns are correct types
-        let mut has_top_return = false;
-        for stmt in &f.body.list {
-            if let Statement::Return(_) = stmt {
-                has_top_return = true;
-                break;
-            }
-        }
-
-        let terminates = self.compile_block_statement(pkg, &f.body.list)?;
-
-        let ctx = self.func_contexts.pop().unwrap();
-
-        if !decl_r_types.is_empty() {
-            let sorted_decl_r_types: Vec<DefineType> = decl_r_types
-                .iter()
-                .map(|b| {
-                    if let DefineType::Type(inner, _) = b.clone() {
-                        return *inner;
-                    }
-
-                    b.clone()
-                })
-                .collect();
-
-            //todo use terminates to assert if top scope level return is needed
-
-            let expected_t = if sorted_decl_r_types.is_empty() {
-                DefineType::Null
-            } else if sorted_decl_r_types.len() == 1 {
-                sorted_decl_r_types[0].clone()
-            } else {
-                DefineType::Tuple(sorted_decl_r_types)
-            };
-
-            if !terminates.unwrap_or_default()
-                && expected_t != DefineType::Null
-                && !has_top_return
-            {
-                panic!("expected return");
-            }
-
-            for (mut ret_type, is_type_assert) in ctx.ret_types {
-                if ret_type.is_var() {
-                    ret_type = ret_type.as_var();
-                }
-                if !(terminates.unwrap_or_default() && ret_type == DefineType::Null) {
-                    if is_type_assert && !expected_t.is_tuple() && ret_type.is_tuple() {
-                        let tuple = ret_type.as_tuple();
-                        assert_eq!(expected_t, tuple[0]);
-                    } else {
-                        assert_eq!(
-                            expected_t.unwrap_to_base_type(),
-                            ret_type.unwrap_to_base_type()
-                        );
-                    }
-                }
-            }
-        } else {
-            for (ret_type, _is_type_assert) in &ctx.ret_types {
-                assert_eq!(ret_type, &DefineType::Null);
-            }
-        }
-        // end type checking on return types
-
-        if self.last_instruction_is(OpCode::Pop) && !decl_r_types.is_empty() {
-            self.remove_last_instruction();
-            assert!(decl_r_types.len() < u16::MAX as usize);
-            let num_r_types = decl_r_types.len() as u16;
-
-            self.emit_opcode(OpCode::ReturnValue);
-            self.emit_u16(num_r_types);
-        } else if self.last_instruction_is(OpCode::Pop) && decl_r_types.is_empty() {
-            self.remove_last_instruction();
-            self.emit_opcode(OpCode::Return);
-        } else if !self.last_instruction_is(OpCode::ReturnValue) {
-            self.emit_opcode(OpCode::Return);
-        }
-
-        self.change_jump_operand_at(pos_jump, self.instructions.len().try_into().unwrap());
-
-        // Switch back to previous scope again
-        let ctx = self.symbols.leave_context();
-
-        let num_locals = ctx.max_size();
-
-        // Create function object and store as constant
-        let obj = Closure::object(
-            pos_start_function.try_into().unwrap(),
-            num_locals.try_into().unwrap(),
-            vec![Object::null(); ctx.captured.len()],
-        );
-        let idx = self.add_constant(obj);
-        self.emit_opcode(OpCode::Const);
-        self.emit_u16(idx);
-
-        for (i, v) in ctx.captured.iter().enumerate() {
-            if let Some(r) = self.symbols.resolve(pkg, &v) {
-                match r {
-                    Resolved::Local((s, _t, _)) => {
-                        let op = match s.scope {
-                            Scope::Local => OpCode::GetLocal,
-                            Scope::Global => OpCode::GetGlobal,
-                        };
-                        self.emit_opcode(op);
-                        self.emit_u16(s.index);
-
-                        self.emit_opcode(OpCode::Propagate);
-                        self.emit_u16(i.try_into().unwrap());
-                    }
-                    Resolved::Enclosed((s, _t, _)) => {
-                        self.emit_opcode(OpCode::GetCaptured);
-                        self.emit_u16(s.index);
-
-                        self.emit_opcode(OpCode::Propagate);
-                        self.emit_u16(i.try_into().unwrap());
-                    }
-                }
-            }
-        }
-
-        Ok(DefineType::Func {
-            name: "".to_string(),
-            recv: None,
-            args: decl_arg_types,
-            rt: Box::new(r_t),
-        })
-    }
-
-    fn compile_type_assert_expression(
-        &mut self,
-        pkg: &str,
-        type_assert: &TypeAssertion,
-    ) -> Result<DefineType, Error> {
-        let ident = type_assert.left.as_ident().unwrap();
-        let r = self.symbols.resolve(pkg, &ident.name).unwrap();
-        let t = r.get_type().0;
-
-        assert!(t.is_var());
-        assert!(t.as_var().is_interface());
-
-        let rt = self.compile_expression(pkg, &type_assert.left)?;
-
-        match &type_assert.right {
-            Some(right) => {
-                match right.as_ref() {
-                    Expression::Ident(ident) => {
-                        let r = self.symbols.resolve(pkg, &ident.name).unwrap();
-                        let t = r.get_type().0;
-
-                        match t {
-                            //sidecast from interface to interface
-                            // 1. downcast to T and upcast to the interface
-                            DefineType::Interface { .. } => {
-                                let (s, _, _) = r.as_local();
-
-                                self.emit_opcode(OpCode::Downcast);
-                                self.emit_opcode(OpCode::Upcast);
-                                self.emit_u16(s.index);
-                                self.emit_opcode(OpCode::TypeCmp);
-                            }
-                            DefineType::Struct { .. } | DefineType::Type(_, _) => {
-                                self.emit_opcode(OpCode::Downcast);
-                                self.compile_expression(pkg, &type_assert.left)?;
-                                self.emit_opcode(OpCode::Downcast);
-                                self.compile_expression(pkg, right)?;
-                                self.emit_opcode(OpCode::TypeCmp);
-                            }
-                            _ => unimplemented!(),
-                        }
-                        Ok(DefineType::Tuple(vec![t, DefineType::Bool]))
-                    }
-                    _ => unimplemented!("{:#?}", right),
-                }
-            }
-            None => {
-                self.emit_opcode(OpCode::Downcast);
-                //todo this should return DefineType::Type
-                Ok(rt)
-            }
-        }
-    }
-
-    pub(crate) fn add_constant(&mut self, obj: Object) -> u16 {
-        // re-use already defined constants
-        // if let Some(pos) = self
-        //     .constants
-        //     .iter()
-        //     .position(|c| c.tag() == obj.tag() && c == &obj)
-        // {
-        //     return pos.try_into().unwrap();
-        // }
-
-        let idx = self.constants.len();
-        self.constants.push(obj);
-        idx.try_into().unwrap()
-    }
-
-    fn compile_select(
-        &mut self,
-        pkg: &str,
-        select_stmt: &SelectStmt,
-    ) -> Result<(), Error> {
-        let cases = &select_stmt.body.body;
-        let num_cases = cases.len();
-
-        // case kind constants: 0=recv, 1=send, 2=default
-        const CASE_RECV: u8 = 0;
-        const CASE_SEND: u8 = 1;
-        const CASE_DEFAULT: u8 = 2;
-
-        let mut case_kinds: Vec<u8> = Vec::with_capacity(num_cases);
-
-        // Phase 1: push channels (and send values) onto the stack for each case
-        for clause in cases.iter() {
-            if clause.tok == Keyword::Default {
-                case_kinds.push(CASE_DEFAULT);
-                continue;
-            }
-
-            if let Some(comm) = &clause.comm {
-                match comm.as_ref() {
-                    Statement::Send(send) => {
-                        self.compile_expression(pkg, &send.chan)?;
-                        self.compile_expression(pkg, &send.value)?;
-                        case_kinds.push(CASE_SEND);
-                    }
-                    Statement::Expr(expr) => {
-                        // <-ch as expression statement: extract channel from recv
-                        if let Expression::Operation(op) = &expr.expr {
-                            if op.op == Operator::Arrow {
-                                self.compile_expression(pkg, op.x.as_ref())?;
-                            }
-                        }
-                        case_kinds.push(CASE_RECV);
-                    }
-                    Statement::Assign(assign) => {
-                        // val := <-ch: extract channel from recv expression
-                        if !assign.right.is_empty() {
-                            if let Expression::Operation(op) = &assign.right[0] {
-                                if op.op == Operator::Arrow {
-                                    self.compile_expression(pkg, op.x.as_ref())?;
-                                }
-                            }
-                        }
-                        case_kinds.push(CASE_RECV);
-                    }
-                    _ => {
-                        case_kinds.push(CASE_RECV);
-                    }
-                }
-            } else {
-                case_kinds.push(CASE_DEFAULT);
-            }
-        }
-
-        // Phase 2: emit Select opcode + inline case descriptors
-        self.emit_opcode(OpCode::Select);
-        self.emit_u8(num_cases as u8);
-
-        let desc_start = self.instructions.len();
-        for kind in &case_kinds {
-            self.instructions.push(*kind);        // kind byte
-            self.instructions.push(0);            // body_ip low (placeholder)
-            self.instructions.push(0);            // body_ip high (placeholder)
-        }
-
-        // Phase 3: emit case bodies and backfill body_ip values
-        let mut case_end_jumps: Vec<usize> = Vec::new();
-
-        for (i, clause) in cases.iter().enumerate() {
-            let body_ip = self.instructions.len() as u16;
-            let desc_offset = desc_start + i * 3 + 1;
-            self.instructions[desc_offset] = body_ip as u8;
-            self.instructions[desc_offset + 1] = (body_ip >> 8) as u8;
-
-            // For recv cases, handle the received value on the stack
-            if case_kinds[i] == CASE_RECV {
-                if let Some(comm) = &clause.comm {
-                    match comm.as_ref() {
-                        Statement::Assign(assign) => {
-                            let left = &assign.left[0];
-                            let name = match left {
-                                Expression::Ident(ident) => &ident.name,
-                                _ => panic!("select recv: expected identifier"),
-                            };
-                            if assign.op == Operator::Define {
-                                let symbol = self.symbols.define(
-                                    pkg,
-                                    name.as_str(),
-                                    DefineType::Qualified(Qualifier::Var, Box::new(DefineType::Int)),
-                                    false,
-                                );
-                                let op = if symbol.scope == Scope::Global {
-                                    OpCode::SetGlobal
-                                } else {
-                                    OpCode::SetLocal
-                                };
-                                self.emit_opcode(op);
-                                self.emit_u16(symbol.index);
-                            } else {
-                                let resolved = self.symbols.resolve(pkg, name.as_str())
-                                    .expect("select recv: undefined variable");
-                                let sym = resolved.get_symbol();
-                                let op = if sym.scope == Scope::Global {
-                                    OpCode::SetGlobal
-                                } else {
-                                    OpCode::SetLocal
-                                };
-                                self.emit_opcode(op);
-                                self.emit_u16(sym.index);
-                            }
-                        }
-                        Statement::Expr(_) => {
-                            self.emit_opcode(OpCode::Pop);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            for stmt in clause.body.iter() {
-                self.compile_statement(pkg, stmt)?;
-            }
-
-            let jump_pos = self.instructions.len();
-            self.emit_opcode(OpCode::Jump);
-            self.emit_u16(JUMP_PLACEHOLDER);
-            case_end_jumps.push(jump_pos + 1);
-        }
-
-        let after_select = self.instructions.len() as u16;
-        for pos in case_end_jumps {
-            self.instructions[pos] = after_select as u8;
-            self.instructions[pos + 1] = (after_select >> 8) as u8;
-        }
-
-        Ok(())
     }
 }

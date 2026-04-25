@@ -4,10 +4,11 @@
 //! out the same responsibilities for the experimental `src/wasm` path.
 
 use crate::wasm::func_context::WasmFuncContext;
-use crate::wasm::layout::MEMORY_MIN_PAGES;
+use crate::wasm::layout::{MEMORY_MIN_PAGES, STACK_TOP};
 use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, FunctionSection, ImportSection,
-    MemorySection, MemoryType, Module, TypeSection, ValType,
+    CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, FunctionSection,
+    GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, Module, TypeSection,
+    ValType,
 };
 
 #[derive(Debug)]
@@ -16,13 +17,19 @@ pub struct WasmModuleBuilder {
     imports: ImportSection,
     functions: FunctionSection,
     memory: MemorySection,
+    globals: GlobalSection,
     exports: ExportSection,
-    code: CodeSection,
+    completed_bodies: Vec<(u32, wasm_encoder::Function)>,
     next_type_idx: u32,
     next_func_idx: u32,
+    num_imports: u32,
     /// Active nested function bodies (innermost at end), matching nested **Go** func compilation.
-    func_stack: Vec<WasmFuncContext>,
+    func_stack: Vec<(u32, WasmFuncContext)>,
     rt_alloc_func_idx: Option<u32>,
+    print_string_func_idx: Option<u32>,
+    println_string_func_idx: Option<u32>,
+    sp_global_idx: Option<u32>,
+    next_global_idx: u32,
 }
 
 impl Default for WasmModuleBuilder {
@@ -38,12 +45,18 @@ impl WasmModuleBuilder {
             imports: ImportSection::new(),
             functions: FunctionSection::new(),
             memory: MemorySection::new(),
+            globals: GlobalSection::new(),
             exports: ExportSection::new(),
-            code: CodeSection::new(),
+            completed_bodies: Vec::new(),
             next_type_idx: 0,
             next_func_idx: 0,
+            num_imports: 0,
             func_stack: Vec::new(),
             rt_alloc_func_idx: None,
+            print_string_func_idx: None,
+            println_string_func_idx: None,
+            sp_global_idx: None,
+            next_global_idx: 0,
         }
     }
 
@@ -59,12 +72,75 @@ impl WasmModuleBuilder {
         self.imports
             .import("env", "rt_alloc", EntityType::Function(ty));
         self.next_func_idx += 1;
+        self.num_imports += 1;
         self.rt_alloc_func_idx = Some(func_idx);
         func_idx
     }
 
     pub fn rt_alloc_func_idx(&self) -> Option<u32> {
         self.rt_alloc_func_idx
+    }
+
+    /// `(i32, i32) -> ()` import `env.print_string` — writes bytes from linear memory to stdout.
+    pub fn add_print_string_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types
+            .ty()
+            .function(vec![ValType::I32, ValType::I32], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "print_string", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.print_string_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn print_string_func_idx(&self) -> Option<u32> {
+        self.print_string_func_idx
+    }
+
+    /// `(i32, i32) -> ()` import `env.println_string` — writes bytes + newline to stdout.
+    pub fn add_println_string_import(&mut self) -> u32 {
+        let ty = self.next_type_idx;
+        self.types
+            .ty()
+            .function(vec![ValType::I32, ValType::I32], vec![]);
+        self.next_type_idx += 1;
+
+        let func_idx = self.next_func_idx;
+        self.imports
+            .import("env", "println_string", EntityType::Function(ty));
+        self.next_func_idx += 1;
+        self.num_imports += 1;
+        self.println_string_func_idx = Some(func_idx);
+        func_idx
+    }
+
+    pub fn println_string_func_idx(&self) -> Option<u32> {
+        self.println_string_func_idx
+    }
+
+    /// Mutable i32 global `$sp` initialized to [`STACK_TOP`], used for stack-allocated arrays.
+    pub fn add_stack_pointer_global(&mut self) -> u32 {
+        let idx = self.next_global_idx;
+        self.globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(STACK_TOP as i32),
+        );
+        self.next_global_idx += 1;
+        self.sp_global_idx = Some(idx);
+        idx
+    }
+
+    pub fn sp_global_idx(&self) -> Option<u32> {
+        self.sp_global_idx
     }
 
     /// Register a function type; returns its type index.
@@ -102,32 +178,39 @@ impl WasmModuleBuilder {
         idx
     }
 
-    /// Start emitting a body for the function that was just [`Self::define_function`].
-    pub fn begin_func_body(&mut self, locals: Vec<(u32, ValType)>) {
-        self.func_stack.push(WasmFuncContext::new(locals));
+    /// Start emitting a body for the function at `func_idx` that was just [`Self::define_function`].
+    pub fn begin_func_body(&mut self, func_idx: u32, locals: Vec<(u32, ValType)>) {
+        self.func_stack.push((func_idx, WasmFuncContext::new(locals)));
     }
 
     pub fn active(&mut self) -> &mut WasmFuncContext {
         self.func_stack
             .last_mut()
+            .map(|(_, ctx)| ctx)
             .expect("WasmModuleBuilder: no active function (call begin_func_body first)")
     }
 
-    /// Finish innermost body and append it to the **code** section in order.
+    /// Finish innermost body and buffer it for ordered output.
     pub fn end_func_body(&mut self) {
-        let ctx = self.func_stack.pop().expect("WasmModuleBuilder: end_func_body without begin");
+        let (func_idx, ctx) = self.func_stack.pop().expect("WasmModuleBuilder: end_func_body without begin");
         let func = ctx.finish();
-        self.code.function(&func);
+        self.completed_bodies.push((func_idx, func));
     }
 
-    pub fn finish(self) -> Vec<u8> {
+    pub fn finish(mut self) -> Vec<u8> {
+        self.completed_bodies.sort_by_key(|(idx, _)| *idx);
+        let mut code = CodeSection::new();
+        for (_, func) in &self.completed_bodies {
+            code.function(func);
+        }
         let mut module = Module::new();
         module.section(&self.types);
         module.section(&self.imports);
         module.section(&self.functions);
         module.section(&self.memory);
+        module.section(&self.globals);
         module.section(&self.exports);
-        module.section(&self.code);
+        module.section(&code);
         module.finish()
     }
 }
